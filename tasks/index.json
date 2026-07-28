@@ -1,0 +1,239 @@
+{
+  "mainline": [
+    {
+      "id": "M00",
+      "title": "Repository bootstrap and vertical slice",
+      "status": "DONE",
+      "path": "tasks/mainline/M00_bootstrap.md",
+      "verify": [
+        "pytest -q",
+        "python -m evoeventmem.cli smoke"
+      ]
+    },
+    {
+      "id": "M01",
+      "title": "Dataset manifest and robust downloaders",
+      "status": "DONE",
+      "path": "tasks/mainline/M01_dataset_manifest.md",
+      "verify": [
+        "python scripts/data/verify_datasets.py --allow-missing",
+        "pytest -q tests/test_dataset_manifest.py"
+      ]
+    },
+    {
+      "id": "M02",
+      "title": "Normalize LongMemEval and LoCoMo",
+      "status": "TODO",
+      "path": "tasks/mainline/M02_normalization.md",
+      "verify": [
+        "pytest -q tests/benchmarks/test_normalization.py"
+      ]
+    },
+    {
+      "id": "M03",
+      "title": "Evaluation artifacts and deterministic metrics",
+      "status": "TODO",
+      "path": "tasks/mainline/M03_evaluator.md",
+      "verify": [
+        "pytest -q tests/benchmarks/test_metrics.py",
+        "python -m benchmarks.smoke_eval"
+      ]
+    },
+    {
+      "id": "M04",
+      "title": "No-memory and full-context baselines",
+      "status": "TODO",
+      "path": "tasks/mainline/M04_context_baselines.md",
+      "verify": [
+        "pytest -q tests/benchmarks/test_context_baselines.py"
+      ]
+    },
+    {
+      "id": "M05",
+      "title": "Model gateway and vector RAG baseline",
+      "status": "TODO",
+      "path": "tasks/mainline/M05_vector_baseline.md",
+      "verify": [
+        "pytest -q tests/models tests/benchmarks/test_vector_baseline.py"
+      ]
+    },
+    {
+      "id": "M06",
+      "title": "Durable event-memory schema",
+      "status": "TODO",
+      "path": "tasks/mainline/M06_event_schema.md",
+      "verify": [
+        "pytest -q tests/domain/test_event_schema.py"
+      ]
+    },
+    {
+      "id": "M07",
+      "title": "Event extraction and evidence linking",
+      "status": "TODO",
+      "path": "tasks/mainline/M07_event_extraction.md",
+      "verify": [
+        "pytest -q tests/extraction"
+      ]
+    },
+    {
+      "id": "M08",
+      "title": "Memory write pipeline and provenance",
+      "status": "TODO",
+      "path": "tasks/mainline/M08_write_pipeline.md",
+      "verify": [
+        "pytest -q tests/services/test_write_pipeline.py"
+      ]
+    },
+    {
+      "id": "M09",
+      "title": "Candidate generation and entity/event linking",
+      "status": "TODO",
+      "path": "tasks/mainline/M09_linking.md",
+      "verify": [
+        "pytest -q tests/linking"
+      ]
+    },
+    {
+      "id": "M10",
+      "title": "ETEC temporal consolidation",
+      "status": "TODO",
+      "path": "tasks/mainline/M10_etec.md",
+      "verify": [
+        "pytest -q tests/consolidation",
+        "python -m benchmarks.etec_smoke"
+      ]
+    },
+    {
+      "id": "M11",
+      "title": "Rule-based query router",
+      "status": "TODO",
+      "path": "tasks/mainline/M11_query_router.md",
+      "verify": [
+        "pytest -q tests/retrieval/test_query_router.py"
+      ]
+    },
+    {
+      "id": "M12",
+      "title": "QEMR hybrid retrieval and budget packing",
+      "status": "TODO",
+      "path": "tasks/mainline/M12_qemr.md",
+      "verify": [
+        "pytest -q tests/retrieval",
+        "python -m benchmarks.retrieval_smoke"
+      ]
+    },
+    {
+      "id": "M13",
+      "title": "LongMemEval main experiment",
+      "status": "TODO",
+      "path": "tasks/mainline/M13_longmemeval.md",
+      "verify": [
+        "python -m benchmarks.longmemeval.run --config configs/longmemeval/smoke.toml"
+      ]
+    },
+    {
+      "id": "M14",
+      "title": "LoCoMo main experiment",
+      "status": "TODO",
+      "path": "tasks/mainline/M14_locomo.md",
+      "verify": [
+        "python -m benchmarks.locomo.run --config configs/locomo/smoke.toml"
+      ]
+    },
+    {
+      "id": "M15",
+      "title": "Ablations, statistics, and error analysis",
+      "status": "TODO",
+      "path": "tasks/mainline/M15_analysis.md",
+      "verify": [
+        "python -m benchmarks.analysis.validate_report runs/main"
+      ]
+    },
+    {
+      "id": "M16",
+      "title": "Production API, persistence, and observability",
+      "status": "TODO",
+      "path": "tasks/mainline/M16_production_api.md",
+      "verify": [
+        "pytest -q tests/api tests/infra",
+        "docker compose config"
+      ]
+    },
+    {
+      "id": "M17",
+      "title": "OpenCode MCP adapter",
+      "status": "TODO",
+      "path": "tasks/mainline/M17_opencode_mcp.md",
+      "verify": [
+        "pytest -q tests/adapters/test_mcp.py"
+      ]
+    },
+    {
+      "id": "M18",
+      "title": "Reproduction, demo, and resume release",
+      "status": "TODO",
+      "path": "tasks/mainline/M18_release.md",
+      "verify": [
+        "python scripts/release_check.py"
+      ]
+    }
+  ],
+  "optional": [
+    {
+      "id": "O01",
+      "title": "Learned query router",
+      "status": "TODO",
+      "path": "tasks/optional/O01_learned_router.md",
+      "verify": []
+    },
+    {
+      "id": "O02",
+      "title": "Procedural memory from coding trajectories",
+      "status": "TODO",
+      "path": "tasks/optional/O02_procedural_memory.md",
+      "verify": []
+    },
+    {
+      "id": "O03",
+      "title": "LongMemEval-V2 small-tier study",
+      "status": "TODO",
+      "path": "tasks/optional/O03_longmemeval_v2.md",
+      "verify": []
+    },
+    {
+      "id": "O04",
+      "title": "EvoMemBench focused study",
+      "status": "TODO",
+      "path": "tasks/optional/O04_evomembench.md",
+      "verify": []
+    },
+    {
+      "id": "O05",
+      "title": "Pi extension adapter",
+      "status": "TODO",
+      "path": "tasks/optional/O05_pi_adapter.md",
+      "verify": []
+    },
+    {
+      "id": "O06",
+      "title": "Alternative graph database backend",
+      "status": "TODO",
+      "path": "tasks/optional/O06_graph_backend.md",
+      "verify": []
+    },
+    {
+      "id": "O07",
+      "title": "Memory inspector dashboard",
+      "status": "TODO",
+      "path": "tasks/optional/O07_dashboard.md",
+      "verify": []
+    },
+    {
+      "id": "O08",
+      "title": "Privacy and multi-tenant hardening",
+      "status": "TODO",
+      "path": "tasks/optional/O08_privacy.md",
+      "verify": []
+    }
+  ]
+}

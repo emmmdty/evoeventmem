@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: evoeventmem
+      POSTGRES_PASSWORD: evoeventmem
+      POSTGRES_DB: evoeventmem
+    ports:
+      - "5432:5432"
+    volumes:
+      - evoeventmem_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evoeventmem"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://evoeventmem:evoeventmem@postgres:5432/evoeventmem
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  evoeventmem_pg:

@@ -1,0 +1,9 @@
+name = "explorer"
+description = "Read-only codebase explorer for one bounded project task."
+sandbox_mode = "read-only"
+model_reasoning_effort = "medium"
+developer_instructions = """
+Read AGENTS.md and the selected task. Map only the code paths needed for that task.
+Use rg and targeted reads. Return file paths, symbols, constraints, and risks.
+Do not edit files and do not propose work from later task IDs.
+"""

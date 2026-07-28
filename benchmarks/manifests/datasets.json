@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "datasets": [
+    {
+      "id": "longmemeval-cleaned",
+      "role": "mainline",
+      "homepage": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned",
+      "dataset_version": "hf:98d7416c24c778c2fee6e6f3006e7a073259d48f",
+      "dataset_date": "2025-09-19",
+      "license_reference": "https://github.com/xiaowu0162/LongMemEval/blob/main/LICENSE",
+      "files": [
+        {
+          "variant": "oracle",
+          "filename": "longmemeval_oracle.json",
+          "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_oracle.json",
+          "expected_shape": "array",
+          "expected_records": 500,
+          "expected_size_bytes": 15388478,
+          "sha256": null,
+          "source_etag": "7d958f239f452f33a5368e31d0a3dc6ffb4f225036ddd46fc71370a6dc1e2db6"
+        },
+        {
+          "variant": "s",
+          "filename": "longmemeval_s_cleaned.json",
+          "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_s_cleaned.json",
+          "expected_shape": "array",
+          "expected_records": 500,
+          "expected_size_bytes": 277383467,
+          "sha256": null,
+          "source_etag": "fe0747f5550e9fde473a53e420873d14df62a7f1500aa234b1d8758d57abe399"
+        },
+        {
+          "variant": "m",
+          "filename": "longmemeval_m_cleaned.json",
+          "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_m_cleaned.json",
+          "expected_shape": "array",
+          "expected_records": 500,
+          "expected_size_bytes": 2737100077,
+          "sha256": null,
+          "source_etag": "62dccb36c5e17070380e2907accd51c5b8e7119f29b3b0d92392094ebea6b367"
+        }
+      ]
+    },
+    {
+      "id": "locomo",
+      "role": "mainline",
+      "homepage": "https://github.com/snap-research/locomo",
+      "dataset_version": "github:3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "dataset_date": "2024-08-13",
+      "license_reference": "https://github.com/snap-research/locomo/blob/main/LICENSE.txt",
+      "files": [
+        {
+          "variant": "locomo10",
+          "filename": "locomo10.json",
+          "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json",
+          "expected_shape": "array",
+          "expected_records": 10,
+          "expected_size_bytes": 2805274,
+          "sha256": null,
+          "source_etag": "b4da04a18ff16ee6367738552d63438775febc99cf10c2df3b8069d4104603a4"
+        }
+      ]
+    },
+    {
+      "id": "evomembench",
+      "role": "optional",
+      "homepage": "https://github.com/DSAIL-Memory/EvoMemBench",
+      "dataset_version": "github:aa4cea8fd936b76b2d3591d3ef897030617dc43a",
+      "dataset_date": "2026-07-03",
+      "license_reference": "https://github.com/DSAIL-Memory/EvoMemBench",
+      "files": []
+    },
+    {
+      "id": "longmemeval-v2",
+      "role": "optional",
+      "homepage": "https://github.com/xiaowu0162/LongMemEval-V2",
+      "dataset_version": "github:6f020ac2fc3275e46c706d3406e02c3ed79b7be2",
+      "dataset_date": "2026-07-19",
+      "license_reference": "https://github.com/xiaowu0162/LongMemEval-V2/blob/main/LICENSE",
+      "files": []
+    }
+  ]
+}

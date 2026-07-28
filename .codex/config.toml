@@ -1,0 +1,9 @@
+# Project-scoped Codex defaults. Codex loads this only after the repository is trusted.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+model_reasoning_effort = "high"
+model_reasoning_summary = "concise"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3

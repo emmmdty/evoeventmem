@@ -1,0 +1,115 @@
+{
+  "schema_version": "etec.annotations.v1",
+  "cases": [
+    {
+      "case_id": "add_new_preference",
+      "expected_action": "ADD",
+      "merge_gold": false,
+      "conflict_gold": false,
+      "existing": [],
+      "incoming": {
+        "memory_id": "61000000-0000-0000-0000-000000000001",
+        "user_id": "u1",
+        "content": "Caroline prefers UTC timestamps.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [{"source_type": "turn", "source_id": "add:1", "locator": "messages[0]"}],
+        "valid_from": "2024-01-01T00:00:00Z",
+        "metadata": {
+          "fact_slot": "preference.timezone",
+          "fact_value": "UTC timestamps"
+        }
+      }
+    },
+    {
+      "case_id": "merge_duplicate_city",
+      "expected_action": "MERGE",
+      "merge_gold": true,
+      "conflict_gold": false,
+      "expected_target_memory_id": "62000000-0000-0000-0000-000000000001",
+      "existing": [
+        {
+          "memory_id": "62000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [{"source_type": "turn", "source_id": "merge:1", "locator": "messages[0]"}],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {
+            "fact_slot": "profile.city",
+            "fact_value": "Seattle"
+          }
+        }
+      ],
+      "incoming": {
+        "memory_id": "62000000-0000-0000-0000-000000000002",
+        "user_id": "u1",
+        "content": "Carrie lives in Seattle.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [{"source_type": "turn", "source_id": "merge:2", "locator": "messages[1]"}],
+        "valid_from": "2024-01-02T00:00:00Z",
+        "metadata": {
+          "fact_slot": "profile.city",
+          "fact_value": "Seattle"
+        }
+      }
+    },
+    {
+      "case_id": "supersede_conflicting_city",
+      "expected_action": "SUPERSEDE",
+      "merge_gold": false,
+      "conflict_gold": true,
+      "expected_target_memory_id": "63000000-0000-0000-0000-000000000001",
+      "existing": [
+        {
+          "memory_id": "63000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [{"source_type": "turn", "source_id": "supersede:1", "locator": "messages[0]"}],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {
+            "fact_slot": "profile.city",
+            "fact_value": "Seattle"
+          }
+        }
+      ],
+      "incoming": {
+        "memory_id": "63000000-0000-0000-0000-000000000002",
+        "user_id": "u1",
+        "content": "Caroline lives in Boston.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [{"source_type": "turn", "source_id": "supersede:2", "locator": "messages[1]"}],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "metadata": {
+          "fact_slot": "profile.city",
+          "fact_value": "Boston"
+        }
+      }
+    },
+    {
+      "case_id": "reject_missing_evidence",
+      "expected_action": "REJECT",
+      "merge_gold": false,
+      "conflict_gold": false,
+      "existing": [],
+      "incoming": {
+        "memory_id": "64000000-0000-0000-0000-000000000001",
+        "user_id": "u1",
+        "content": "Unsupported synthetic memory.",
+        "synthetic": true,
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "valid_from": "2024-01-01T00:00:00Z",
+        "metadata": {
+          "fact_slot": "profile.unsupported",
+          "fact_value": "unsupported"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+[
+  {
+    "sample_id": "conv-tiny",
+    "qa": [
+      {
+        "question": "When did Caroline go to the support group?",
+        "answer": "7 May 2023",
+        "evidence": ["D1:1"],
+        "category": "2"
+      }
+    ],
+    "conversation": {
+      "speaker_a": "Caroline",
+      "speaker_b": "Melanie",
+      "session_1_date_time": "1:56 pm on 8 May, 2023",
+      "session_1": [
+        {
+          "speaker": "Caroline",
+          "dia_id": "D1:1",
+          "text": "I went to an LGBTQ support group yesterday."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D1:2",
+          "text": "I'm glad you felt supported."
+        }
+      ]
+    },
+    "event_summary": {
+      "events_session_1": {
+        "Caroline": ["Caroline went to an LGBTQ support group on 7 May 2023."],
+        "Melanie": [],
+        "date": "8 May, 2023"
+      }
+    },
+    "observation": {},
+    "session_summary": {
+      "session_1_summary": "Caroline told Melanie about attending a support group."
+    }
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "question_id": "lme-q1",
+    "question_type": "knowledge-update",
+    "question": "What city does the user currently live in?",
+    "answer": "Seattle",
+    "question_date": "2024-02-03",
+    "haystack_session_ids": ["session-old", "session-new"],
+    "haystack_dates": ["2024-01-01", "2024-02-01"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I live in Austin."},
+        {"role": "assistant", "content": "Austin sounds warm."}
+      ],
+      [
+        {"role": "user", "content": "I moved to Seattle.", "has_answer": true},
+        {"role": "assistant", "content": "I hope Seattle treats you well."}
+      ]
+    ],
+    "answer_session_ids": ["session-new"]
+  }
+]

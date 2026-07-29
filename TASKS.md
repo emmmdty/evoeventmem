@@ -8,7 +8,7 @@
 |---|---|---|
 | M00 | [Repository bootstrap and vertical slice](tasks/mainline/M00_bootstrap.md) | DONE |
 | M01 | [Dataset manifest and robust downloaders](tasks/mainline/M01_dataset_manifest.md) | DONE |
-| M02 | [Normalize LongMemEval and LoCoMo](tasks/mainline/M02_normalization.md) | TODO |
+| M02 | [Normalize LongMemEval and LoCoMo](tasks/mainline/M02_normalization.md) | DONE |
 | M03 | [Evaluation artifacts and deterministic metrics](tasks/mainline/M03_evaluator.md) | TODO |
 | M04 | [No-memory and full-context baselines](tasks/mainline/M04_context_baselines.md) | TODO |
 | M05 | [Model gateway and vector RAG baseline](tasks/mainline/M05_vector_baseline.md) | TODO |

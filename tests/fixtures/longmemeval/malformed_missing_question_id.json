@@ -1,0 +1,16 @@
+[
+  {
+    "question_type": "knowledge-update",
+    "question": "What city does the user currently live in?",
+    "answer": "Seattle",
+    "question_date": "2024-02-03",
+    "haystack_session_ids": ["session-new"],
+    "haystack_dates": ["2024-02-01"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I moved to Seattle.", "has_answer": true}
+      ]
+    ],
+    "answer_session_ids": ["session-new"]
+  }
+]

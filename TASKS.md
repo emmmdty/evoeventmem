@@ -11,7 +11,7 @@
 | M02 | [Normalize LongMemEval and LoCoMo](tasks/mainline/M02_normalization.md) | DONE |
 | M03 | [Evaluation artifacts and deterministic metrics](tasks/mainline/M03_evaluator.md) | DONE |
 | M04 | [No-memory and full-context baselines](tasks/mainline/M04_context_baselines.md) | DONE |
-| M05 | [Model gateway and vector RAG baseline](tasks/mainline/M05_vector_baseline.md) | TODO |
+| M05 | [Model gateway and vector RAG baseline](tasks/mainline/M05_vector_baseline.md) | DONE |
 | M06 | [Durable event-memory schema](tasks/mainline/M06_event_schema.md) | TODO |
 | M07 | [Event extraction and evidence linking](tasks/mainline/M07_event_extraction.md) | TODO |
 | M08 | [Memory write pipeline and provenance](tasks/mainline/M08_write_pipeline.md) | TODO |

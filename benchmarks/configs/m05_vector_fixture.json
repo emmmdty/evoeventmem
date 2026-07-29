@@ -1,0 +1,20 @@
+{
+  "baseline": "vector_rag",
+  "run_id_prefix": "m05-vector-fixture",
+  "provider": "deterministic_fake",
+  "chat_model_id": "deterministic-local-fake",
+  "embedding_model_id": "deterministic-local-embedding",
+  "max_input_tokens": 48,
+  "chunk_token_limit": 32,
+  "top_k": 2,
+  "datasets": [
+    {
+      "name": "longmemeval",
+      "path": "tests/fixtures/longmemeval/oracle_tiny.json"
+    },
+    {
+      "name": "locomo",
+      "path": "tests/fixtures/locomo/locomo_tiny.json"
+    }
+  ]
+}

@@ -29,9 +29,11 @@ def test_write_is_idempotent_for_exact_normalized_content() -> None:
 def test_search_is_user_scoped_and_ranked() -> None:
     repository = InMemoryMemoryRepository()
     service = MemoryService(repository)
-    service.write(MemoryRecord(user_id="u1", content="pnpm uses npmmirror registry"))
-    service.write(MemoryRecord(user_id="u1", content="the project uses PostgreSQL"))
-    service.write(MemoryRecord(user_id="u2", content="pnpm uses another registry"))
+    service.write(
+        MemoryRecord(user_id="u1", content="pnpm uses npmmirror registry", synthetic=True)
+    )
+    service.write(MemoryRecord(user_id="u1", content="the project uses PostgreSQL", synthetic=True))
+    service.write(MemoryRecord(user_id="u2", content="pnpm uses another registry", synthetic=True))
 
     hits = service.search("u1", "pnpm registry")
 
@@ -46,4 +48,5 @@ def test_memory_record_rejects_naive_temporal_fields() -> None:
             user_id="u1",
             content="The user moved.",
             event_time=datetime(2024, 1, 1),
+            synthetic=True,
         )

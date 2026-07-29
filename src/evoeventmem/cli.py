@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
+from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryKind, MemoryRecord
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.services.memory_service import MemoryService
 
@@ -12,10 +12,10 @@ def smoke() -> None:
     service.write(
         MemoryRecord(
             user_id="smoke-user",
-            kind=MemoryKind.EVENT,
+            memory_kind=MemoryKind.EVENT,
             content="The project switched the package registry to npmmirror.",
-            entities=["project", "npmmirror"],
-            evidence=[EvidenceRef(source_type="fixture", source_id="smoke-1")],
+            entities=[EntityRef(name="project"), EntityRef(name="npmmirror")],
+            evidence_refs=[EvidenceRef(source_type="fixture", source_id="smoke-1")],
         )
     )
     hits = service.search("smoke-user", "Which package registry does the project use?")

@@ -19,9 +19,12 @@ class MemoryService:
         self._repository = repository
 
     def write(self, memory: MemoryRecord) -> MemoryRecord:
-        normalized = " ".join(memory.content.split()).casefold()
+        normalized = memory.normalized_content or " ".join(memory.content.split()).casefold()
         for existing in self._repository.list_for_user(memory.user_id):
-            if " ".join(existing.content.split()).casefold() == normalized:
+            existing_normalized = (
+                existing.normalized_content or " ".join(existing.content.split()).casefold()
+            )
+            if existing_normalized == normalized:
                 return existing
         return self._repository.add(memory)
 
@@ -31,7 +34,8 @@ class MemoryService:
         query_tokens = _tokens(query)
         hits: list[MemorySearchHit] = []
         for memory in self._repository.list_for_user(user_id):
-            memory_tokens = _tokens(memory.content + " " + " ".join(memory.entities))
+            entity_text = " ".join(entity.name for entity in memory.entities)
+            memory_tokens = _tokens(memory.content + " " + entity_text)
             union = query_tokens | memory_tokens
             score = len(query_tokens & memory_tokens) / len(union) if union else 0.0
             if score > 0:

@@ -40,8 +40,8 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/consolidation
-python -m benchmarks.etec_smoke
+uv run pytest -q tests/consolidation
+uv run python -m benchmarks.etec_smoke
 ```
 
 ## Codex execution prompt

@@ -86,3 +86,35 @@ def test_malformed_records_fail_with_sample_local_diagnostics(
 ) -> None:
     with pytest.raises(NormalizationError, match=message):
         list(loader(path))
+
+
+def test_locomo_string_evidence_fails_with_sample_local_diagnostics(tmp_path: Path) -> None:
+    path = tmp_path / "locomo_bad_evidence.json"
+    payload = [
+        {
+            "sample_id": "conv-string-evidence",
+            "qa": [
+                {
+                    "question": "What happened?",
+                    "answer": "They met.",
+                    "evidence": "D1:1",
+                }
+            ],
+            "conversation": {
+                "speaker_a": "A",
+                "speaker_b": "B",
+                "session_1_date_time": "1:00 pm on 8 May, 2023",
+                "session_1": [
+                    {
+                        "speaker": "A",
+                        "dia_id": "D1:1",
+                        "text": "We met yesterday.",
+                    }
+                ],
+            },
+        }
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(NormalizationError, match="locomo sample conv-string-evidence"):
+        list(iter_locomo_records(path))

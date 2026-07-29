@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 class MemoryKind(StrEnum):
@@ -38,6 +38,17 @@ class MemoryRecord(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("event_time", "valid_from", "valid_to", "created_at")
+    @classmethod
+    def require_aware_temporal_fields(
+        cls,
+        value: datetime | None,
+        info: ValidationInfo,
+    ) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError(f"{info.field_name} must be timezone-aware")
+        return value
 
     @model_validator(mode="after")
     def validate_interval(self) -> MemoryRecord:

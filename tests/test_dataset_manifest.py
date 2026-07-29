@@ -121,7 +121,11 @@ def test_downloader_refuses_error_status(tmp_path: Path, monkeypatch: pytest.Mon
         def __exit__(self, *args: object) -> None:
             return None
 
-    monkeypatch.setattr(_download.urllib.request, "urlopen", lambda *args, **kwargs: ErrorResponse())
+    monkeypatch.setattr(
+        _download.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: ErrorResponse(),
+    )
 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         _download.download_json("https://example.test/dataset.json", tmp_path / "dataset.json")

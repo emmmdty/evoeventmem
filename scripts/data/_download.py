@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
 import hashlib
 import json
 import os
 import re
 import shutil
-from typing import Any, Literal
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+from typing import Any, Literal
 
 DatasetRole = Literal["mainline", "optional"]
 JsonShape = Literal["array", "object"]
@@ -44,7 +44,11 @@ class DatasetFileSpec:
         filename = _required_str(data, "filename", f"{dataset_id}.{variant}")
         url = _required_str(data, "url", f"{dataset_id}.{variant}")
         expected_shape = _required_shape(data, "expected_shape", f"{dataset_id}.{variant}")
-        expected_records = _optional_positive_int(data, "expected_records", f"{dataset_id}.{variant}")
+        expected_records = _optional_positive_int(
+            data,
+            "expected_records",
+            f"{dataset_id}.{variant}",
+        )
         expected_size_bytes = _optional_positive_int(
             data,
             "expected_size_bytes",

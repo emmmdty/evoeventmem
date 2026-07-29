@@ -14,7 +14,9 @@ DESTINATIONS = {
 }
 
 DOWNLOAD_COMMANDS = {
-    ("longmemeval-cleaned", "oracle"): "python scripts/data/download_longmemeval.py --variant oracle",
+    ("longmemeval-cleaned", "oracle"): (
+        "python scripts/data/download_longmemeval.py --variant oracle"
+    ),
     ("longmemeval-cleaned", "s"): "python scripts/data/download_longmemeval.py --variant s",
     ("longmemeval-cleaned", "m"): "python scripts/data/download_longmemeval.py --variant m",
     ("locomo", "locomo10"): "python scripts/data/download_locomo.py",

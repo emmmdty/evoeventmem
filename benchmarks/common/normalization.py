@@ -231,13 +231,14 @@ def _normalize_locomo_turn(turn_value: Any, timestamp: datetime) -> NormalizedTu
 
 def _normalize_locomo_question(sample_id: str, index: int, qa_value: Any) -> NormalizedQuestion:
     qa = _require_mapping(qa_value)
+    evidence_values = _require_list(qa, "evidence") if "evidence" in qa else []
     evidence = [
         NormalizedEvidenceRef(
             source_type="locomo_dialogue",
             source_id=str(source_id),
             locator="qa.evidence",
         )
-        for source_id in qa.get("evidence", [])
+        for source_id in evidence_values
     ]
     return NormalizedQuestion(
         question_id=f"{sample_id}:qa:{index}",

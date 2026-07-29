@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from benchmarks.common.artifacts import (
+    EvidencePrediction,
     PredictionRecord,
     RunMetadata,
     RunSummary,
@@ -82,6 +83,7 @@ class VectorBaselineConfig(BaseModel):
 @dataclass(frozen=True)
 class VectorChunk:
     chunk_id: str
+    source_session_id: str
     source_turn_id: str
     text: str
     token_count: int
@@ -91,6 +93,7 @@ class VectorChunk:
 @dataclass(frozen=True)
 class ScoredChunk:
     chunk_id: str
+    source_session_id: str
     source_turn_id: str
     text: str
     score: float
@@ -150,6 +153,7 @@ def run_vector_baseline(config: VectorBaselineConfig, output_dir: Path) -> RunSu
             chat_result = chat_model.generate([ChatMessage(role="user", content=prompt)])
             latency_ms = (perf_counter() - started) * 1000
             selected_payload = [_selected_context_payload(chunk) for chunk in selected]
+            predicted_evidence = _evidence_from_selected(record.dataset, selected)
             retrieval_records.append(
                 RetrievalRecord(
                     dataset=record.dataset,
@@ -164,7 +168,7 @@ def run_vector_baseline(config: VectorBaselineConfig, output_dir: Path) -> RunSu
                 sample_id=record.sample_id,
                 question_id=question.question_id,
                 prediction=chat_result.text,
-                evidence=[],
+                evidence=predicted_evidence,
                 latency_ms=latency_ms,
                 input_tokens=chat_result.input_tokens,
                 output_tokens=chat_result.output_tokens,
@@ -239,6 +243,7 @@ class VectorIndex:
         scored = [
             ScoredChunk(
                 chunk_id=chunk.chunk_id,
+                source_session_id=chunk.source_session_id,
                 source_turn_id=chunk.source_turn_id,
                 text=chunk.text,
                 score=_cosine_similarity(query_vector, vector),
@@ -252,6 +257,7 @@ class VectorIndex:
             scored = [
                 ScoredChunk(
                     chunk_id=chunk.chunk_id,
+                    source_session_id=chunk.source_session_id,
                     source_turn_id=chunk.source_turn_id,
                     text=chunk.text,
                     score=rerank_score,
@@ -327,6 +333,7 @@ def _chunks_from_sessions(
                 chunks.append(
                     VectorChunk(
                         chunk_id=f"{turn.turn_id}:chunk-{chunk_index}",
+                        source_session_id=session.session_id,
                         source_turn_id=turn.turn_id,
                         text=text,
                         token_count=_count_tokens(text),
@@ -369,11 +376,46 @@ def _build_prompt(question: NormalizedQuestion, chunks: Sequence[ScoredChunk]) -
 def _selected_context_payload(chunk: ScoredChunk) -> dict[str, Any]:
     return {
         "chunk_id": chunk.chunk_id,
+        "source_session_id": chunk.source_session_id,
         "source_turn_id": chunk.source_turn_id,
         "score": chunk.score,
         "text": chunk.text,
         "token_count": chunk.token_count,
     }
+
+
+def _evidence_from_selected(
+    dataset: str,
+    chunks: Sequence[ScoredChunk],
+) -> list[EvidencePrediction]:
+    evidence: list[EvidencePrediction] = []
+    seen: set[tuple[str, str]] = set()
+    for chunk in chunks:
+        if dataset == "longmemeval":
+            source_type = "longmemeval_session"
+            source_id = chunk.source_session_id
+            locator = "answer_session_ids"
+        elif dataset == "locomo":
+            source_type = "locomo_dialogue"
+            source_id = chunk.source_turn_id
+            locator = "qa.evidence"
+        else:
+            source_type = "retrieved_context"
+            source_id = chunk.source_turn_id
+            locator = "retrieved_context"
+        key = (source_type, source_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(
+            EvidencePrediction(
+                source_type=source_type,
+                source_id=source_id,
+                locator=locator,
+                quote=chunk.text,
+            )
+        )
+    return evidence
 
 
 def _load_records(datasets: list[DatasetConfig]) -> list[NormalizedRecord]:

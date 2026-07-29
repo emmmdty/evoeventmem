@@ -109,3 +109,16 @@ def test_run_artifacts_are_write_once(tmp_path) -> None:
         write_json_write_once(summary_path, metadata.model_dump(mode="json"))
     with pytest.raises(FileExistsError):
         write_jsonl_write_once(predictions_path, [prediction])
+
+
+def test_jsonl_write_once_does_not_leave_partial_target_on_failure(tmp_path) -> None:
+    predictions_path = tmp_path / "predictions.jsonl"
+
+    def broken_records():
+        yield {"question_id": "q1"}
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        write_jsonl_write_once(predictions_path, broken_records())
+
+    assert not predictions_path.exists()

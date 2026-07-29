@@ -1,3 +1,7 @@
+from datetime import datetime
+
+import pytest
+
 from evoeventmem.domain.models import EvidenceRef, MemoryRecord
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.services.memory_service import MemoryService
@@ -34,3 +38,12 @@ def test_search_is_user_scoped_and_ranked() -> None:
     assert len(hits) == 1
     assert hits[0].memory.user_id == "u1"
     assert "npmmirror" in hits[0].memory.content
+
+
+def test_memory_record_rejects_naive_temporal_fields() -> None:
+    with pytest.raises(ValueError, match="event_time must be timezone-aware"):
+        MemoryRecord(
+            user_id="u1",
+            content="The user moved.",
+            event_time=datetime(2024, 1, 1),
+        )

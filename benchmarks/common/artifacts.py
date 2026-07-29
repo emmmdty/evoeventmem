@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -85,20 +86,32 @@ class RunSummary(BaseModel):
 def write_json_write_once(path: Path, payload: BaseModel | dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     serializable = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
-    with path.open("x", encoding="utf-8") as handle:
-        json.dump(serializable, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(serializable, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.link(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def write_jsonl_write_once(path: Path, records: Iterable[BaseModel | dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        for record in records:
-            serializable = (
-                record.model_dump(mode="json") if isinstance(record, BaseModel) else record
-            )
-            handle.write(json.dumps(serializable, sort_keys=True))
-            handle.write("\n")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            for record in records:
+                serializable = (
+                    record.model_dump(mode="json") if isinstance(record, BaseModel) else record
+                )
+                handle.write(json.dumps(serializable, sort_keys=True))
+                handle.write("\n")
+        os.link(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def current_git_commit() -> str:

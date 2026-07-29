@@ -38,7 +38,8 @@ class FileModelCache:
         path = self._path(namespace, key)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
-            path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            entry = {"input": payload, "output": value}
+            path.write_text(json.dumps(entry, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         return key
 
     def _path(self, namespace: str, key: str) -> Path:
@@ -71,10 +72,11 @@ class CachedEmbeddingModel:
                     )
                 )
             else:
+                output = cached.get("output", cached)
                 responses.append(
                     EmbeddingResponse(
-                        vector=tuple(float(value) for value in cached["vector"]),
-                        model_id=str(cached["model_id"]),
+                        vector=tuple(float(value) for value in output["vector"]),
+                        model_id=str(output["model_id"]),
                         cache_key=self._cache.key_for("embeddings", payload),
                     )
                 )
@@ -114,11 +116,12 @@ class CachedChatModel:
                 output_tokens=response.output_tokens,
                 cache_key=key,
             )
+        output = cached.get("output", cached)
         return ChatResponse(
-            text=str(cached["text"]),
-            model_id=str(cached["model_id"]),
-            input_tokens=_optional_int(cached.get("input_tokens")),
-            output_tokens=_optional_int(cached.get("output_tokens")),
+            text=str(output["text"]),
+            model_id=str(output["model_id"]),
+            input_tokens=_optional_int(output.get("input_tokens")),
+            output_tokens=_optional_int(output.get("output_tokens")),
             cache_key=self._cache.key_for("chat", payload),
         )
 

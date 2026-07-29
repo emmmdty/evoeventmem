@@ -12,9 +12,9 @@
 | M03 | [Evaluation artifacts and deterministic metrics](tasks/mainline/M03_evaluator.md) | DONE |
 | M04 | [No-memory and full-context baselines](tasks/mainline/M04_context_baselines.md) | DONE |
 | M05 | [Model gateway and vector RAG baseline](tasks/mainline/M05_vector_baseline.md) | DONE |
-| M06 | [Durable event-memory schema](tasks/mainline/M06_event_schema.md) | TODO |
-| M07 | [Event extraction and evidence linking](tasks/mainline/M07_event_extraction.md) | TODO |
-| M08 | [Memory write pipeline and provenance](tasks/mainline/M08_write_pipeline.md) | TODO |
+| M06 | [Durable event-memory schema](tasks/mainline/M06_event_schema.md) | DONE |
+| M07 | [Event extraction and evidence linking](tasks/mainline/M07_event_extraction.md) | DONE |
+| M08 | [Memory write pipeline and provenance](tasks/mainline/M08_write_pipeline.md) | DONE |
 | M09 | [Candidate generation and entity/event linking](tasks/mainline/M09_linking.md) | TODO |
 | M10 | [ETEC temporal consolidation](tasks/mainline/M10_etec.md) | TODO |
 | M11 | [Rule-based query router](tasks/mainline/M11_query_router.md) | TODO |

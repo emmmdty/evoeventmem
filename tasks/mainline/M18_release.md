@@ -41,7 +41,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-python scripts/release_check.py
+uv run python scripts/release_check.py
 ```
 
 ## Codex execution prompt

@@ -31,7 +31,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q
+uv run pytest -q
 ```
 
 ## Codex execution prompt

@@ -40,8 +40,8 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-python scripts/data/verify_datasets.py --allow-missing
-pytest -q tests/test_dataset_manifest.py
+uv run python scripts/data/verify_datasets.py --allow-missing
+uv run pytest -q tests/test_dataset_manifest.py
 ```
 
 ## Codex execution prompt

@@ -15,8 +15,8 @@
 | M06 | [Durable event-memory schema](tasks/mainline/M06_event_schema.md) | DONE |
 | M07 | [Event extraction and evidence linking](tasks/mainline/M07_event_extraction.md) | DONE |
 | M08 | [Memory write pipeline and provenance](tasks/mainline/M08_write_pipeline.md) | DONE |
-| M09 | [Candidate generation and entity/event linking](tasks/mainline/M09_linking.md) | TODO |
-| M10 | [ETEC temporal consolidation](tasks/mainline/M10_etec.md) | TODO |
+| M09 | [Candidate generation and entity/event linking](tasks/mainline/M09_linking.md) | DONE |
+| M10 | [ETEC temporal consolidation](tasks/mainline/M10_etec.md) | DONE |
 | M11 | [Rule-based query router](tasks/mainline/M11_query_router.md) | TODO |
 | M12 | [QEMR hybrid retrieval and budget packing](tasks/mainline/M12_qemr.md) | TODO |
 | M13 | [LongMemEval main experiment](tasks/mainline/M13_longmemeval.md) | TODO |

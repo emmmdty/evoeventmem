@@ -39,7 +39,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-python -m benchmarks.analysis.validate_report runs/main
+uv run python -m benchmarks.analysis.validate_report runs/main
 ```
 
 ## Codex execution prompt

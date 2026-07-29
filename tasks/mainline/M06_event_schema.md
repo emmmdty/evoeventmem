@@ -38,7 +38,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/domain/test_event_schema.py
+uv run pytest -q tests/domain/test_event_schema.py
 ```
 
 ## Codex execution prompt

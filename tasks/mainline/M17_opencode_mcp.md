@@ -40,7 +40,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/adapters/test_mcp.py
+uv run pytest -q tests/adapters/test_mcp.py
 ```
 
 ## Codex execution prompt

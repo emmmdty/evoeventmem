@@ -38,7 +38,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-python -m benchmarks.locomo.run --config configs/locomo/smoke.toml
+uv run python -m benchmarks.locomo.run --config configs/locomo/smoke.toml
 ```
 
 ## Codex execution prompt

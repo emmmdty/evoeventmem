@@ -38,8 +38,8 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/benchmarks/test_metrics.py
-python -m benchmarks.smoke_eval
+uv run pytest -q tests/benchmarks/test_metrics.py
+uv run python -m benchmarks.smoke_eval
 ```
 
 ## Codex execution prompt

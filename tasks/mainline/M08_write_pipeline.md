@@ -37,7 +37,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/services/test_write_pipeline.py
+uv run pytest -q tests/services/test_write_pipeline.py
 ```
 
 ## Codex execution prompt

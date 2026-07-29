@@ -39,7 +39,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-python -m benchmarks.longmemeval.run --config configs/longmemeval/smoke.toml
+uv run python -m benchmarks.longmemeval.run --config configs/longmemeval/smoke.toml
 ```
 
 ## Codex execution prompt

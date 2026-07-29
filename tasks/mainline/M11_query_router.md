@@ -37,7 +37,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/retrieval/test_query_router.py
+uv run pytest -q tests/retrieval/test_query_router.py
 ```
 
 ## Codex execution prompt

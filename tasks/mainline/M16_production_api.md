@@ -41,7 +41,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/api tests/infra
+uv run pytest -q tests/api tests/infra
 docker compose config
 ```
 

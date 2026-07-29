@@ -37,7 +37,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/benchmarks/test_context_baselines.py
+uv run pytest -q tests/benchmarks/test_context_baselines.py
 ```
 
 ## Codex execution prompt

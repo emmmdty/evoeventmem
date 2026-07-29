@@ -39,7 +39,7 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/benchmarks/test_normalization.py
+uv run pytest -q tests/benchmarks/test_normalization.py
 ```
 
 ## Codex execution prompt

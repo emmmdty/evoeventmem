@@ -36,8 +36,8 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q
-python -m evoeventmem.cli smoke
+uv run pytest -q
+uv run python -m evoeventmem.cli smoke
 ```
 
 ## Codex execution prompt

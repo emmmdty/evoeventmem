@@ -6,8 +6,8 @@
       "status": "DONE",
       "path": "tasks/mainline/M00_bootstrap.md",
       "verify": [
-        "pytest -q",
-        "python -m evoeventmem.cli smoke"
+        "uv run pytest -q",
+        "uv run python -m evoeventmem.cli smoke"
       ]
     },
     {
@@ -16,8 +16,8 @@
       "status": "DONE",
       "path": "tasks/mainline/M01_dataset_manifest.md",
       "verify": [
-        "python scripts/data/verify_datasets.py --allow-missing",
-        "pytest -q tests/test_dataset_manifest.py"
+        "uv run python scripts/data/verify_datasets.py --allow-missing",
+        "uv run pytest -q tests/test_dataset_manifest.py"
       ]
     },
     {
@@ -26,7 +26,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M02_normalization.md",
       "verify": [
-        "pytest -q tests/benchmarks/test_normalization.py"
+        "uv run pytest -q tests/benchmarks/test_normalization.py"
       ]
     },
     {
@@ -35,8 +35,8 @@
       "status": "TODO",
       "path": "tasks/mainline/M03_evaluator.md",
       "verify": [
-        "pytest -q tests/benchmarks/test_metrics.py",
-        "python -m benchmarks.smoke_eval"
+        "uv run pytest -q tests/benchmarks/test_metrics.py",
+        "uv run python -m benchmarks.smoke_eval"
       ]
     },
     {
@@ -45,7 +45,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M04_context_baselines.md",
       "verify": [
-        "pytest -q tests/benchmarks/test_context_baselines.py"
+        "uv run pytest -q tests/benchmarks/test_context_baselines.py"
       ]
     },
     {
@@ -54,7 +54,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M05_vector_baseline.md",
       "verify": [
-        "pytest -q tests/models tests/benchmarks/test_vector_baseline.py"
+        "uv run pytest -q tests/models tests/benchmarks/test_vector_baseline.py"
       ]
     },
     {
@@ -63,7 +63,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M06_event_schema.md",
       "verify": [
-        "pytest -q tests/domain/test_event_schema.py"
+        "uv run pytest -q tests/domain/test_event_schema.py"
       ]
     },
     {
@@ -72,7 +72,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M07_event_extraction.md",
       "verify": [
-        "pytest -q tests/extraction"
+        "uv run pytest -q tests/extraction"
       ]
     },
     {
@@ -81,26 +81,26 @@
       "status": "TODO",
       "path": "tasks/mainline/M08_write_pipeline.md",
       "verify": [
-        "pytest -q tests/services/test_write_pipeline.py"
+        "uv run pytest -q tests/services/test_write_pipeline.py"
       ]
     },
     {
       "id": "M09",
       "title": "Candidate generation and entity/event linking",
-      "status": "TODO",
+      "status": "DONE",
       "path": "tasks/mainline/M09_linking.md",
       "verify": [
-        "pytest -q tests/linking"
+        "uv run pytest -q tests/linking"
       ]
     },
     {
       "id": "M10",
       "title": "ETEC temporal consolidation",
-      "status": "TODO",
+      "status": "DONE",
       "path": "tasks/mainline/M10_etec.md",
       "verify": [
-        "pytest -q tests/consolidation",
-        "python -m benchmarks.etec_smoke"
+        "uv run pytest -q tests/consolidation",
+        "uv run python -m benchmarks.etec_smoke"
       ]
     },
     {
@@ -109,7 +109,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M11_query_router.md",
       "verify": [
-        "pytest -q tests/retrieval/test_query_router.py"
+        "uv run pytest -q tests/retrieval/test_query_router.py"
       ]
     },
     {
@@ -118,8 +118,8 @@
       "status": "TODO",
       "path": "tasks/mainline/M12_qemr.md",
       "verify": [
-        "pytest -q tests/retrieval",
-        "python -m benchmarks.retrieval_smoke"
+        "uv run pytest -q tests/retrieval",
+        "uv run python -m benchmarks.retrieval_smoke"
       ]
     },
     {
@@ -128,7 +128,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M13_longmemeval.md",
       "verify": [
-        "python -m benchmarks.longmemeval.run --config configs/longmemeval/smoke.toml"
+        "uv run python -m benchmarks.longmemeval.run --config configs/longmemeval/smoke.toml"
       ]
     },
     {
@@ -137,7 +137,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M14_locomo.md",
       "verify": [
-        "python -m benchmarks.locomo.run --config configs/locomo/smoke.toml"
+        "uv run python -m benchmarks.locomo.run --config configs/locomo/smoke.toml"
       ]
     },
     {
@@ -146,7 +146,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M15_analysis.md",
       "verify": [
-        "python -m benchmarks.analysis.validate_report runs/main"
+        "uv run python -m benchmarks.analysis.validate_report runs/main"
       ]
     },
     {
@@ -155,7 +155,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M16_production_api.md",
       "verify": [
-        "pytest -q tests/api tests/infra",
+        "uv run pytest -q tests/api tests/infra",
         "docker compose config"
       ]
     },
@@ -165,7 +165,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M17_opencode_mcp.md",
       "verify": [
-        "pytest -q tests/adapters/test_mcp.py"
+        "uv run pytest -q tests/adapters/test_mcp.py"
       ]
     },
     {
@@ -174,7 +174,7 @@
       "status": "TODO",
       "path": "tasks/mainline/M18_release.md",
       "verify": [
-        "python scripts/release_check.py"
+        "uv run python scripts/release_check.py"
       ]
     }
   ],

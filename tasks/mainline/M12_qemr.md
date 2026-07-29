@@ -40,8 +40,8 @@ Do not scan the whole repository before planning. Use `rg` to locate any additio
 ## Verification
 
 ```bash
-pytest -q tests/retrieval
-python -m benchmarks.retrieval_smoke
+uv run pytest -q tests/retrieval
+uv run python -m benchmarks.retrieval_smoke
 ```
 
 ## Codex execution prompt

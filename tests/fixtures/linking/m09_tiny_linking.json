@@ -1,0 +1,88 @@
+{
+  "source_memory_id": "11111111-1111-4111-8111-111111111111",
+  "gold": {
+    "entity_target_memory_ids": ["22222222-2222-4222-8222-222222222222"],
+    "event_target_memory_ids": ["22222222-2222-4222-8222-222222222222"]
+  },
+  "memories": [
+    {
+      "memory_id": "11111111-1111-4111-8111-111111111111",
+      "user_id": "u1",
+      "session_id": "D1",
+      "memory_kind": "event",
+      "content": "Carrie went to an LGBTQ support group again on 8 May 2023.",
+      "entities": [{"name": "Carrie", "kind": "person", "role": "speaker"}],
+      "evidence_refs": [
+        {
+          "source_type": "turn",
+          "source_id": "D1:2",
+          "locator": "chars=0:48",
+          "quote": "I went back to the LGBTQ support group today.",
+          "metadata": {"speaker": "Carrie"}
+        }
+      ],
+      "event_time": "2023-05-08T00:00:00Z",
+      "valid_from": "2023-05-08T00:00:00Z",
+      "metadata": {
+        "entity_aliases": {"Carrie": ["Caroline"]}
+      }
+    },
+    {
+      "memory_id": "22222222-2222-4222-8222-222222222222",
+      "user_id": "u1",
+      "session_id": "D1",
+      "memory_kind": "event",
+      "content": "Caroline went to an LGBTQ support group on 7 May 2023.",
+      "entities": [{"name": "Caroline", "kind": "person", "role": "speaker"}],
+      "evidence_refs": [
+        {
+          "source_type": "turn",
+          "source_id": "D1:1",
+          "locator": "chars=0:43",
+          "quote": "I went to an LGBTQ support group yesterday.",
+          "metadata": {"speaker": "Caroline"}
+        }
+      ],
+      "event_time": "2023-05-07T00:00:00Z",
+      "valid_from": "2023-05-07T00:00:00Z",
+      "metadata": {
+        "entity_aliases": {"Caroline": ["Carrie"]}
+      }
+    },
+    {
+      "memory_id": "33333333-3333-4333-8333-333333333333",
+      "user_id": "u1",
+      "session_id": "D2",
+      "memory_kind": "event",
+      "content": "Caroline moved to Austin in January 2024.",
+      "entities": [{"name": "Caroline", "kind": "person", "role": "speaker"}],
+      "evidence_refs": [
+        {
+          "source_type": "turn",
+          "source_id": "D2:1",
+          "locator": "chars=0:27",
+          "quote": "I moved to Austin this month."
+        }
+      ],
+      "event_time": "2024-01-15T00:00:00Z",
+      "valid_from": "2024-01-15T00:00:00Z"
+    },
+    {
+      "memory_id": "44444444-4444-4444-8444-444444444444",
+      "user_id": "u1",
+      "session_id": "D3",
+      "memory_kind": "fact",
+      "content": "Caroline likes quiet mornings.",
+      "entities": [{"name": "Caroline", "kind": "person"}],
+      "evidence_refs": [
+        {
+          "source_type": "turn",
+          "source_id": "D3:1",
+          "locator": "chars=0:26",
+          "quote": "I like quiet mornings."
+        }
+      ],
+      "valid_from": "2023-05-08T00:00:00Z"
+    }
+  ]
+}

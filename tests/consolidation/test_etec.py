@@ -483,6 +483,44 @@ def test_explicit_candidates_are_filtered_before_indexing_scoring_or_mutation() 
     assert repository.get(wrong_tenant.memory_id) == wrong_tenant_snapshot
 
 
+def test_explicit_candidate_snapshot_cannot_spoof_durable_tenant_scope() -> None:
+    repository = InMemoryMemoryRepository()
+    source = _memory(
+        "62500000-0000-0000-0000-000000000001",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="spoof:source",
+        tenant_id="tenant-a",
+    )
+    durable_target = _memory(
+        "62500000-0000-0000-0000-000000000002",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="spoof:durable",
+        tenant_id="tenant-b",
+    )
+    spoofed_snapshot = durable_target.model_copy(update={"tenant_id": "tenant-a"})
+    repository.add(durable_target)
+    durable_snapshot = durable_target.model_copy(deep=True)
+    generator = _RecordingCandidateGenerator([spoofed_snapshot])
+    embeddings = _CountingEmbeddingModel()
+    consolidator = ETECConsolidator(
+        embeddings,
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    result = consolidator.apply(repository, source, candidates=[spoofed_snapshot])
+
+    assert generator.requests[0].existing == []
+    assert embeddings.calls == []
+    assert result.decision.action is ConsolidationAction.ADD
+    assert repository.get(durable_target.memory_id) == durable_snapshot
+
+
 def test_add_point_event_preserves_event_time_without_validity_interval() -> None:
     repository = InMemoryMemoryRepository()
     event_time = datetime(2024, 4, 5, 12, tzinfo=UTC)

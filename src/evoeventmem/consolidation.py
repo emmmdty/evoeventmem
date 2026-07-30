@@ -94,7 +94,7 @@ class ETECConsolidator:
     ) -> ETECApplyResult:
         with repository.transaction() as transaction:
             existing = (
-                list(candidates)
+                _resolve_explicit_candidates(transaction, candidates)
                 if candidates is not None
                 else transaction.list_for_user(source.user_id)
             )
@@ -527,6 +527,22 @@ class ETECConsolidator:
                 "updated_at": datetime.now(UTC),
             },
         )
+
+
+def _resolve_explicit_candidates(
+    repository: MemoryRepository,
+    candidates: Iterable[MemoryRecord],
+) -> list[MemoryRecord]:
+    resolved: list[MemoryRecord] = []
+    seen: set[UUID] = set()
+    for candidate in candidates:
+        if candidate.memory_id in seen:
+            continue
+        seen.add(candidate.memory_id)
+        durable = repository.get(candidate.memory_id)
+        if durable is not None:
+            resolved.append(durable)
+    return resolved
 
 
 def _eligible_candidates(

@@ -1,9 +1,32 @@
+from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from uuid import UUID
 
-from evoeventmem.consolidation import ConsolidationAction, ETECConsolidator
-from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryRecord, MemoryStatus
+import pytest
+
+import evoeventmem.consolidation as consolidation_module
+from evoeventmem.consolidation import (
+    ConsolidationAction,
+    ETECConsolidator,
+    ETECThresholds,
+)
+from evoeventmem.core.ports import EmbeddingResponse, MemoryRepository
+from evoeventmem.domain.models import (
+    EntityRef,
+    EvidenceRef,
+    MemoryKind,
+    MemoryRecord,
+    MemoryStatus,
+)
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
+from evoeventmem.linking import (
+    CandidateGenerationRequest,
+    CandidateGenerationResult,
+    LinkCandidate,
+    LinkCandidateKind,
+)
 from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
 
 
@@ -15,33 +38,139 @@ def _memory(
     memory_id: str,
     content: str,
     *,
-    fact_slot: str,
+    fact_slot: str | None,
     fact_value: str,
-    valid_from: datetime,
+    valid_from: datetime | None,
     evidence_id: str,
+    event_time: datetime | None = None,
+    memory_kind: MemoryKind = MemoryKind.FACT,
+    tenant_id: str | None = None,
+    user_id: str = "u1",
+    status: MemoryStatus = MemoryStatus.ACTIVE,
     multi_valued: bool = False,
     synthetic: bool = False,
 ) -> MemoryRecord:
     evidence_refs = [] if synthetic else [_evidence(evidence_id)]
+    metadata: dict[str, object] = {
+        "fact_value": fact_value,
+        "multi_valued": multi_valued,
+    }
+    if fact_slot is not None:
+        metadata["fact_slot"] = fact_slot
     return MemoryRecord(
         memory_id=UUID(memory_id),
-        user_id="u1",
+        tenant_id=tenant_id,
+        user_id=user_id,
+        memory_kind=memory_kind,
         content=content,
         entities=[EntityRef(name="Caroline", role="subject")],
         roles={"Caroline": "subject"},
         evidence_refs=evidence_refs,
+        event_time=event_time,
         valid_from=valid_from,
-        metadata={
-            "fact_slot": fact_slot,
-            "fact_value": fact_value,
-            "multi_valued": multi_valued,
-        },
+        status=status,
+        metadata=metadata,
         synthetic=synthetic,
     )
 
 
 def _consolidator() -> ETECConsolidator:
     return ETECConsolidator(embedding_model=DeterministicFakeEmbeddingModel())
+
+
+class _RecordingCandidateGenerator:
+    def __init__(self, targets: Sequence[MemoryRecord], *, duplicate: bool = False) -> None:
+        self._targets = list(targets)
+        self._duplicate = duplicate
+        self.requests: list[CandidateGenerationRequest] = []
+
+    def generate(self, request: CandidateGenerationRequest) -> CandidateGenerationResult:
+        self.requests.append(request)
+        candidates = [
+            LinkCandidate(
+                candidate_id=f"test:{target.memory_id}",
+                candidate_kind=LinkCandidateKind.EVENT,
+                policy_name="test-event-policy",
+                source_memory=request.source,
+                target_memory=target,
+                score=1.0,
+                reasons=["test_candidate"],
+            )
+            for target in self._targets
+        ]
+        return CandidateGenerationResult(
+            entity_candidates=list(candidates) if self._duplicate else [],
+            event_candidates=candidates,
+            latency_ms=0.0,
+            embedding_model_id="test-candidate-model",
+        )
+
+
+class _CountingEmbeddingModel:
+    model_id = "counting-embedding"
+
+    def __init__(self) -> None:
+        self._wrapped = DeterministicFakeEmbeddingModel(model_id=self.model_id)
+        self.calls: list[list[str]] = []
+
+    def embed_texts(self, texts: Sequence[str]) -> list[EmbeddingResponse]:
+        self.calls.append(list(texts))
+        return self._wrapped.embed_texts(texts)
+
+
+class _MappedEmbeddingModel:
+    model_id = "mapped-embedding"
+
+    def embed_texts(self, texts: Sequence[str]) -> list[EmbeddingResponse]:
+        vectors = {
+            "Caroline lives in Boston.": (1.0, 0.0),
+            "Caroline lives in Seattle.": (1.0, 0.0),
+            "Caroline lives in Austin.": (0.0, 1.0),
+        }
+        return [
+            EmbeddingResponse(vector=vectors.get(text, (0.5, 0.5)), model_id=self.model_id)
+            for text in texts
+        ]
+
+
+class _FailingTransaction:
+    def __init__(self, delegate: MemoryRepository) -> None:
+        self._delegate = delegate
+        self._writes = 0
+
+    def add(self, memory: MemoryRecord) -> MemoryRecord:
+        self._writes += 1
+        if self._writes == 2:
+            raise RuntimeError("injected repository failure")
+        return self._delegate.add(memory)
+
+    def get(self, memory_id: UUID) -> MemoryRecord | None:
+        return self._delegate.get(memory_id)
+
+    def list_for_user(self, user_id: str) -> list[MemoryRecord]:
+        return self._delegate.list_for_user(user_id)
+
+    def transaction(self):  # type: ignore[no-untyped-def]
+        return self._delegate.transaction()
+
+
+class _FailingOnSecondWriteRepository:
+    def __init__(self) -> None:
+        self._delegate = InMemoryMemoryRepository()
+
+    def add(self, memory: MemoryRecord) -> MemoryRecord:
+        return self._delegate.add(memory)
+
+    def get(self, memory_id: UUID) -> MemoryRecord | None:
+        return self._delegate.get(memory_id)
+
+    def list_for_user(self, user_id: str) -> list[MemoryRecord]:
+        return self._delegate.list_for_user(user_id)
+
+    @contextmanager
+    def transaction(self) -> Iterator[MemoryRepository]:
+        with self._delegate.transaction() as transaction:
+            yield _FailingTransaction(transaction)
 
 
 def test_add_path_stores_new_memory_with_decision_features() -> None:
@@ -191,3 +320,504 @@ def test_explicit_multi_valued_slot_can_keep_multiple_current_active_facts() -> 
         old_number.memory_id,
         new_number.memory_id,
     }
+
+
+def test_positional_threshold_constructor_remains_compatible() -> None:
+    thresholds = ETECThresholds(merge_score_min=0.91)
+    incoming = _memory(
+        "60000000-0000-0000-0000-000000000001",
+        "Caroline uses UTC.",
+        fact_slot="preference.timezone",
+        fact_value="UTC",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="constructor:1",
+    )
+
+    decision = ETECConsolidator(DeterministicFakeEmbeddingModel(), thresholds).decide(incoming, [])
+
+    assert decision.thresholds.merge_score_min == 0.91
+
+
+def test_public_fact_keys_use_explicit_normalized_metadata() -> None:
+    memory = _memory(
+        "60000000-0000-0000-0000-000000000002",
+        "Caroline lives in Seattle.",
+        fact_slot=" Profile.City ",
+        fact_value=" Seattle ",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="keys:1",
+    )
+    event_without_slot = _memory(
+        "60000000-0000-0000-0000-000000000003",
+        "Caroline presented a paper.",
+        fact_slot=None,
+        fact_value="presented",
+        valid_from=None,
+        event_time=datetime(2024, 1, 2, tzinfo=UTC),
+        memory_kind=MemoryKind.EVENT,
+        evidence_id="keys:2",
+    )
+
+    assert consolidation_module.fact_slot_key(memory) == "profile city"
+    assert consolidation_module.fact_value_key(memory) == "seattle"
+    assert consolidation_module.fact_slot_key(event_without_slot) is None
+
+
+def test_apply_calls_m09_and_scores_only_deduplicated_returned_targets() -> None:
+    repository = InMemoryMemoryRepository()
+    returned = _memory(
+        "61000000-0000-0000-0000-000000000001",
+        "Caroline likes detailed logs.",
+        fact_slot="preference.logs",
+        fact_value="detailed",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="bounded:1",
+    )
+    unbounded_conflict = _memory(
+        "61000000-0000-0000-0000-000000000002",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="bounded:2",
+    )
+    incoming = _memory(
+        "61000000-0000-0000-0000-000000000003",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="bounded:3",
+    )
+    repository.add(returned)
+    repository.add(unbounded_conflict)
+    generator = _RecordingCandidateGenerator([returned], duplicate=True)
+    embeddings = _CountingEmbeddingModel()
+    consolidator = ETECConsolidator(
+        embeddings,
+        ETECThresholds(merge_semantic_min=1.0, merge_score_min=1.0),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    result = consolidator.apply(repository, incoming)
+
+    assert len(generator.requests) == 1
+    assert {item.memory_id for item in generator.requests[0].existing} == {
+        returned.memory_id,
+        unbounded_conflict.memory_id,
+    }
+    assert embeddings.calls == [[incoming.content, returned.content]]
+    assert result.decision.action is ConsolidationAction.ADD
+    assert repository.get(unbounded_conflict.memory_id) == unbounded_conflict
+
+
+def test_explicit_candidates_are_filtered_before_indexing_scoring_or_mutation() -> None:
+    repository = InMemoryMemoryRepository()
+    incoming = _memory(
+        "62000000-0000-0000-0000-000000000001",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="filter:source",
+        tenant_id="tenant-a",
+    )
+    safe = _memory(
+        "62000000-0000-0000-0000-000000000002",
+        "Caroline prefers detailed logs.",
+        fact_slot="preference.logs",
+        fact_value="detailed",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="filter:safe",
+        tenant_id="tenant-a",
+    )
+    wrong_tenant = _memory(
+        "62000000-0000-0000-0000-000000000003",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="filter:tenant",
+        tenant_id="tenant-b",
+    )
+    wrong_user = _memory(
+        "62000000-0000-0000-0000-000000000004",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="filter:user",
+        tenant_id="tenant-a",
+        user_id="u2",
+    )
+    deleted = _memory(
+        "62000000-0000-0000-0000-000000000005",
+        "Caroline lives in Paris.",
+        fact_slot="profile.city",
+        fact_value="Paris",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="filter:deleted",
+        tenant_id="tenant-a",
+        status=MemoryStatus.DELETED,
+    )
+    for target in (safe, wrong_tenant, wrong_user, deleted):
+        repository.add(target)
+    wrong_tenant_snapshot = wrong_tenant.model_copy(deep=True)
+    generator = _RecordingCandidateGenerator([safe, wrong_tenant, wrong_user, deleted, incoming])
+    embeddings = _CountingEmbeddingModel()
+    consolidator = ETECConsolidator(
+        embeddings,
+        ETECThresholds(merge_semantic_min=1.0, merge_score_min=1.0),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    result = consolidator.apply(
+        repository,
+        incoming,
+        candidates=[safe, wrong_tenant, wrong_user, deleted, incoming],
+    )
+
+    assert [item.memory_id for item in generator.requests[0].existing] == [safe.memory_id]
+    assert embeddings.calls == [[incoming.content, safe.content]]
+    assert result.decision.action is ConsolidationAction.ADD
+    assert repository.get(wrong_tenant.memory_id) == wrong_tenant_snapshot
+
+
+def test_add_point_event_preserves_event_time_without_validity_interval() -> None:
+    repository = InMemoryMemoryRepository()
+    event_time = datetime(2024, 4, 5, 12, tzinfo=UTC)
+    incoming = _memory(
+        "63000000-0000-0000-0000-000000000001",
+        "Caroline presented the paper.",
+        fact_slot=None,
+        fact_value="presented",
+        valid_from=None,
+        event_time=event_time,
+        memory_kind=MemoryKind.EVENT,
+        evidence_id="point:1",
+    )
+
+    result = _consolidator().apply(repository, incoming)
+
+    stored = repository.get(incoming.memory_id)
+    assert result.decision.action is ConsolidationAction.ADD
+    assert stored is not None
+    assert stored.event_time == event_time
+    assert stored.valid_from is None
+    assert stored.valid_to is None
+
+
+def test_entity_and_role_overlap_cannot_make_unrelated_events_conflict() -> None:
+    repository = InMemoryMemoryRepository()
+    earlier = _memory(
+        "64000000-0000-0000-0000-000000000001",
+        "Caroline presented a paper.",
+        fact_slot=None,
+        fact_value="presented",
+        valid_from=None,
+        event_time=datetime(2024, 1, 1, tzinfo=UTC),
+        memory_kind=MemoryKind.EVENT,
+        evidence_id="event:1",
+    )
+    later = _memory(
+        "64000000-0000-0000-0000-000000000002",
+        "Caroline attended a workshop.",
+        fact_slot=None,
+        fact_value="attended",
+        valid_from=None,
+        event_time=datetime(2024, 1, 1, tzinfo=UTC),
+        memory_kind=MemoryKind.EVENT,
+        evidence_id="event:2",
+    )
+    repository.add(earlier)
+    generator = _RecordingCandidateGenerator([earlier])
+    consolidator = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        ETECThresholds(merge_semantic_min=1.0, merge_score_min=1.0),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    result = consolidator.apply(repository, later)
+
+    assert result.decision.action is ConsolidationAction.ADD
+    assert repository.get(earlier.memory_id).status is MemoryStatus.ACTIVE  # type: ignore[union-attr]
+    assert repository.get(later.memory_id).status is MemoryStatus.ACTIVE  # type: ignore[union-attr]
+
+
+def test_newer_fact_closes_older_target_with_reciprocal_links() -> None:
+    repository = InMemoryMemoryRepository()
+    older = _memory(
+        "65000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="newer:1",
+    )
+    newer = _memory(
+        "65000000-0000-0000-0000-000000000002",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="newer:2",
+    )
+    repository.add(older)
+    generator = _RecordingCandidateGenerator([older])
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, newer)
+
+    stored_older = repository.get(older.memory_id)
+    stored_newer = repository.get(newer.memory_id)
+    assert result.decision.action is ConsolidationAction.SUPERSEDE
+    assert "newer_source_supersedes_older_target" in result.decision.rule_hits
+    assert stored_older is not None and stored_newer is not None
+    assert stored_older.status is MemoryStatus.SUPERSEDED
+    assert stored_older.valid_to == newer.valid_from
+    assert stored_older.superseded_by == newer.memory_id
+    assert stored_newer.status is MemoryStatus.ACTIVE
+    assert stored_newer.supersedes == [older.memory_id]
+
+
+def test_stale_fact_is_stored_closed_and_newer_target_gains_reciprocal_link() -> None:
+    repository = InMemoryMemoryRepository()
+    newer_target = _memory(
+        "66000000-0000-0000-0000-000000000001",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="stale:1",
+    )
+    stale_source = _memory(
+        "66000000-0000-0000-0000-000000000002",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="stale:2",
+    )
+    repository.add(newer_target)
+    generator = _RecordingCandidateGenerator([newer_target])
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, stale_source)
+
+    stored_target = repository.get(newer_target.memory_id)
+    stored_source = repository.get(stale_source.memory_id)
+    assert result.decision.action is ConsolidationAction.SUPERSEDE
+    assert "stale_source_superseded_by_newer_target" in result.decision.rule_hits
+    assert stored_target is not None and stored_source is not None
+    assert stored_target.status is MemoryStatus.ACTIVE
+    assert stored_target.supersedes == [stale_source.memory_id]
+    assert stored_source.status is MemoryStatus.SUPERSEDED
+    assert stored_source.valid_to == newer_target.valid_from
+    assert stored_source.superseded_by == newer_target.memory_id
+    assert {memory.memory_id for memory in result.updated_memories} == {
+        newer_target.memory_id,
+        stale_source.memory_id,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_time", "target_time", "rule_hit"),
+    [
+        (None, None, "missing_fact_effective_time"),
+        (
+            datetime(2024, 2, 1, tzinfo=UTC),
+            datetime(2024, 2, 1, tzinfo=UTC),
+            "equal_fact_effective_time",
+        ),
+    ],
+)
+def test_ambiguous_fact_order_rejects_without_mutation(
+    source_time: datetime | None,
+    target_time: datetime | None,
+    rule_hit: str,
+) -> None:
+    repository = InMemoryMemoryRepository()
+    target = _memory(
+        "67000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=target_time,
+        evidence_id="ambiguous:1",
+    )
+    source = _memory(
+        "67000000-0000-0000-0000-000000000002",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=source_time,
+        evidence_id="ambiguous:2",
+    )
+    repository.add(target)
+    snapshot = target.model_copy(deep=True)
+    generator = _RecordingCandidateGenerator([target])
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, source)
+
+    assert result.decision.action is ConsolidationAction.REJECT
+    assert rule_hit in result.decision.rule_hits
+    assert repository.get(target.memory_id) == snapshot
+    assert repository.get(source.memory_id) is None
+    assert result.updated_memories == []
+
+
+def test_repository_failure_rolls_back_every_supersession_write() -> None:
+    repository = _FailingOnSecondWriteRepository()
+    target = _memory(
+        "68000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="rollback:1",
+    )
+    source = _memory(
+        "68000000-0000-0000-0000-000000000002",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="rollback:2",
+    )
+    repository.add(target)
+    generator = _RecordingCandidateGenerator([target])
+    consolidator = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="injected repository failure"):
+        consolidator.apply(repository, source)
+
+    assert repository.get(target.memory_id) == target
+    assert repository.get(source.memory_id) is None
+
+
+def test_concurrent_contradictory_writes_leave_newest_fact_current() -> None:
+    repository = InMemoryMemoryRepository()
+    original = _memory(
+        "69000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="concurrent:1",
+    )
+    middle = _memory(
+        "69000000-0000-0000-0000-000000000002",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="concurrent:2",
+    )
+    newest = _memory(
+        "69000000-0000-0000-0000-000000000003",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="concurrent:3",
+    )
+    repository.add(original)
+    consolidator = ETECConsolidator(DeterministicFakeEmbeddingModel())
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda memory: consolidator.apply(repository, memory), [middle, newest]))
+
+    current = [
+        memory
+        for memory in repository.list_for_user("u1")
+        if memory.status is MemoryStatus.ACTIVE
+        and consolidation_module.fact_slot_key(memory) == "profile city"
+        and memory.valid_to is None
+    ]
+    assert [memory.memory_id for memory in current] == [newest.memory_id]
+
+
+def test_each_superseded_target_records_its_own_decision_features() -> None:
+    repository = InMemoryMemoryRepository()
+    seattle = _memory(
+        "6a000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="metadata:1",
+    )
+    austin = _memory(
+        "6a000000-0000-0000-0000-000000000002",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="metadata:2",
+    )
+    boston = _memory(
+        "6a000000-0000-0000-0000-000000000003",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="metadata:3",
+    )
+    repository.add(seattle)
+    repository.add(austin)
+    generator = _RecordingCandidateGenerator([seattle, austin], duplicate=True)
+
+    ETECConsolidator(
+        _MappedEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, boston)
+
+    stored_seattle = repository.get(seattle.memory_id)
+    stored_austin = repository.get(austin.memory_id)
+    assert stored_seattle is not None and stored_austin is not None
+    seattle_decision = stored_seattle.metadata["etec"]["decision"]
+    austin_decision = stored_austin.metadata["etec"]["decision"]
+    assert seattle_decision["target_memory_id"] == str(seattle.memory_id)
+    assert austin_decision["target_memory_id"] == str(austin.memory_id)
+    assert seattle_decision["features"]["semantic_similarity"] == 1.0
+    assert austin_decision["features"]["semantic_similarity"] == 0.0
+
+
+def test_scored_pair_uses_one_embedding_batch_for_both_vectors() -> None:
+    repository = InMemoryMemoryRepository()
+    target = _memory(
+        "6b000000-0000-0000-0000-000000000001",
+        "Caroline likes Seattle.",
+        fact_slot="preference.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="embedding:1",
+    )
+    source = _memory(
+        "6b000000-0000-0000-0000-000000000002",
+        "Caroline likes Boston.",
+        fact_slot="preference.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 2, 1, tzinfo=UTC),
+        evidence_id="embedding:2",
+    )
+    repository.add(target)
+    generator = _RecordingCandidateGenerator([target], duplicate=True)
+    embeddings = _CountingEmbeddingModel()
+
+    ETECConsolidator(
+        embeddings,
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, source)
+
+    assert embeddings.calls == [[source.content, target.content]]

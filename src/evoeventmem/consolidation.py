@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 
 from evoeventmem.core.ports import EmbeddingModel, MemoryRepository
 from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryRecord, MemoryStatus
-from evoeventmem.linking import normalized_linking_key
+from evoeventmem.linking import (
+    CandidateGenerationRequest,
+    CandidateGenerationResult,
+    LinkCandidateGenerator,
+    normalized_linking_key,
+)
 
 
 class ConsolidationAction(StrEnum):
@@ -64,9 +69,12 @@ class ETECConsolidator:
         self,
         embedding_model: EmbeddingModel,
         thresholds: ETECThresholds | None = None,
+        *,
+        candidate_generator: LinkCandidateGenerator | None = None,
     ) -> None:
         self._embedding_model = embedding_model
         self._thresholds = thresholds or ETECThresholds()
+        self._candidate_generator = candidate_generator or LinkCandidateGenerator(embedding_model)
 
     def decide(
         self,
@@ -76,21 +84,105 @@ class ETECConsolidator:
         reject_decision = self._reject_without_evidence(source)
         if reject_decision is not None:
             return reject_decision
+        return self._select_decision(source, self._score_candidates(source, candidates))
 
-        scored = [self._score_pair(source, candidate) for candidate in candidates]
-        supersede = [
+    def apply(
+        self,
+        repository: MemoryRepository,
+        source: MemoryRecord,
+        candidates: Sequence[MemoryRecord] | None = None,
+    ) -> ETECApplyResult:
+        with repository.transaction() as transaction:
+            existing = (
+                list(candidates)
+                if candidates is not None
+                else transaction.list_for_user(source.user_id)
+            )
+            eligible = _eligible_candidates(source, existing)
+            generated = self._candidate_generator.generate(
+                CandidateGenerationRequest(source=source, existing=eligible)
+            )
+            bounded_targets = _bounded_target_memories(generated, eligible)
+
+            reject_decision = self._reject_without_evidence(source)
+            scored = (
+                []
+                if reject_decision is not None
+                else self._score_candidates(source, bounded_targets)
+            )
+            decision = reject_decision or self._select_decision(source, scored)
+            if decision.action is ConsolidationAction.REJECT:
+                return ETECApplyResult(decision=decision)
+
+            targets_by_id = {target.memory_id: target for target in bounded_targets}
+            if decision.action is ConsolidationAction.MERGE:
+                target = _require_target(decision, bounded_targets)
+                merged = self._merge_memory(target, source, decision)
+                transaction.add(merged)
+                return ETECApplyResult(
+                    decision=decision,
+                    stored_memory=merged,
+                    updated_memories=[merged],
+                )
+
+            if decision.action is ConsolidationAction.SUPERSEDE:
+                return self._apply_supersede(
+                    transaction,
+                    source,
+                    decision,
+                    scored,
+                    targets_by_id,
+                )
+
+            stored = self._store_new_memory(
+                source,
+                decision,
+                supersedes=list(source.supersedes),
+            )
+            transaction.add(stored)
+            return ETECApplyResult(
+                decision=decision,
+                stored_memory=stored,
+                updated_memories=[stored],
+            )
+
+    def _score_candidates(
+        self,
+        source: MemoryRecord,
+        candidates: Sequence[MemoryRecord],
+    ) -> list[ETECDecision]:
+        return [self._score_pair(source, candidate) for candidate in candidates]
+
+    def _select_decision(
+        self,
+        source: MemoryRecord,
+        scored: Sequence[ETECDecision],
+    ) -> ETECDecision:
+        temporal_rejects = [
             decision
             for decision in scored
-            if decision.action is ConsolidationAction.SUPERSEDE
+            if decision.action is ConsolidationAction.REJECT
+            and (
+                "missing_fact_effective_time" in decision.rule_hits
+                or "equal_fact_effective_time" in decision.rule_hits
+            )
+        ]
+        if temporal_rejects:
+            return max(
+                temporal_rejects,
+                key=lambda decision: decision.features.contradiction_score,
+            )
+
+        supersede = [
+            decision for decision in scored if decision.action is ConsolidationAction.SUPERSEDE
         ]
         if supersede:
-            return max(supersede, key=lambda decision: decision.features.contradiction_score)
+            return max(
+                supersede,
+                key=lambda decision: decision.features.contradiction_score,
+            )
 
-        merge = [
-            decision
-            for decision in scored
-            if decision.action is ConsolidationAction.MERGE
-        ]
+        merge = [decision for decision in scored if decision.action is ConsolidationAction.MERGE]
         if merge:
             return max(merge, key=lambda decision: decision.score)
 
@@ -106,65 +198,94 @@ class ETECConsolidator:
 
         return self._add_without_candidates(source)
 
-    def apply(
+    def _apply_supersede(
         self,
         repository: MemoryRepository,
         source: MemoryRecord,
-        candidates: Sequence[MemoryRecord] | None = None,
+        decision: ETECDecision,
+        scored: Sequence[ETECDecision],
+        targets_by_id: dict[UUID, MemoryRecord],
     ) -> ETECApplyResult:
-        existing = (
-            list(candidates)
-            if candidates is not None
-            else repository.list_for_user(source.user_id)
-        )
-        active_candidates = [
-            memory
-            for memory in existing
-            if memory.memory_id != source.memory_id and memory.status is MemoryStatus.ACTIVE
+        source_time = _require_fact_effective_time(source)
+        pair_decisions = [
+            pair
+            for pair in scored
+            if pair.action is ConsolidationAction.SUPERSEDE
+            and pair.target_memory_id in targets_by_id
         ]
-        decision = self.decide(source, active_candidates)
-        if decision.action is ConsolidationAction.REJECT:
-            return ETECApplyResult(decision=decision)
+        stale_pairs = [
+            pair
+            for pair in pair_decisions
+            if _require_fact_effective_time(targets_by_id[_decision_target_id(pair)]) > source_time
+        ]
 
-        if decision.action is ConsolidationAction.MERGE:
-            target = _require_target(decision, active_candidates)
-            merged = self._merge_memory(target, source, decision)
-            repository.add(merged)
-            return ETECApplyResult(
-                decision=decision,
-                stored_memory=merged,
-                updated_memories=[merged],
+        if stale_pairs:
+            winner_decision = max(
+                stale_pairs,
+                key=lambda pair: _require_fact_effective_time(
+                    targets_by_id[_decision_target_id(pair)]
+                ),
             )
+            winner = targets_by_id[_decision_target_id(winner_decision)]
+            changed_targets: list[MemoryRecord] = []
+            winner_supersedes = list(winner.supersedes)
+            source_supersedes = list(source.supersedes)
+            for pair in pair_decisions:
+                target = targets_by_id[_decision_target_id(pair)]
+                if target.memory_id == winner.memory_id:
+                    continue
+                target_time = _fact_effective_time(target)
+                if target_time is None:
+                    continue
+                superseder = source if target_time < source_time else winner
+                updated_target = self._supersede_memory(target, superseder, pair)
+                changed_targets.append(updated_target)
+                if superseder.memory_id == source.memory_id:
+                    source_supersedes.append(target.memory_id)
+                else:
+                    winner_supersedes.append(target.memory_id)
 
-        if decision.action is ConsolidationAction.SUPERSEDE:
-            contradictions = [
-                candidate
-                for candidate in active_candidates
-                if self._features(source, candidate).contradiction_score
-                >= self._thresholds.supersede_contradiction_min
-                and not _is_multi_valued(source, candidate)
-            ]
-            superseded = [
-                self._supersede_memory(target, source, decision)
-                for target in contradictions
-            ]
-            for memory in superseded:
-                repository.add(memory)
-            stored = self._store_new_memory(
+            stored_source = self._store_superseded_memory(
                 source,
-                decision,
-                supersedes=[memory.memory_id for memory in superseded],
+                winner,
+                winner_decision,
+                supersedes=source_supersedes,
             )
-            repository.add(stored)
+            winner_supersedes.append(source.memory_id)
+            updated_winner = self._add_supersedes(
+                winner,
+                winner_decision,
+                winner_supersedes,
+            )
+            updated = [*changed_targets, stored_source, updated_winner]
+            for memory in updated:
+                repository.add(memory)
             return ETECApplyResult(
-                decision=decision,
-                stored_memory=stored,
-                updated_memories=[*superseded, stored],
+                decision=winner_decision,
+                stored_memory=stored_source,
+                updated_memories=updated,
             )
 
-        stored = self._store_new_memory(source, decision, supersedes=list(source.supersedes))
+        superseded: list[MemoryRecord] = []
+        for pair in pair_decisions:
+            target = targets_by_id[_decision_target_id(pair)]
+            superseded.append(self._supersede_memory(target, source, pair))
+        for memory in superseded:
+            repository.add(memory)
+        stored = self._store_new_memory(
+            source,
+            decision,
+            supersedes=[
+                *source.supersedes,
+                *(memory.memory_id for memory in superseded),
+            ],
+        )
         repository.add(stored)
-        return ETECApplyResult(decision=decision, stored_memory=stored, updated_memories=[stored])
+        return ETECApplyResult(
+            decision=decision,
+            stored_memory=stored,
+            updated_memories=[*superseded, stored],
+        )
 
     def _reject_without_evidence(self, source: MemoryRecord) -> ETECDecision | None:
         features = self._standalone_features(source)
@@ -181,11 +302,12 @@ class ETECConsolidator:
         )
 
     def _add_without_candidates(self, source: MemoryRecord) -> ETECDecision:
+        features = self._standalone_features(source)
         return ETECDecision(
             action=ConsolidationAction.ADD,
             source_memory_id=source.memory_id,
-            score=self._standalone_features(source).evidence_consistency,
-            features=self._standalone_features(source),
+            score=features.evidence_consistency,
+            features=features,
             thresholds=self._thresholds,
             rule_hits=["no_active_candidate"],
             reason="No active candidate was available for consolidation.",
@@ -206,9 +328,32 @@ class ETECConsolidator:
             features.contradiction_score >= self._thresholds.supersede_contradiction_min
             and not features.multi_valued
         ):
-            action = ConsolidationAction.SUPERSEDE
-            rule_hits.append("temporal_contradiction")
-            reason = "A current single-valued fact contradicts the incoming evidence."
+            source_time = _fact_effective_time(source)
+            target_time = _fact_effective_time(target)
+            if source_time is None or target_time is None:
+                action = ConsolidationAction.REJECT
+                rule_hits.append("missing_fact_effective_time")
+                reason = (
+                    "A contradictory single-valued fact is missing an effective time, "
+                    "so temporal ordering is unsafe."
+                )
+            elif source_time == target_time:
+                action = ConsolidationAction.REJECT
+                rule_hits.append("equal_fact_effective_time")
+                reason = (
+                    "Contradictory single-valued facts have equal effective times, "
+                    "so neither can supersede the other."
+                )
+            elif source_time > target_time:
+                action = ConsolidationAction.SUPERSEDE
+                rule_hits.extend(["temporal_contradiction", "newer_source_supersedes_older_target"])
+                reason = "The incoming fact is strictly newer and supersedes the target."
+            else:
+                action = ConsolidationAction.SUPERSEDE
+                rule_hits.extend(
+                    ["temporal_contradiction", "stale_source_superseded_by_newer_target"]
+                )
+                reason = "The incoming fact is stale and is superseded by the newer target."
         elif (
             features.multi_valued
             and _same_fact_slot(source, target)
@@ -242,13 +387,10 @@ class ETECConsolidator:
         )
 
     def _features(self, source: MemoryRecord, target: MemoryRecord) -> ETECFeatureVector:
-        semantic = _semantic_similarity(
-            self._embedding_model.embed_texts([source.content, target.content])[0].vector,
-            self._embedding_model.embed_texts([source.content, target.content])[1].vector,
-        )
-        if (
-            source.normalized_content == target.normalized_content
-            or _same_fact_value(source, target)
+        embeddings = self._embedding_model.embed_texts([source.content, target.content])
+        semantic = _semantic_similarity(embeddings[0].vector, embeddings[1].vector)
+        if source.normalized_content == target.normalized_content or _same_fact_value(
+            source, target
         ):
             semantic = 1.0
         entity_role = _jaccard(_entity_role_keys(source), _entity_role_keys(target))
@@ -316,17 +458,53 @@ class ETECConsolidator:
     def _supersede_memory(
         self,
         target: MemoryRecord,
-        source: MemoryRecord,
+        superseder: MemoryRecord,
         decision: ETECDecision,
     ) -> MemoryRecord:
-        cutoff = _supersession_cutoff(source, target)
+        cutoff = _supersession_cutoff(superseder, target)
         return _validated_copy(
             target,
             {
                 "status": MemoryStatus.SUPERSEDED,
                 "valid_to": cutoff,
-                "superseded_by": source.memory_id,
+                "superseded_by": superseder.memory_id,
                 "metadata": _metadata_with_decision(target, decision),
+                "updated_at": datetime.now(UTC),
+            },
+        )
+
+    def _add_supersedes(
+        self,
+        target: MemoryRecord,
+        decision: ETECDecision,
+        supersedes: Iterable[UUID],
+    ) -> MemoryRecord:
+        return _validated_copy(
+            target,
+            {
+                "supersedes": _unique_uuids(supersedes),
+                "metadata": _metadata_with_decision(target, decision),
+                "updated_at": datetime.now(UTC),
+            },
+        )
+
+    def _store_superseded_memory(
+        self,
+        source: MemoryRecord,
+        superseder: MemoryRecord,
+        decision: ETECDecision,
+        *,
+        supersedes: Iterable[UUID],
+    ) -> MemoryRecord:
+        cutoff = _supersession_cutoff(superseder, source)
+        return _validated_copy(
+            source,
+            {
+                "status": MemoryStatus.SUPERSEDED,
+                "valid_to": cutoff,
+                "supersedes": _unique_uuids(supersedes),
+                "superseded_by": superseder.memory_id,
+                "metadata": _metadata_with_decision(source, decision),
                 "updated_at": datetime.now(UTC),
             },
         )
@@ -335,7 +513,7 @@ class ETECConsolidator:
         self,
         source: MemoryRecord,
         decision: ETECDecision,
-        supersedes: list[UUID],
+        supersedes: Iterable[UUID],
     ) -> MemoryRecord:
         return _validated_copy(
             source,
@@ -343,11 +521,59 @@ class ETECConsolidator:
                 "status": MemoryStatus.ACTIVE,
                 "supersedes": _unique_uuids(supersedes),
                 "superseded_by": None,
-                "valid_from": source.valid_from or source.event_time,
+                "valid_from": source.valid_from,
+                "valid_to": source.valid_to,
                 "metadata": _metadata_with_decision(source, decision),
                 "updated_at": datetime.now(UTC),
             },
         )
+
+
+def _eligible_candidates(
+    source: MemoryRecord,
+    candidates: Iterable[MemoryRecord],
+) -> list[MemoryRecord]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.memory_id != source.memory_id
+        and candidate.user_id == source.user_id
+        and candidate.tenant_id == source.tenant_id
+        and candidate.status is MemoryStatus.ACTIVE
+    ]
+
+
+def _bounded_target_memories(
+    generated: CandidateGenerationResult,
+    eligible: Sequence[MemoryRecord],
+) -> list[MemoryRecord]:
+    eligible_by_id = {candidate.memory_id: candidate for candidate in eligible}
+    seen: set[UUID] = set()
+    targets: list[MemoryRecord] = []
+    for candidate in [*generated.entity_candidates, *generated.event_candidates]:
+        target = eligible_by_id.get(candidate.target_memory.memory_id)
+        if target is None or target.memory_id in seen:
+            continue
+        seen.add(target.memory_id)
+        targets.append(target)
+    return targets
+
+
+def _decision_target_id(decision: ETECDecision) -> UUID:
+    if decision.target_memory_id is None:
+        raise ValueError("decision target is required")
+    return decision.target_memory_id
+
+
+def _fact_effective_time(memory: MemoryRecord) -> datetime | None:
+    return memory.valid_from or memory.event_time
+
+
+def _require_fact_effective_time(memory: MemoryRecord) -> datetime:
+    effective_time = _fact_effective_time(memory)
+    if effective_time is None:
+        raise ValueError("fact effective time is required")
+    return effective_time
 
 
 def _require_target(decision: ETECDecision, candidates: Sequence[MemoryRecord]) -> MemoryRecord:
@@ -379,8 +605,7 @@ def _semantic_similarity(left: Sequence[float], right: Sequence[float]) -> float
     if left_norm == 0.0 or right_norm == 0.0:
         return 0.0
     dot_product = sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
+        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
     )
     return max(0.0, min(1.0, dot_product / (left_norm * right_norm)))
 
@@ -398,7 +623,7 @@ def _entity_role_keys(memory: MemoryRecord) -> set[str]:
         role = normalized_linking_key(raw_role)
         if name and role:
             keys.add(f"role:{name}:{role}")
-    slot = _fact_slot(memory)
+    slot = fact_slot_key(memory)
     if slot:
         keys.add(f"slot:{slot}")
     return keys
@@ -479,7 +704,11 @@ def _jaccard(left: set[str], right: set[str]) -> float:
 
 
 def _interval(memory: MemoryRecord) -> tuple[datetime | None, datetime | None]:
-    return (memory.valid_from or memory.event_time, memory.valid_to)
+    if memory.valid_from is not None:
+        return (memory.valid_from, memory.valid_to)
+    if memory.event_time is not None:
+        return (memory.event_time, memory.event_time)
+    return (None, memory.valid_to)
 
 
 def _intervals_overlap(
@@ -493,28 +722,21 @@ def _intervals_overlap(
     return left_start <= right_stop and right_start <= left_stop
 
 
-def _fact_slot(memory: MemoryRecord) -> str | None:
+def fact_slot_key(memory: MemoryRecord) -> str | None:
     value = memory.metadata.get("fact_slot")
-    if isinstance(value, str) and normalized_linking_key(value):
-        return normalized_linking_key(value)
-    entity_keys = sorted(
-        entity.entity_id or normalized_linking_key(entity.name)
-        for entity in memory.entities
-        if entity.entity_id or normalized_linking_key(entity.name)
-    )
-    if not entity_keys:
+    if not isinstance(value, str):
         return None
-    role_keys = sorted(normalized_linking_key(value) for value in memory.roles.values() if value)
-    return "|".join([memory.memory_kind.value, *entity_keys, *role_keys])
+    normalized = normalized_linking_key(value)
+    return normalized or None
 
 
 def _same_fact_slot(source: MemoryRecord, target: MemoryRecord) -> bool:
-    source_slot = _fact_slot(source)
-    target_slot = _fact_slot(target)
+    source_slot = fact_slot_key(source)
+    target_slot = fact_slot_key(target)
     return source_slot is not None and source_slot == target_slot
 
 
-def _fact_value(memory: MemoryRecord) -> str:
+def fact_value_key(memory: MemoryRecord) -> str:
     value = memory.metadata.get("fact_value")
     if isinstance(value, str) and normalized_linking_key(value):
         return normalized_linking_key(value)
@@ -522,7 +744,7 @@ def _fact_value(memory: MemoryRecord) -> str:
 
 
 def _same_fact_value(source: MemoryRecord, target: MemoryRecord) -> bool:
-    return _fact_value(source) == _fact_value(target)
+    return fact_value_key(source) == fact_value_key(target)
 
 
 def _memory_is_multi_valued(memory: MemoryRecord) -> bool:
@@ -583,8 +805,8 @@ def _latest_time(left: datetime | None, right: datetime | None) -> datetime | No
 
 
 def _supersession_cutoff(source: MemoryRecord, target: MemoryRecord) -> datetime:
-    cutoff = source.valid_from or source.event_time or datetime.now(UTC)
-    target_start = target.valid_from or target.event_time
+    cutoff = _require_fact_effective_time(source)
+    target_start = _fact_effective_time(target)
     if target_start is not None and cutoff < target_start:
         return target_start
     return cutoff
@@ -612,4 +834,6 @@ __all__ = [
     "ETECDecision",
     "ETECFeatureVector",
     "ETECThresholds",
+    "fact_slot_key",
+    "fact_value_key",
 ]

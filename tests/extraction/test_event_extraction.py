@@ -193,6 +193,58 @@ def test_rule_extractor_adds_turn_evidence_only_for_exact_normalized_span() -> N
     }
 
 
+def test_rule_extractor_does_not_link_inside_unicode_casefold_expansion() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="ß",
+            )
+        ],
+        event_summaries=[
+            ExtractionEventSummary(
+                session_id="session-1",
+                events={"Alice": ["s"]},
+            )
+        ],
+    )
+
+    memory = RuleEventExtractor().extract(request).candidates[0].memory
+
+    assert [evidence.source_type for evidence in memory.evidence_refs] == [
+        "event_summary"
+    ]
+
+
+def test_rule_extractor_links_complete_unicode_casefold_expansion() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="ß",
+            )
+        ],
+        event_summaries=[
+            ExtractionEventSummary(
+                session_id="session-1",
+                events={"Alice": ["SS"]},
+            )
+        ],
+    )
+
+    memory = RuleEventExtractor().extract(request).candidates[0].memory
+
+    turn_evidence = memory.evidence_refs[1]
+    assert turn_evidence.quote == "ß"
+    assert turn_evidence.quote.casefold() == memory.content.casefold()
+
+
 def test_rule_extractor_falls_back_to_exact_turn_candidates() -> None:
     timestamp = datetime(2025, 2, 3, 4, 5, tzinfo=UTC)
     request = ExtractionInput(

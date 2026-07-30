@@ -267,11 +267,35 @@ def _exact_normalized_span(needle: str, haystack: str) -> tuple[int, int] | None
     normalized_haystack, starts, ends = _normalized_text_with_positions(haystack)
     if not normalized_needle:
         return None
-    normalized_start = normalized_haystack.find(normalized_needle)
-    if normalized_start < 0:
-        return None
-    normalized_end = normalized_start + len(normalized_needle)
-    return starts[normalized_start], ends[normalized_end - 1]
+
+    search_from = 0
+    while True:
+        normalized_start = normalized_haystack.find(normalized_needle, search_from)
+        if normalized_start < 0:
+            return None
+        normalized_end = normalized_start + len(normalized_needle)
+        starts_inside_expansion = (
+            normalized_start > 0
+            and starts[normalized_start] == starts[normalized_start - 1]
+            and ends[normalized_start] == ends[normalized_start - 1]
+        )
+        ends_inside_expansion = (
+            normalized_end < len(normalized_haystack)
+            and starts[normalized_end - 1] == starts[normalized_end]
+            and ends[normalized_end - 1] == ends[normalized_end]
+        )
+        start_char = starts[normalized_start]
+        end_char = ends[normalized_end - 1]
+        normalized_quote, _, _ = _normalized_text_with_positions(
+            haystack[start_char:end_char]
+        )
+        if (
+            not starts_inside_expansion
+            and not ends_inside_expansion
+            and normalized_quote == normalized_needle
+        ):
+            return start_char, end_char
+        search_from = normalized_start + 1
 
 
 def _deduplicate_candidates(

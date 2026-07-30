@@ -593,6 +593,55 @@ def test_duplicate_same_name_entity_occurrences_have_unique_candidate_ids() -> N
     assert len(set(candidate_ids)) == 4
 
 
+def test_inactive_sources_short_circuit_before_index_or_embedding_calls() -> None:
+    source, existing, _ = _fixture_records()
+    target = existing[0]
+
+    for status in (
+        MemoryStatus.DELETED,
+        MemoryStatus.SUPERSEDED,
+        MemoryStatus.REJECTED,
+    ):
+        inactive_source = source.model_copy(
+            update={
+                "status": status,
+                "superseded_by": (target.memory_id if status is MemoryStatus.SUPERSEDED else None),
+            }
+        )
+        candidate_index = FakeEmbeddingCandidateIndex(
+            entity_refs=[
+                linking_module.EntityCandidateTargetRef(
+                    memory_id=target.memory_id,
+                    entity_position=0,
+                )
+            ],
+            event_ids=[target.memory_id],
+        )
+        embedding_model = CountingEmbeddingModel()
+
+        result = LinkCandidateGenerator(
+            embedding_model,
+            candidate_index=candidate_index,
+        ).generate(
+            CandidateGenerationRequest(
+                source=inactive_source,
+                existing=[target],
+                max_entity_candidates=1,
+                max_event_candidates=1,
+            )
+        )
+
+        assert result.entity_candidates == []
+        assert result.event_candidates == []
+        assert result.entity_comparison_count == 0
+        assert result.event_comparison_count == 0
+        assert result.embedding_model_id == embedding_model.model_id
+        assert result.latency_ms >= 0.0
+        assert candidate_index.entity_queries == []
+        assert candidate_index.event_queries == []
+        assert embedding_model.calls == 0
+
+
 def test_fallback_reason_does_not_claim_corpus_wide_embedding_retrieval() -> None:
     source, existing, _ = _fixture_records()
     unrelated = existing[0].model_copy(

@@ -137,6 +137,16 @@ class LinkCandidateGenerator:
 
     def generate(self, request: CandidateGenerationRequest) -> CandidateGenerationResult:
         started = perf_counter()
+        if request.source.status is not MemoryStatus.ACTIVE:
+            return CandidateGenerationResult(
+                entity_candidates=[],
+                event_candidates=[],
+                latency_ms=(perf_counter() - started) * 1000.0,
+                embedding_model_id=self._embedding_model.model_id,
+                entity_comparison_count=0,
+                event_comparison_count=0,
+            )
+
         indexes = _build_request_indexes(request)
         entity_pool = _entity_comparison_pool(
             request,

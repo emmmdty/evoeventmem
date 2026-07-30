@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -20,6 +23,8 @@ from evoeventmem.services.memory_service import (
     MemoryWriteRequest,
     RawObservationLink,
 )
+
+_FAKE_STORAGE_SECRET = "postgres://admin:swordfish@memory-db"
 
 
 def _event_memory(*, content: str = "Caroline joined a support group.") -> MemoryRecord:
@@ -56,7 +61,7 @@ class _FailingSecondAddTransaction:
     def add(self, memory: MemoryRecord) -> MemoryRecord:
         self._add_count += 1
         if self._add_count == 2:
-            raise RuntimeError("injected storage failure")
+            raise RuntimeError(_FAKE_STORAGE_SECRET)
         return self._repository.add(memory)
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
@@ -293,6 +298,301 @@ def test_candidate_identity_distinguishes_memory_semantics(
 
 
 @pytest.mark.parametrize(
+    ("first_updates", "second_updates"),
+    [
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="Turn",
+                        source_id="D1:1",
+                        locator="chars=0:43",
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        locator="chars=0:43",
+                    )
+                ]
+            },
+        ),
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:Turn-A",
+                        locator="chars=0:43",
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:turn-a",
+                        locator="chars=0:43",
+                    )
+                ]
+            },
+        ),
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        locator="Chars=0:43",
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        locator="chars=0:43",
+                    )
+                ]
+            },
+        ),
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        quote="Exact Quote",
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        quote="exact quote",
+                    )
+                ]
+            },
+        ),
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        metadata={"opaque_id": "Dataset:Sample-A"},
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        metadata={"opaque_id": "dataset:sample-a"},
+                    )
+                ]
+            },
+        ),
+        (
+            {"entities": [EntityRef(entity_id="Person-A", name="Caroline")]},
+            {"entities": [EntityRef(entity_id="person-a", name="Caroline")]},
+        ),
+        (
+            {"entities": [EntityRef(name="Caroline", kind="Person")]},
+            {"entities": [EntityRef(name="Caroline", kind="person")]},
+        ),
+        (
+            {"entities": [EntityRef(name="Caroline", role="Participant")]},
+            {"entities": [EntityRef(name="Caroline", role="participant")]},
+        ),
+        (
+            {
+                "relations": [
+                    RelationRef(source="Person-A", predicate="joined", target="Group-A")
+                ]
+            },
+            {
+                "relations": [
+                    RelationRef(source="person-a", predicate="joined", target="Group-A")
+                ]
+            },
+        ),
+        (
+            {
+                "relations": [
+                    RelationRef(source="Person-A", predicate="Joined", target="Group-A")
+                ]
+            },
+            {
+                "relations": [
+                    RelationRef(source="Person-A", predicate="joined", target="Group-A")
+                ]
+            },
+        ),
+        (
+            {
+                "relations": [
+                    RelationRef(source="Person-A", predicate="joined", target="Group-A")
+                ]
+            },
+            {
+                "relations": [
+                    RelationRef(source="Person-A", predicate="joined", target="group-a")
+                ]
+            },
+        ),
+        (
+            {"roles": {"Person-A": "participant"}},
+            {"roles": {"person-a": "participant"}},
+        ),
+        (
+            {"roles": {"Person-A": "Participant"}},
+            {"roles": {"Person-A": "participant"}},
+        ),
+        (
+            {"metadata": {"fact_slot": "Profile.City", "fact_value": "Taipei"}},
+            {"metadata": {"fact_slot": "profile.city", "fact_value": "Taipei"}},
+        ),
+        (
+            {"metadata": {"fact_slot": "profile.city", "fact_value": "Taipei"}},
+            {"metadata": {"fact_slot": "profile.city", "fact_value": "taipei"}},
+        ),
+        (
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        metadata={"ordered": ["first", "second"]},
+                    )
+                ]
+            },
+            {
+                "evidence_refs": [
+                    EvidenceRef(
+                        source_type="turn",
+                        source_id="D1:1",
+                        metadata={"ordered": ["second", "first"]},
+                    )
+                ]
+            },
+        ),
+    ],
+    ids=[
+        "evidence-source-type",
+        "evidence-source-id",
+        "evidence-locator",
+        "evidence-quote",
+        "evidence-metadata",
+        "entity-id",
+        "entity-kind",
+        "entity-role",
+        "relation-source",
+        "relation-predicate",
+        "relation-target",
+        "role-key",
+        "role-value",
+        "fact-slot",
+        "fact-value",
+        "ordered-list",
+    ],
+)
+def test_opaque_identity_values_remain_distinct(
+    first_updates: dict[str, object],
+    second_updates: dict[str, object],
+) -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-opaque-identities",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-1",
+                    memory=_event_memory().model_copy(update=first_updates),
+                    extractor_version="rule.v1",
+                ),
+                MemoryWriteCandidate(
+                    candidate_id="cand-2",
+                    memory=_event_memory().model_copy(update=second_updates),
+                    extractor_version="rule.v1",
+                ),
+            ],
+        )
+    )
+
+    assert len(repository.list_for_user("u1")) == 2
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+
+
+def test_unordered_metadata_is_stable_across_python_hash_seeds() -> None:
+    script = """
+from evoeventmem.domain.models import EvidenceRef, MemoryRecord
+from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
+from evoeventmem.services.memory_service import (
+    MemoryService,
+    MemoryWriteCandidate,
+    MemoryWriteRequest,
+)
+
+memory = MemoryRecord(
+    user_id="u1",
+    content="Stable metadata identity.",
+    evidence_refs=[
+        EvidenceRef(
+            source_type="turn",
+            source_id="D1:1",
+            metadata={
+                "unordered": {
+                    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+                    "golf", "hotel", "india", "juliet", "kilo", "lima",
+                },
+                "nested": {
+                    "frozen": frozenset({"red", "green", "blue", "yellow"}),
+                },
+                "ordered": ["first", "second"],
+            },
+        )
+    ],
+)
+result = MemoryService(InMemoryMemoryRepository()).write_extracted_events(
+    MemoryWriteRequest(
+        request_id="req-seed",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-seed",
+                memory=memory,
+                extractor_version="rule.v1",
+            )
+        ],
+    )
+)
+print(result.decisions[0].idempotency_key)
+"""
+    keys = {
+        subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+        ).stdout.strip()
+        for seed in (1, 2, 3)
+    }
+
+    assert len(keys) == 1
+
+
+@pytest.mark.parametrize(
     ("first_scope", "second_scope"),
     [
         (
@@ -400,18 +700,20 @@ def test_exact_retry_canonicalizes_entity_role_and_relation_order() -> None:
     )
     retry_memory = _event_memory().model_copy(
         update={
-            "entities": list(reversed(first_memory.entities)),
+            "entities": [
+                EntityRef(
+                    entity_id="person",
+                    name=" caroline ",
+                    role="participant",
+                ),
+                EntityRef(
+                    entity_id="group",
+                    name=" support   group ",
+                    role="location",
+                ),
+            ],
             "roles": {"group": "location", "person": "participant"},
             "relations": list(reversed(first_memory.relations)),
-            "evidence_refs": [
-                EvidenceRef(
-                    source_type=" TURN ",
-                    source_id=" d1:1 ",
-                    locator=" CHARS=0:43 ",
-                    quote="  i WENT to an lgbtq support group yesterday. ",
-                    metadata={"speaker": " caroline "},
-                )
-            ],
         }
     )
 
@@ -603,6 +905,14 @@ def test_storage_failure_rolls_back_and_rejects_all_writable_candidates() -> Non
         and decision.failure_category is MemoryWriteFailureCategory.STORAGE_FAILED
         and decision.memory_id is None
         for decision in result.decisions
+    )
+    assert {
+        decision.reason for decision in result.decisions
+    } == {"memory storage transaction failed"}
+    assert _FAKE_STORAGE_SECRET not in result.model_dump_json()
+    assert _FAKE_STORAGE_SECRET not in "".join(
+        decision.model_dump_json()
+        for decision in service.list_write_decisions("req-storage-failure")
     )
 
 

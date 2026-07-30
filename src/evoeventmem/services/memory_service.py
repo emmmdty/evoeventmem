@@ -3,17 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, ValidationError
+from pydantic_core import to_jsonable_python
 
 from evoeventmem.core.ports import MemoryRepository
 from evoeventmem.domain.models import EvidenceRef, MemoryRecord, MemorySearchHit
 
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
+_STORAGE_FAILURE_REASON = "memory storage transaction failed"
 
 
 def _tokens(text: str) -> set[str]:
@@ -198,14 +200,14 @@ class MemoryService:
                 for prepared in pending_writes:
                     memory = transaction.add(prepared.memory)
                     accepted_pairs.append((prepared, memory))
-        except Exception as exc:
+        except Exception:
             decisions: list[MemoryWriteDecision] = []
             decisions.extend(
                 MemoryWriteDecision(
                     request_id=request.request_id,
                     candidate_id=prepared.candidate.candidate_id,
                     status=MemoryWriteDecisionStatus.REJECTED,
-                    reason=f"repository transaction failed: {exc}",
+                    reason=_STORAGE_FAILURE_REASON,
                     idempotency_key=prepared.idempotency_key,
                     failure_category=MemoryWriteFailureCategory.STORAGE_FAILED,
                     evidence_refs=list(prepared.memory.evidence_refs),
@@ -332,16 +334,21 @@ def _normalized_text(value: str) -> str:
 
 
 def _canonical_json_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return _normalized_text(value)
-    if isinstance(value, dict):
+    if isinstance(value, BaseModel):
+        return _canonical_json_value(value.model_dump(mode="python"))
+    if isinstance(value, Mapping):
         return {
             str(key): _canonical_json_value(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
-    if isinstance(value, list):
+    if isinstance(value, set | frozenset):
+        return sorted(
+            (_canonical_json_value(item) for item in value),
+            key=_canonical_sort_key,
+        )
+    if isinstance(value, list | tuple):
         return [_canonical_json_value(item) for item in value]
-    return value
+    return to_jsonable_python(value)
 
 
 def _canonical_sort_key(value: Any) -> str:
@@ -349,33 +356,46 @@ def _canonical_sort_key(value: Any) -> str:
 
 
 def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
-    serialized = memory.model_dump(mode="json")
-    metadata = serialized["metadata"]
+    temporal = memory.model_dump(
+        mode="json",
+        include={"event_time", "valid_from", "valid_to"},
+    )
     return {
-        "memory_kind": serialized["memory_kind"],
+        "memory_kind": memory.memory_kind.value,
         "normalized_content": _normalized_text(memory.normalized_content or memory.content),
-        "event_time": serialized["event_time"],
-        "valid_from": serialized["valid_from"],
-        "valid_to": serialized["valid_to"],
+        "event_time": temporal["event_time"],
+        "valid_from": temporal["valid_from"],
+        "valid_to": temporal["valid_to"],
         "entities": sorted(
-            (_canonical_json_value(entity) for entity in serialized["entities"]),
+            (
+                {
+                    "entity_id": entity.entity_id,
+                    "name": _normalized_text(entity.name),
+                    "kind": entity.kind,
+                    "role": entity.role,
+                }
+                for entity in memory.entities
+            ),
             key=_canonical_sort_key,
         ),
         "roles": sorted(
             (
-                [_normalized_text(role_key), _normalized_text(role_value)]
-                for role_key, role_value in serialized["roles"].items()
+                [role_key, role_value]
+                for role_key, role_value in memory.roles.items()
             ),
             key=_canonical_sort_key,
         ),
         "relations": sorted(
-            (_canonical_json_value(relation) for relation in serialized["relations"]),
+            (
+                relation.model_dump(mode="json")
+                for relation in memory.relations
+            ),
             key=_canonical_sort_key,
         ),
         "fact_metadata": {
             field: {
-                "present": field in metadata,
-                "value": _canonical_json_value(metadata.get(field)),
+                "present": field in memory.metadata,
+                "value": _canonical_json_value(memory.metadata.get(field)),
             }
             for field in ("fact_slot", "fact_value", "multi_valued")
         },
@@ -403,7 +423,13 @@ def _duplicate_decision(
 def _idempotency_key(memory: MemoryRecord, extractor_version: str) -> str:
     evidence_payload = sorted(
         (
-            _canonical_json_value(ref.model_dump(mode="json"))
+            {
+                "source_type": ref.source_type,
+                "source_id": ref.source_id,
+                "locator": ref.locator,
+                "quote": ref.quote,
+                "metadata": _canonical_json_value(ref.metadata),
+            }
             for ref in memory.evidence_refs
         ),
         key=_canonical_sort_key,

@@ -30,9 +30,11 @@ class StaticJSONChatModel:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
         self.calls = 0
+        self.requests: list[list[ChatMessage]] = []
 
     def generate(self, messages: Sequence[ChatMessage]) -> ChatResponse:
         self.calls += 1
+        self.requests.append(list(messages))
         prompt = "\n".join(message.content for message in messages)
         return ChatResponse(
             text=json.dumps(self.payload),
@@ -109,6 +111,115 @@ def test_llm_extractor_rejects_hallucinated_evidence_with_structured_error() -> 
     assert error.code == "unknown_turn_id"
     assert error.source_turn_id == "D1:99"
     assert error.event_index == 0
+
+
+def test_llm_extractor_rejects_ambiguous_local_turn_id_without_session() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-a",
+                speaker="Alice",
+                content="same fact",
+            ),
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-b",
+                speaker="Alice",
+                content="same fact",
+            ),
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "same fact",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 4,
+                            "quote": "same",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(EvidenceValidationError) as exc_info:
+        LLMEventExtractor(model).extract(request)
+
+    error = exc_info.value.errors[0]
+    assert error.code == "ambiguous_turn_id"
+    assert error.source_turn_id == "turn-1"
+    assert error.source_session_id is None
+
+
+def test_llm_extractor_resolves_duplicate_turn_id_by_session_independent_of_order() -> None:
+    first_turn = ExtractionTurn(
+        turn_id="turn-1",
+        session_id="session-a",
+        speaker="Alice",
+        content="alpha fact",
+    )
+    second_turn = ExtractionTurn(
+        turn_id="turn-1",
+        session_id="session-b",
+        speaker="Bob",
+        content="beta fact",
+    )
+
+    def extract(
+        turns: list[ExtractionTurn],
+    ) -> tuple[object, dict[str, object]]:
+        model = StaticJSONChatModel(
+            {
+                "events": [
+                    {
+                        "content": "alpha fact",
+                        "speaker": "Alice",
+                        "entities": ["Alice"],
+                        "evidence": [
+                            {
+                                "source_turn_id": "turn-1",
+                                "source_session_id": "session-a",
+                                "start_char": 0,
+                                "end_char": 10,
+                                "quote": "alpha fact",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        request = ExtractionInput(
+            user_id="u1",
+            dataset="dataset-a",
+            sample_id="sample-a",
+            turns=turns,
+        )
+        result = LLMEventExtractor(model).extract(request)
+        prompt = json.loads(model.requests[0][1].content)
+        return result.candidates[0].memory.evidence_refs[0], prompt
+
+    forward_evidence, prompt = extract([first_turn, second_turn])
+    reverse_evidence, _ = extract([second_turn, first_turn])
+
+    assert forward_evidence == reverse_evidence
+    assert forward_evidence.source_id == (
+        "dataset=dataset-a/sample=sample-a/session=session-a/turn=turn-1"
+    )
+    assert forward_evidence.quote == "alpha fact"
+    evidence_schema = prompt["schema"]["events"][0]["evidence"][0]
+    assert "source_session_id" in evidence_schema
+    assert any(
+        "duplicate turn_id" in constraint for constraint in prompt["constraints"]
+    )
 
 
 def test_llm_extractor_caches_requests_and_raw_outputs(tmp_path: Path) -> None:
@@ -301,6 +412,62 @@ def test_rule_extractor_creates_deterministic_exact_observation_candidates() -> 
         "raw_observation_id": "0",
     }
     assert second.candidates[0].memory.evidence_refs[0] == evidence
+
+
+def test_normalized_locomo_observation_mapping_preserves_scoped_identity(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(
+        (FIXTURES / "locomo/locomo_tiny.json").read_text(encoding="utf-8")
+    )
+    payload[0]["observation"] = {
+        "session_1_observation": {
+            "Caroline": [
+                ["Caroline joined a support group.", "D1:1"],
+                ["Caroline felt accepted there.", "D1:1"],
+            ]
+        }
+    }
+    fixture_path = tmp_path / "locomo_with_observations.json"
+    fixture_path.write_text(json.dumps(payload), encoding="utf-8")
+    record = next(iter_locomo_records(fixture_path))
+
+    request = ExtractionInput.from_normalized_record(record, user_id="u1")
+
+    assert [observation.content for observation in request.observations] == [
+        "Caroline joined a support group.",
+        "Caroline felt accepted there.",
+    ]
+    assert [observation.observation_id for observation in request.observations] == [
+        "D1:1",
+        "D1:1",
+    ]
+    assert [observation.index for observation in request.observations] == [0, 1]
+    assert [observation.session_id for observation in request.observations] == [
+        "session_1",
+        "session_1",
+    ]
+
+    result = RuleEventExtractor().extract(request)
+    observation_evidence = [
+        candidate.memory.evidence_refs[0]
+        for candidate in result.candidates
+        if candidate.memory.evidence_refs[0].source_type == "observation"
+    ]
+    assert [evidence.source_id for evidence in observation_evidence] == [
+        "dataset=locomo/sample=conv-tiny/session=session_1/"
+        "observation=D1%3A1/index=0",
+        "dataset=locomo/sample=conv-tiny/session=session_1/"
+        "observation=D1%3A1/index=1",
+    ]
+    assert observation_evidence[0].metadata == {
+        "dataset": "locomo",
+        "sample_id": "conv-tiny",
+        "session_id": "session_1",
+        "raw_observation_id": "D1:1",
+        "raw_observation_index": 0,
+        "speaker": "Caroline",
+    }
 
 
 def test_rule_extractor_keeps_observations_distinct_from_summary_candidates() -> None:

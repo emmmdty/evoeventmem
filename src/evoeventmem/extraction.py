@@ -28,6 +28,84 @@ class ExtractionEventSummary(BaseModel):
     events: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class ExtractionObservation(BaseModel):
+    content: str = Field(min_length=1)
+    observation_id: str | None = None
+    index: int = Field(ge=0)
+    session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _coerce_observation_sequence(value: object) -> object:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return value
+    coerced: list[object] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            coerced.append({"content": item, "index": index})
+        elif isinstance(item, Mapping) and "index" not in item:
+            coerced.append({**item, "index": index})
+        else:
+            coerced.append(item)
+    return coerced
+
+
+def _observations_from_metadata(
+    metadata: Mapping[str, object],
+) -> list[ExtractionObservation]:
+    raw_mapping = metadata.get("observation")
+    if isinstance(raw_mapping, Mapping) and raw_mapping:
+        observations: list[ExtractionObservation] = []
+        for raw_session_key, raw_speakers in sorted(
+            raw_mapping.items(), key=lambda item: str(item[0])
+        ):
+            if not isinstance(raw_speakers, Mapping):
+                continue
+            session_key = str(raw_session_key)
+            session_id = session_key.removesuffix("_observation")
+            local_index = 0
+            for raw_speaker, raw_items in sorted(
+                raw_speakers.items(), key=lambda item: str(item[0])
+            ):
+                if not isinstance(raw_items, Sequence) or isinstance(
+                    raw_items, (str, bytes)
+                ):
+                    continue
+                for raw_item in raw_items:
+                    observation_id: str | None = None
+                    if isinstance(raw_item, str):
+                        content = raw_item
+                    elif isinstance(raw_item, Sequence) and not isinstance(
+                        raw_item, (str, bytes)
+                    ) and raw_item:
+                        content = str(raw_item[0])
+                        if len(raw_item) > 1 and raw_item[1] is not None:
+                            observation_id = str(raw_item[1])
+                    else:
+                        continue
+                    observations.append(
+                        ExtractionObservation(
+                            content=content,
+                            observation_id=observation_id,
+                            index=local_index,
+                            session_id=session_id,
+                            metadata={"speaker": str(raw_speaker)},
+                        )
+                    )
+                    local_index += 1
+        return observations
+
+    raw_sequence = raw_mapping
+    if not isinstance(raw_sequence, Sequence) or isinstance(
+        raw_sequence, (str, bytes)
+    ):
+        raw_sequence = metadata.get("observations", [])
+    coerced = _coerce_observation_sequence(raw_sequence)
+    if not isinstance(coerced, Sequence) or isinstance(coerced, (str, bytes)):
+        return []
+    return [ExtractionObservation.model_validate(item) for item in coerced]
+
+
 class ExtractionInput(BaseModel):
     schema_version: Literal["event-extraction-input.v1"] = "event-extraction-input.v1"
     user_id: str = Field(min_length=1)
@@ -36,7 +114,12 @@ class ExtractionInput(BaseModel):
     dataset: str | None = None
     turns: list[ExtractionTurn] = Field(default_factory=list)
     event_summaries: list[ExtractionEventSummary] = Field(default_factory=list)
-    observations: list[str] = Field(default_factory=list)
+    observations: list[ExtractionObservation] = Field(default_factory=list)
+
+    @field_validator("observations", mode="before")
+    @classmethod
+    def coerce_observations(cls, value: object) -> object:
+        return _coerce_observation_sequence(value)
 
     @classmethod
     def from_normalized_record(cls, record: Any, *, user_id: str) -> ExtractionInput:
@@ -70,17 +153,13 @@ class ExtractionInput(BaseModel):
             for summary in getattr(record, "event_summaries", [])
         ]
         metadata = cast(Mapping[str, object], getattr(record, "metadata", {}))
-        observations = [
-            str(value)
-            for value in cast(Sequence[object], metadata.get("observations", []))
-        ]
         return cls(
             user_id=user_id,
             sample_id=str(getattr(record, "sample_id", "")) or None,
             dataset=str(getattr(record, "dataset", "")) or None,
             turns=turns,
             event_summaries=event_summaries,
-            observations=observations,
+            observations=_observations_from_metadata(metadata),
         )
 
 
@@ -98,9 +177,15 @@ class ExtractionResult(BaseModel):
 
 
 class EvidenceReferenceError(BaseModel):
-    code: Literal["unknown_turn_id", "invalid_span", "quote_mismatch"]
+    code: Literal[
+        "unknown_turn_id",
+        "ambiguous_turn_id",
+        "invalid_span",
+        "quote_mismatch",
+    ]
     event_index: int
     source_turn_id: str
+    source_session_id: str | None = None
     start_char: int | None = None
     end_char: int | None = None
     quote: str | None = None
@@ -116,6 +201,7 @@ class EvidenceValidationError(ValueError):
 
 class _EvidenceDraft(BaseModel):
     source_turn_id: str = Field(min_length=1)
+    source_session_id: str | None = None
     start_char: int = Field(ge=0)
     end_char: int = Field(gt=0)
     quote: str = Field(min_length=1)
@@ -229,19 +315,33 @@ def _turn_evidence(
 
 def _observation_evidence(
     request: ExtractionInput,
-    *,
-    observation_index: int,
-    observation: str,
+    observation: ExtractionObservation,
 ) -> EvidenceRef:
+    raw_observation_id = observation.observation_id or str(observation.index)
+    scope_parts: list[str] = []
+    if observation.session_id is not None:
+        scope_parts.extend(("session", observation.session_id))
+    scope_parts.extend(("observation", raw_observation_id))
+    if observation.observation_id is not None:
+        scope_parts.extend(("index", str(observation.index)))
+    metadata: dict[str, Any] = {
+        **observation.metadata,
+        **_evidence_metadata(request, session_id=observation.session_id),
+        "raw_observation_id": raw_observation_id,
+    }
+    if observation.observation_id is not None:
+        metadata["raw_observation_index"] = observation.index
+    locator = (
+        f"observations[{observation.session_id}][{observation.index}]"
+        if observation.session_id is not None
+        else f"observations[{observation.index}]"
+    )
     return EvidenceRef(
         source_type="observation",
-        source_id=_evidence_scope(request, "observation", str(observation_index)),
-        locator=f"observations[{observation_index}]",
-        quote=observation,
-        metadata={
-            **_evidence_metadata(request, session_id=None),
-            "raw_observation_id": str(observation_index),
-        },
+        source_id=_evidence_scope(request, *scope_parts),
+        locator=locator,
+        quote=observation.content,
+        metadata=metadata,
     )
 
 
@@ -392,25 +492,19 @@ class RuleEventExtractor:
                     )
                 )
 
-        for observation_index, observation in enumerate(request.observations):
-            if not observation.strip():
+        for observation in request.observations:
+            if not observation.content.strip():
                 continue
             candidates.append(
                 ExtractedEventCandidate(
                     memory=_build_memory(
                         request=request,
-                        content=observation,
+                        content=observation.content,
                         speaker=None,
                         entity_names=[],
-                        evidence_refs=[
-                            _observation_evidence(
-                                request,
-                                observation_index=observation_index,
-                                observation=observation,
-                            )
-                        ],
-                        event_time=_parse_event_time(observation),
-                        session_id=None,
+                        evidence_refs=[_observation_evidence(request, observation)],
+                        event_time=_parse_event_time(observation.content),
+                        session_id=observation.session_id,
                         prompt_version=self.PROMPT_VERSION,
                     ),
                     prompt_version=self.PROMPT_VERSION,
@@ -487,6 +581,9 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
                     "evidence": [
                         {
                             "source_turn_id": "existing turn_id",
+                            "source_session_id": (
+                                "existing session_id or null when turn_id is unique"
+                            ),
                             "start_char": 0,
                             "end_char": 10,
                             "quote": "exact substring",
@@ -498,6 +595,7 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
         "constraints": [
             "Return only JSON.",
             "Every evidence reference must use one of the provided turn_id values.",
+            "Provide source_session_id whenever duplicate turn_id values exist.",
             "Every quote must exactly match content[start_char:end_char].",
         ],
         "sample_id": request.sample_id,
@@ -511,7 +609,9 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             }
             for turn in request.turns
         ],
-        "observations": request.observations,
+        "observations": [
+            observation.model_dump(mode="json") for observation in request.observations
+        ],
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
@@ -521,33 +621,67 @@ def _validate_evidence(
     event_index: int,
     evidence: Sequence[_EvidenceDraft],
 ) -> list[EvidenceRef]:
-    turn_by_id = {turn.turn_id: turn for turn in request.turns}
+    turns_by_id: dict[str, list[ExtractionTurn]] = {}
+    for turn in request.turns:
+        turns_by_id.setdefault(turn.turn_id, []).append(turn)
+
     errors: list[EvidenceReferenceError] = []
     refs: list[EvidenceRef] = []
     for draft in evidence:
-        turn = turn_by_id.get(draft.source_turn_id)
-        if turn is None:
+        matching_turns = turns_by_id.get(draft.source_turn_id, [])
+        if draft.source_session_id is not None:
+            matching_turns = [
+                turn
+                for turn in matching_turns
+                if turn.session_id == draft.source_session_id
+            ]
+        if not matching_turns:
             errors.append(
                 EvidenceReferenceError(
                     code="unknown_turn_id",
                     event_index=event_index,
                     source_turn_id=draft.source_turn_id,
+                    source_session_id=draft.source_session_id,
                     start_char=draft.start_char,
                     end_char=draft.end_char,
                     quote=draft.quote,
                     message=(
                         f"event {event_index} references unknown turn_id "
                         f"{draft.source_turn_id}"
+                        + (
+                            f" in session {draft.source_session_id}"
+                            if draft.source_session_id is not None
+                            else ""
+                        )
                     ),
                 )
             )
             continue
+        if len(matching_turns) > 1:
+            errors.append(
+                EvidenceReferenceError(
+                    code="ambiguous_turn_id",
+                    event_index=event_index,
+                    source_turn_id=draft.source_turn_id,
+                    source_session_id=draft.source_session_id,
+                    start_char=draft.start_char,
+                    end_char=draft.end_char,
+                    quote=draft.quote,
+                    message=(
+                        f"event {event_index} references ambiguous turn_id "
+                        f"{draft.source_turn_id}; source_session_id is required"
+                    ),
+                )
+            )
+            continue
+        turn = matching_turns[0]
         if draft.start_char >= draft.end_char or draft.end_char > len(turn.content):
             errors.append(
                 EvidenceReferenceError(
                     code="invalid_span",
                     event_index=event_index,
                     source_turn_id=draft.source_turn_id,
+                    source_session_id=draft.source_session_id,
                     start_char=draft.start_char,
                     end_char=draft.end_char,
                     quote=draft.quote,
@@ -562,6 +696,7 @@ def _validate_evidence(
                     code="quote_mismatch",
                     event_index=event_index,
                     source_turn_id=draft.source_turn_id,
+                    source_session_id=draft.source_session_id,
                     start_char=draft.start_char,
                     end_char=draft.end_char,
                     quote=draft.quote,
@@ -682,6 +817,7 @@ __all__ = [
     "ExtractedEventCandidate",
     "ExtractionEventSummary",
     "ExtractionInput",
+    "ExtractionObservation",
     "ExtractionResult",
     "ExtractionTurn",
     "LLMEventExtractor",

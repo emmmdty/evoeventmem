@@ -159,7 +159,6 @@ class MemoryService:
                 metrics=metrics,
             )
 
-        persistent_duplicate_indexes: set[int] = set()
         persistent_duplicate_decisions: list[MemoryWriteDecision] = []
         batch_duplicate_decisions: list[MemoryWriteDecision] = []
         accepted_pairs: list[tuple[_PreparedWrite, MemoryRecord]] = []
@@ -167,22 +166,26 @@ class MemoryService:
         try:
             with self._repository.transaction() as transaction:
                 pending_writes: list[_PreparedWrite] = []
-                seen_keys: dict[str, UUID] = {}
+                seen_keys: dict[tuple[str | None, str, str], UUID] = {}
 
-                for index, prepared in enumerate(prepared_candidates):
+                for prepared in prepared_candidates:
                     existing = self._find_by_idempotency_key(
                         transaction,
                         prepared.memory,
                         prepared.idempotency_key,
                     )
                     if existing is not None:
-                        persistent_duplicate_indexes.add(index)
                         persistent_duplicate_decisions.append(
                             _duplicate_decision(request, prepared, existing.memory_id)
                         )
                         continue
 
-                    duplicate_id = seen_keys.get(prepared.idempotency_key)
+                    scoped_key = (
+                        prepared.memory.tenant_id,
+                        prepared.memory.user_id,
+                        prepared.idempotency_key,
+                    )
+                    duplicate_id = seen_keys.get(scoped_key)
                     if duplicate_id is not None:
                         batch_duplicate_decisions.append(
                             _duplicate_decision(request, prepared, duplicate_id)
@@ -190,13 +193,13 @@ class MemoryService:
                         continue
 
                     pending_writes.append(prepared)
-                    seen_keys[prepared.idempotency_key] = prepared.memory.memory_id
+                    seen_keys[scoped_key] = prepared.memory.memory_id
 
                 for prepared in pending_writes:
                     memory = transaction.add(prepared.memory)
                     accepted_pairs.append((prepared, memory))
         except Exception as exc:
-            decisions = list(persistent_duplicate_decisions)
+            decisions: list[MemoryWriteDecision] = []
             decisions.extend(
                 MemoryWriteDecision(
                     request_id=request.request_id,
@@ -209,8 +212,7 @@ class MemoryService:
                     raw_observations=prepared.raw_observations,
                     candidate_snapshot=_candidate_snapshot(prepared.candidate),
                 )
-                for index, prepared in enumerate(prepared_candidates)
-                if index not in persistent_duplicate_indexes
+                for prepared in prepared_candidates
             )
             metrics = _build_write_metrics(len(request.candidates), decisions)
             self._write_decisions.extend(decisions)

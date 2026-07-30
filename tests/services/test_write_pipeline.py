@@ -292,6 +292,62 @@ def test_candidate_identity_distinguishes_memory_semantics(
     assert result.metrics.duplicates == 0
 
 
+@pytest.mark.parametrize(
+    ("first_scope", "second_scope"),
+    [
+        (
+            {"tenant_id": "tenant-1", "user_id": "user-1"},
+            {"tenant_id": "tenant-1", "user_id": "user-2"},
+        ),
+        (
+            {"tenant_id": "tenant-1", "user_id": "user-1"},
+            {"tenant_id": "tenant-2", "user_id": "user-1"},
+        ),
+    ],
+    ids=["cross-user", "cross-tenant"],
+)
+def test_same_request_exact_candidates_in_different_scopes_are_both_stored(
+    first_scope: dict[str, object],
+    second_scope: dict[str, object],
+) -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    request = MemoryWriteRequest(
+        request_id="req-cross-scope",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-1",
+                memory=_event_memory().model_copy(update=first_scope),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-2",
+                memory=_event_memory().model_copy(update=second_scope),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+    stored = [
+        memory
+        for user_id in {str(first_scope["user_id"]), str(second_scope["user_id"])}
+        for memory in repository.list_for_user(user_id)
+    ]
+
+    assert len(stored) == 2
+    assert {(memory.tenant_id, memory.user_id) for memory in stored} == {
+        (first_scope["tenant_id"], first_scope["user_id"]),
+        (second_scope["tenant_id"], second_scope["user_id"]),
+    }
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+    assert all(
+        decision.status is MemoryWriteDecisionStatus.ACCEPTED
+        for decision in result.decisions
+    )
+
+
 def test_retrying_same_evidence_and_extractor_version_creates_no_duplicate_memory() -> None:
     repository = InMemoryMemoryRepository()
     service = MemoryService(repository)
@@ -541,6 +597,73 @@ def test_storage_failure_rolls_back_and_rejects_all_writable_candidates() -> Non
     assert result.metrics.rejected == 2
     assert result.metrics.failure_categories == {
         MemoryWriteFailureCategory.STORAGE_FAILED.value: 2
+    }
+    assert all(
+        decision.status is MemoryWriteDecisionStatus.REJECTED
+        and decision.failure_category is MemoryWriteFailureCategory.STORAGE_FAILED
+        and decision.memory_id is None
+        for decision in result.decisions
+    )
+
+
+def test_storage_failure_rejects_persistent_and_batch_duplicates_after_rollback() -> None:
+    repository = _FailingSecondAddRepository()
+    service = MemoryService(repository)
+    initial = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-existing",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-existing",
+                    memory=_event_memory(),
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+    existing_id = initial.accepted_memories[0].memory_id
+    request = MemoryWriteRequest(
+        request_id="req-storage-failure-with-duplicates",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-persistent-duplicate",
+                memory=_event_memory(),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-new-1",
+                memory=_event_memory(content="Caroline invited a friend to the group."),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-batch-duplicate",
+                memory=_event_memory(content="Caroline invited a friend to the group."),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-new-2",
+                memory=_event_memory(content="Caroline scheduled the next group meeting."),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    stored = repository.list_for_user("u1")
+    assert [memory.memory_id for memory in stored] == [existing_id]
+    assert result.accepted_memories == []
+    assert result.metrics.accepted == 0
+    assert result.metrics.duplicates == 0
+    assert result.metrics.rejected == 4
+    assert result.metrics.failure_categories == {
+        MemoryWriteFailureCategory.STORAGE_FAILED.value: 4
+    }
+    assert {decision.candidate_id for decision in result.decisions} == {
+        "cand-persistent-duplicate",
+        "cand-new-1",
+        "cand-batch-duplicate",
+        "cand-new-2",
     }
     assert all(
         decision.status is MemoryWriteDecisionStatus.REJECTED

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -12,7 +13,9 @@ from evoeventmem.core.ports import ChatMessage, ChatResponse
 from evoeventmem.domain.models import MemoryKind
 from evoeventmem.extraction import (
     EvidenceValidationError,
+    ExtractionEventSummary,
     ExtractionInput,
+    ExtractionTurn,
     LLMEventExtractor,
     RuleEventExtractor,
 )
@@ -46,17 +49,32 @@ def test_rule_extractor_preserves_fixture_speaker_entity_time_and_evidence() -> 
     result = RuleEventExtractor().extract(request)
 
     memory = result.candidates[0].memory
-    evidence = memory.evidence_refs[0]
     assert memory.memory_kind is MemoryKind.EVENT
     assert memory.content == "Caroline went to an LGBTQ support group on 7 May 2023."
     assert memory.entities[0].name == "Caroline"
     assert memory.entities[0].role == "speaker"
     assert memory.roles == {"Caroline": "speaker"}
     assert memory.event_time == datetime(2023, 5, 7, tzinfo=UTC)
-    assert evidence.source_type == "turn"
-    assert evidence.source_id == "D1:1"
-    assert evidence.locator == "chars=0:43"
-    assert evidence.quote == "I went to an LGBTQ support group yesterday."
+    assert memory.valid_from is None
+    assert memory.valid_to is None
+    assert len(memory.evidence_refs) == 1
+
+    evidence = memory.evidence_refs[0]
+    assert evidence.source_type == "event_summary"
+    assert evidence.source_id == (
+        "dataset=locomo/sample=conv-tiny/session=session_1/"
+        "event_summary=0/speaker=Caroline/event=0"
+    )
+    assert evidence.locator == "events[Caroline][0]"
+    assert evidence.quote == memory.content
+    assert evidence.metadata == {
+        "dataset": "locomo",
+        "sample_id": "conv-tiny",
+        "session_id": "session_1",
+        "raw_summary_id": "0",
+        "raw_event_id": "0",
+        "speaker": "Caroline",
+    }
     assert result.prompt_version == "rule.v1"
 
 
@@ -131,3 +149,184 @@ def test_llm_extractor_caches_requests_and_raw_outputs(tmp_path: Path) -> None:
     entry = json.loads(cache_files[0].read_text(encoding="utf-8"))
     assert entry["input"]["messages"][0]["content"] == LLMEventExtractor.PROMPT_VERSION
     assert entry["output"]["text"] == json.dumps(wrapped.payload)
+
+
+def test_rule_extractor_adds_turn_evidence_only_for_exact_normalized_span() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="  alice   shipped the release.  ",
+            )
+        ],
+        event_summaries=[
+            ExtractionEventSummary(
+                session_id="session-1",
+                events={"Alice": ["Alice shipped the release."]},
+            )
+        ],
+    )
+
+    memory = RuleEventExtractor().extract(request).candidates[0].memory
+
+    assert [evidence.source_type for evidence in memory.evidence_refs] == [
+        "event_summary",
+        "turn",
+    ]
+    turn_evidence = memory.evidence_refs[1]
+    assert turn_evidence.source_id == (
+        "dataset=dataset-a/sample=sample-a/session=session-1/turn=turn-1"
+    )
+    assert turn_evidence.locator == "chars=2:30"
+    assert turn_evidence.quote == "alice   shipped the release."
+    assert turn_evidence.metadata == {
+        "dataset": "dataset-a",
+        "sample_id": "sample-a",
+        "session_id": "session-1",
+        "raw_turn_id": "turn-1",
+        "speaker": "Alice",
+    }
+
+
+def test_rule_extractor_falls_back_to_exact_turn_candidates() -> None:
+    timestamp = datetime(2025, 2, 3, 4, 5, tzinfo=UTC)
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice shipped the release.",
+                timestamp=timestamp,
+            )
+        ],
+    )
+
+    result = RuleEventExtractor().extract(request)
+
+    assert len(result.candidates) == 1
+    memory = result.candidates[0].memory
+    assert memory.content == "Alice shipped the release."
+    assert memory.event_time == timestamp
+    assert memory.valid_from is None
+    assert memory.valid_to is None
+    assert memory.evidence_refs[0].source_id == (
+        "dataset=dataset-a/sample=sample-a/session=session-1/turn=turn-1"
+    )
+    assert memory.evidence_refs[0].quote == memory.content
+
+
+def test_rule_extractor_creates_deterministic_exact_observation_candidates() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        observations=["Alice deployed version 2 on 3 February 2025."],
+    )
+    extractor = RuleEventExtractor()
+
+    first = extractor.extract(request)
+    second = extractor.extract(request)
+
+    assert len(first.candidates) == 1
+    evidence = first.candidates[0].memory.evidence_refs[0]
+    assert evidence.source_type == "observation"
+    assert evidence.source_id == "dataset=dataset-a/sample=sample-a/observation=0"
+    assert evidence.locator == "observations[0]"
+    assert evidence.quote == "Alice deployed version 2 on 3 February 2025."
+    assert evidence.metadata == {
+        "dataset": "dataset-a",
+        "sample_id": "sample-a",
+        "session_id": None,
+        "raw_observation_id": "0",
+    }
+    assert second.candidates[0].memory.evidence_refs[0] == evidence
+
+
+def test_rule_extractor_keeps_observations_distinct_from_summary_candidates() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        event_summaries=[
+            ExtractionEventSummary(
+                session_id="session-1",
+                events={"Alice": ["Alice shipped the release."]},
+            )
+        ],
+        observations=["Alice monitored the rollout."],
+    )
+
+    result = RuleEventExtractor().extract(request)
+
+    assert [candidate.memory.content for candidate in result.candidates] == [
+        "Alice shipped the release.",
+        "Alice monitored the rollout.",
+    ]
+    assert [
+        candidate.memory.evidence_refs[0].source_type
+        for candidate in result.candidates
+    ] == ["event_summary", "observation"]
+
+
+def test_identical_raw_turn_ids_in_different_samples_have_distinct_evidence_ids() -> None:
+    def extract_source_id(sample_id: str) -> str:
+        request = ExtractionInput(
+            user_id="u1",
+            dataset="dataset-a",
+            sample_id=sample_id,
+            turns=[
+                ExtractionTurn(
+                    turn_id="turn-1",
+                    session_id="session-1",
+                    speaker="Alice",
+                    content="Alice shipped the release.",
+                )
+            ],
+        )
+        result = RuleEventExtractor().extract(request)
+        return result.candidates[0].memory.evidence_refs[0].source_id
+
+    assert extract_source_id("sample-a") != extract_source_id("sample-b")
+
+
+def test_rule_extractor_deduplicates_exact_turn_candidates() -> None:
+    turn = ExtractionTurn(
+        turn_id="turn-1",
+        session_id="session-1",
+        speaker="Alice",
+        content="Alice shipped the release.",
+    )
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        turns=[turn, turn.model_copy(deep=True)],
+    )
+
+    result = RuleEventExtractor().extract(request)
+
+    assert len(result.candidates) == 1
+
+
+def test_llm_extractor_documents_cached_model_gateway_requirement() -> None:
+    model = StaticJSONChatModel({"events": []})
+    extractor = LLMEventExtractor(model)
+
+    first = extractor.extract(ExtractionInput(user_id="u1"))
+    second = extractor.extract(ExtractionInput(user_id="u1"))
+    documentation = inspect.getdoc(LLMEventExtractor)
+
+    assert first.cache_key is None
+    assert second.cache_key is None
+    assert model.calls == 2
+    assert documentation is not None
+    assert "CachedChatModel" in documentation

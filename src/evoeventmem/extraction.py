@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -141,29 +142,196 @@ class _LLMExtractionPayload(BaseModel):
     events: list[_EventDraft] = Field(default_factory=list)
 
 
+def _evidence_scope(request: ExtractionInput, *parts: str) -> str:
+    scope_parts: list[str] = []
+    if request.dataset is not None:
+        scope_parts.extend(("dataset", request.dataset))
+    if request.sample_id is not None:
+        scope_parts.extend(("sample", request.sample_id))
+    scope_parts.extend(parts)
+    return "/".join(
+        f"{quote(key, safe='')}={quote(value, safe='')}"
+        for key, value in zip(scope_parts[::2], scope_parts[1::2], strict=True)
+    )
+
+
+def _evidence_metadata(
+    request: ExtractionInput,
+    *,
+    session_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "dataset": request.dataset,
+        "sample_id": request.sample_id,
+        "session_id": session_id,
+    }
+
+
+def _summary_evidence(
+    request: ExtractionInput,
+    *,
+    summary: ExtractionEventSummary,
+    summary_index: int,
+    speaker: str,
+    event_index: int,
+    event: str,
+) -> EvidenceRef:
+    return EvidenceRef(
+        source_type="event_summary",
+        source_id=_evidence_scope(
+            request,
+            "session",
+            summary.session_id,
+            "event_summary",
+            str(summary_index),
+            "speaker",
+            speaker,
+            "event",
+            str(event_index),
+        ),
+        locator=f"events[{speaker}][{event_index}]",
+        quote=event,
+        metadata={
+            **_evidence_metadata(request, session_id=summary.session_id),
+            "raw_summary_id": str(summary_index),
+            "raw_event_id": str(event_index),
+            "speaker": speaker,
+        },
+    )
+
+
+def _turn_evidence(
+    request: ExtractionInput,
+    turn: ExtractionTurn,
+    *,
+    start_char: int = 0,
+    end_char: int | None = None,
+) -> EvidenceRef:
+    span_end = len(turn.content) if end_char is None else end_char
+    return EvidenceRef(
+        source_type="turn",
+        source_id=_evidence_scope(
+            request,
+            "session",
+            turn.session_id,
+            "turn",
+            turn.turn_id,
+        ),
+        locator=f"chars={start_char}:{span_end}",
+        quote=turn.content[start_char:span_end],
+        metadata={
+            **_evidence_metadata(request, session_id=turn.session_id),
+            "raw_turn_id": turn.turn_id,
+            "speaker": turn.speaker,
+        },
+    )
+
+
+def _observation_evidence(
+    request: ExtractionInput,
+    *,
+    observation_index: int,
+    observation: str,
+) -> EvidenceRef:
+    return EvidenceRef(
+        source_type="observation",
+        source_id=_evidence_scope(request, "observation", str(observation_index)),
+        locator=f"observations[{observation_index}]",
+        quote=observation,
+        metadata={
+            **_evidence_metadata(request, session_id=None),
+            "raw_observation_id": str(observation_index),
+        },
+    )
+
+
+def _normalized_text_with_positions(text: str) -> tuple[str, list[int], list[int]]:
+    normalized: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    for token_index, match in enumerate(re.finditer(r"\S+", text)):
+        if token_index:
+            normalized.append(" ")
+            starts.append(match.start() - 1)
+            ends.append(match.start())
+        for offset, character in enumerate(match.group()):
+            for folded_character in character.casefold():
+                normalized.append(folded_character)
+                starts.append(match.start() + offset)
+                ends.append(match.start() + offset + 1)
+    return "".join(normalized), starts, ends
+
+
+def _exact_normalized_span(needle: str, haystack: str) -> tuple[int, int] | None:
+    normalized_needle, _, _ = _normalized_text_with_positions(needle)
+    normalized_haystack, starts, ends = _normalized_text_with_positions(haystack)
+    if not normalized_needle:
+        return None
+    normalized_start = normalized_haystack.find(normalized_needle)
+    if normalized_start < 0:
+        return None
+    normalized_end = normalized_start + len(normalized_needle)
+    return starts[normalized_start], ends[normalized_end - 1]
+
+
+def _deduplicate_candidates(
+    candidates: Sequence[ExtractedEventCandidate],
+) -> list[ExtractedEventCandidate]:
+    unique: list[ExtractedEventCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        identity = json.dumps(
+            candidate.memory.model_dump(
+                mode="json",
+                exclude={"memory_id", "created_at", "updated_at"},
+            ),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(candidate)
+    return unique
+
+
 class RuleEventExtractor:
     PROMPT_VERSION = "rule.v1"
 
     def extract(self, request: ExtractionInput) -> ExtractionResult:
         candidates: list[ExtractedEventCandidate] = []
-        for summary in request.event_summaries:
+        for summary_index, summary in enumerate(request.event_summaries):
             session_turns = [
                 turn for turn in request.turns if turn.session_id == summary.session_id
             ]
             for speaker, events in summary.events.items():
-                for event in events:
+                for event_index, event in enumerate(events):
                     if not event.strip():
                         continue
-                    evidence_turn = _best_evidence_turn(event, speaker, session_turns)
-                    if evidence_turn is None:
-                        continue
-                    evidence = EvidenceRef(
-                        source_type="turn",
-                        source_id=evidence_turn.turn_id,
-                        locator=f"chars=0:{len(evidence_turn.content)}",
-                        quote=evidence_turn.content,
-                        metadata={"speaker": evidence_turn.speaker},
-                    )
+                    evidence_refs = [
+                        _summary_evidence(
+                            request,
+                            summary=summary,
+                            summary_index=summary_index,
+                            speaker=speaker,
+                            event_index=event_index,
+                            event=event,
+                        )
+                    ]
+                    ordered_turns = [
+                        turn for turn in session_turns if turn.speaker == speaker
+                    ] + [turn for turn in session_turns if turn.speaker != speaker]
+                    for turn in ordered_turns:
+                        span = _exact_normalized_span(event, turn.content)
+                        if span is not None:
+                            evidence_refs.append(
+                                _turn_evidence(
+                                    request,
+                                    turn,
+                                    start_char=span[0],
+                                    end_char=span[1],
+                                )
+                            )
+                            break
                     candidates.append(
                         ExtractedEventCandidate(
                             memory=_build_memory(
@@ -171,7 +339,7 @@ class RuleEventExtractor:
                                 content=event,
                                 speaker=speaker,
                                 entity_names=[speaker],
-                                evidence_refs=[evidence],
+                                evidence_refs=evidence_refs,
                                 event_time=_parse_event_time(event) or summary.date,
                                 session_id=summary.session_id,
                                 prompt_version=self.PROMPT_VERSION,
@@ -179,10 +347,65 @@ class RuleEventExtractor:
                             prompt_version=self.PROMPT_VERSION,
                         )
                     )
-        return ExtractionResult(prompt_version=self.PROMPT_VERSION, candidates=candidates)
+
+        if not candidates:
+            for turn in request.turns:
+                if not turn.content.strip():
+                    continue
+                candidates.append(
+                    ExtractedEventCandidate(
+                        memory=_build_memory(
+                            request=request,
+                            content=turn.content,
+                            speaker=turn.speaker,
+                            entity_names=[turn.speaker],
+                            evidence_refs=[_turn_evidence(request, turn)],
+                            event_time=_parse_event_time(turn.content) or turn.timestamp,
+                            session_id=turn.session_id,
+                            prompt_version=self.PROMPT_VERSION,
+                        ),
+                        prompt_version=self.PROMPT_VERSION,
+                    )
+                )
+
+        for observation_index, observation in enumerate(request.observations):
+            if not observation.strip():
+                continue
+            candidates.append(
+                ExtractedEventCandidate(
+                    memory=_build_memory(
+                        request=request,
+                        content=observation,
+                        speaker=None,
+                        entity_names=[],
+                        evidence_refs=[
+                            _observation_evidence(
+                                request,
+                                observation_index=observation_index,
+                                observation=observation,
+                            )
+                        ],
+                        event_time=_parse_event_time(observation),
+                        session_id=None,
+                        prompt_version=self.PROMPT_VERSION,
+                    ),
+                    prompt_version=self.PROMPT_VERSION,
+                )
+            )
+
+        return ExtractionResult(
+            prompt_version=self.PROMPT_VERSION,
+            candidates=_deduplicate_candidates(candidates),
+        )
 
 
 class LLMEventExtractor:
+    """Extract events through a caller-provided chat model gateway.
+
+    Pass a ``CachedChatModel`` when extraction requests and raw outputs must be
+    cached. This extractor deliberately does not add a second caching layer.
+    """
+
     PROMPT_VERSION = "event-extraction.v1"
 
     def __init__(self, model: ChatModel) -> None:
@@ -202,7 +425,7 @@ class LLMEventExtractor:
         candidates: list[ExtractedEventCandidate] = []
         for event_index, draft in enumerate(payload.events):
             evidence_refs = _validate_evidence(request, event_index, draft.evidence)
-            session_id = _session_id_for_evidence(request, evidence_refs)
+            session_id = _session_id_for_evidence(evidence_refs)
             speaker = draft.speaker
             candidates.append(
                 ExtractedEventCandidate(
@@ -221,7 +444,7 @@ class LLMEventExtractor:
             )
         return ExtractionResult(
             prompt_version=self.PROMPT_VERSION,
-            candidates=candidates,
+            candidates=_deduplicate_candidates(candidates),
             raw_output=response.text,
             model_id=response.model_id,
             cache_key=response.cache_key,
@@ -326,12 +549,11 @@ def _validate_evidence(
             )
             continue
         refs.append(
-            EvidenceRef(
-                source_type="turn",
-                source_id=draft.source_turn_id,
-                locator=f"chars={draft.start_char}:{draft.end_char}",
-                quote=actual_quote,
-                metadata={"speaker": turn.speaker},
+            _turn_evidence(
+                request,
+                turn,
+                start_char=draft.start_char,
+                end_char=draft.end_char,
             )
         )
     if errors:
@@ -362,7 +584,6 @@ def _build_memory(
         roles=roles,
         evidence_refs=list(evidence_refs),
         event_time=event_time,
-        valid_from=event_time,
         metadata={
             "extractor_prompt_version": prompt_version,
             "source_dataset": request.dataset,
@@ -384,33 +605,12 @@ def _entities(entity_names: Sequence[str], speaker: str | None) -> list[EntityRe
 
 
 def _session_id_for_evidence(
-    request: ExtractionInput,
     evidence_refs: Sequence[EvidenceRef],
 ) -> str | None:
-    turn_by_id = {turn.turn_id: turn for turn in request.turns}
     if not evidence_refs:
         return None
-    turn = turn_by_id.get(evidence_refs[0].source_id)
-    return turn.session_id if turn else None
-
-
-def _best_evidence_turn(
-    event: str,
-    speaker: str,
-    turns: Sequence[ExtractionTurn],
-) -> ExtractionTurn | None:
-    candidates = [turn for turn in turns if turn.speaker == speaker] or list(turns)
-    if not candidates:
-        return None
-    event_tokens = set(_tokens(event))
-    return max(
-        candidates,
-        key=lambda turn: (
-            len(event_tokens.intersection(_tokens(turn.content))),
-            turn.speaker == speaker,
-            -len(turn.content),
-        ),
-    )
+    session_id = evidence_refs[0].metadata.get("session_id")
+    return str(session_id) if session_id is not None else None
 
 
 _MONTHS = {
@@ -450,10 +650,6 @@ def _parse_event_time(text: str) -> datetime | None:
             tzinfo=UTC,
         )
     return None
-
-
-def _tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.casefold())
 
 
 __all__ = [

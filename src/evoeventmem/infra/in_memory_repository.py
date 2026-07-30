@@ -13,6 +13,7 @@ class InMemoryMemoryRepository:
     def __init__(self) -> None:
         self._items: dict[UUID, MemoryRecord] = {}
         self._lock = RLock()
+        self._transaction_active = False
 
     def add(self, memory: MemoryRecord) -> MemoryRecord:
         with self._lock:
@@ -30,7 +31,19 @@ class InMemoryMemoryRepository:
     @contextmanager
     def transaction(self) -> Iterator[MemoryRepository]:
         with self._lock:
-            working_repository = InMemoryMemoryRepository()
-            working_repository._items = self._items.copy()
-            yield working_repository
-            self._items = working_repository._items.copy()
+            if self._transaction_active:
+                raise RuntimeError("nested transactions are not supported")
+            self._transaction_active = True
+            try:
+                working_repository = InMemoryMemoryRepository()
+                working_repository._items = {
+                    memory_id: memory.model_copy(deep=True)
+                    for memory_id, memory in self._items.items()
+                }
+                yield working_repository
+                self._items = {
+                    memory_id: memory.model_copy(deep=True)
+                    for memory_id, memory in working_repository._items.items()
+                }
+            finally:
+                self._transaction_active = False

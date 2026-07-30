@@ -46,6 +46,77 @@ def test_transaction_publishes_all_writes_on_success() -> None:
     }
 
 
+def test_transaction_rollback_isolates_nested_memory_state() -> None:
+    repository = InMemoryMemoryRepository()
+    original = MemoryRecord(
+        user_id="u1",
+        content="original",
+        synthetic=True,
+        metadata={"details": {"state": "original"}},
+    )
+    repository.add(original)
+
+    with (
+        pytest.raises(RuntimeError, match="fail"),
+        repository.transaction() as transaction,
+    ):
+        working_memory = transaction.get(original.memory_id)
+        assert working_memory is not None
+        working_memory.metadata["details"]["state"] = "changed"
+        raise RuntimeError("fail")
+
+    stored_memory = repository.get(original.memory_id)
+    assert stored_memory is not None
+    assert stored_memory.metadata == {"details": {"state": "original"}}
+
+
+def test_transaction_detaches_published_nested_memory_state() -> None:
+    repository = InMemoryMemoryRepository()
+    original = MemoryRecord(
+        user_id="u1",
+        content="original",
+        synthetic=True,
+        metadata={"details": {"state": "original"}},
+    )
+    repository.add(original)
+
+    with repository.transaction() as transaction:
+        working_memory = transaction.get(original.memory_id)
+        assert working_memory is not None
+        working_memory.metadata["details"]["state"] = "committed"
+
+    working_memory.metadata["details"]["state"] = "changed after commit"
+
+    stored_memory = repository.get(original.memory_id)
+    assert stored_memory is not None
+    assert stored_memory.metadata == {"details": {"state": "committed"}}
+
+
+def test_nested_transaction_is_rejected_before_yielding() -> None:
+    repository = InMemoryMemoryRepository()
+    first = _memory("first")
+    second = _memory("second")
+    nested_body_entered = False
+
+    with repository.transaction() as transaction:
+        transaction.add(first)
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="nested transactions are not supported",
+            ),
+            repository.transaction(),
+        ):
+            nested_body_entered = True
+        transaction.add(second)
+
+    assert not nested_body_entered
+    assert {item.memory_id for item in repository.list_for_user("u1")} == {
+        first.memory_id,
+        second.memory_id,
+    }
+
+
 def test_concurrent_transactions_observe_only_published_snapshots() -> None:
     repository = InMemoryMemoryRepository()
     assert callable(repository.transaction)

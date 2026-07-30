@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
@@ -52,3 +53,5 @@ class MemoryRepository(Protocol):
     def get(self, memory_id: UUID) -> MemoryRecord | None: ...
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]: ...
+
+    def transaction(self) -> AbstractContextManager[MemoryRepository]: ...

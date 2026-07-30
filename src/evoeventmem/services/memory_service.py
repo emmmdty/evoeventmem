@@ -30,6 +30,7 @@ class MemoryWriteFailureCategory(StrEnum):
     INVALID_CANDIDATE = "invalid_candidate"
     MISSING_EVIDENCE = "missing_evidence"
     REQUEST_VALIDATION_FAILED = "request_validation_failed"
+    STORAGE_FAILED = "storage_failed"
 
 
 class RawObservationLink(BaseModel):
@@ -124,47 +125,18 @@ class MemoryService:
         return self._repository.add(memory)
 
     def write_extracted_events(self, request: MemoryWriteRequest) -> MemoryWriteResult:
-        decisions: list[MemoryWriteDecision] = []
-        prepared_writes: list[_PreparedWrite] = []
-        accepted_memories: list[MemoryRecord] = []
-        seen_keys: dict[str, UUID] = {}
+        validation_decisions: list[MemoryWriteDecision] = []
+        prepared_candidates: list[_PreparedWrite] = []
 
         for candidate in request.candidates:
             prepared = self._prepare_write_candidate(request, candidate)
             if isinstance(prepared, MemoryWriteDecision):
-                decisions.append(prepared)
+                validation_decisions.append(prepared)
                 continue
+            prepared_candidates.append(prepared)
 
-            existing = self._find_by_idempotency_key(prepared.memory, prepared.idempotency_key)
-            duplicate_id: UUID | None
-            if existing is not None:
-                duplicate_id = existing.memory_id
-            else:
-                duplicate_id = seen_keys.get(prepared.idempotency_key)
-            if duplicate_id is not None:
-                decisions.append(
-                    MemoryWriteDecision(
-                        request_id=request.request_id,
-                        candidate_id=prepared.candidate.candidate_id,
-                        status=MemoryWriteDecisionStatus.DUPLICATE,
-                        reason=(
-                            "candidate has already been written for this evidence and "
-                            "extractor version"
-                        ),
-                        idempotency_key=prepared.idempotency_key,
-                        memory_id=duplicate_id,
-                        evidence_refs=list(prepared.memory.evidence_refs),
-                        raw_observations=prepared.raw_observations,
-                        candidate_snapshot=_candidate_snapshot(prepared.candidate),
-                    )
-                )
-                continue
-
-            prepared_writes.append(prepared)
-            seen_keys[prepared.idempotency_key] = prepared.memory.memory_id
-
-        if any(decision.status is MemoryWriteDecisionStatus.REJECTED for decision in decisions):
-            decisions.extend(
+        if validation_decisions:
+            validation_decisions.extend(
                 MemoryWriteDecision(
                     request_id=request.request_id,
                     candidate_id=prepared.candidate.candidate_id,
@@ -176,7 +148,69 @@ class MemoryService:
                     raw_observations=prepared.raw_observations,
                     candidate_snapshot=_candidate_snapshot(prepared.candidate),
                 )
-                for prepared in prepared_writes
+                for prepared in prepared_candidates
+            )
+            metrics = _build_write_metrics(len(request.candidates), validation_decisions)
+            self._write_decisions.extend(validation_decisions)
+            return MemoryWriteResult(
+                request_id=request.request_id,
+                accepted_memories=[],
+                decisions=validation_decisions,
+                metrics=metrics,
+            )
+
+        persistent_duplicate_indexes: set[int] = set()
+        persistent_duplicate_decisions: list[MemoryWriteDecision] = []
+        batch_duplicate_decisions: list[MemoryWriteDecision] = []
+        accepted_pairs: list[tuple[_PreparedWrite, MemoryRecord]] = []
+
+        try:
+            with self._repository.transaction() as transaction:
+                pending_writes: list[_PreparedWrite] = []
+                seen_keys: dict[str, UUID] = {}
+
+                for index, prepared in enumerate(prepared_candidates):
+                    existing = self._find_by_idempotency_key(
+                        transaction,
+                        prepared.memory,
+                        prepared.idempotency_key,
+                    )
+                    if existing is not None:
+                        persistent_duplicate_indexes.add(index)
+                        persistent_duplicate_decisions.append(
+                            _duplicate_decision(request, prepared, existing.memory_id)
+                        )
+                        continue
+
+                    duplicate_id = seen_keys.get(prepared.idempotency_key)
+                    if duplicate_id is not None:
+                        batch_duplicate_decisions.append(
+                            _duplicate_decision(request, prepared, duplicate_id)
+                        )
+                        continue
+
+                    pending_writes.append(prepared)
+                    seen_keys[prepared.idempotency_key] = prepared.memory.memory_id
+
+                for prepared in pending_writes:
+                    memory = transaction.add(prepared.memory)
+                    accepted_pairs.append((prepared, memory))
+        except Exception as exc:
+            decisions = list(persistent_duplicate_decisions)
+            decisions.extend(
+                MemoryWriteDecision(
+                    request_id=request.request_id,
+                    candidate_id=prepared.candidate.candidate_id,
+                    status=MemoryWriteDecisionStatus.REJECTED,
+                    reason=f"repository transaction failed: {exc}",
+                    idempotency_key=prepared.idempotency_key,
+                    failure_category=MemoryWriteFailureCategory.STORAGE_FAILED,
+                    evidence_refs=list(prepared.memory.evidence_refs),
+                    raw_observations=prepared.raw_observations,
+                    candidate_snapshot=_candidate_snapshot(prepared.candidate),
+                )
+                for index, prepared in enumerate(prepared_candidates)
+                if index not in persistent_duplicate_indexes
             )
             metrics = _build_write_metrics(len(request.candidates), decisions)
             self._write_decisions.extend(decisions)
@@ -187,8 +221,9 @@ class MemoryService:
                 metrics=metrics,
             )
 
-        for prepared in prepared_writes:
-            memory = self._repository.add(prepared.memory)
+        decisions = [*persistent_duplicate_decisions, *batch_duplicate_decisions]
+        accepted_memories: list[MemoryRecord] = []
+        for prepared, memory in accepted_pairs:
             accepted_memories.append(memory)
             decisions.append(
                 MemoryWriteDecision(
@@ -258,7 +293,7 @@ class MemoryService:
             )
 
         idempotency_key = _idempotency_key(
-            validated.memory.evidence_refs,
+            validated.memory,
             validated.extractor_version,
         )
         memory = _with_write_metadata(
@@ -278,10 +313,11 @@ class MemoryService:
 
     def _find_by_idempotency_key(
         self,
+        repository: MemoryRepository,
         memory: MemoryRecord,
         idempotency_key: str,
     ) -> MemoryRecord | None:
-        for existing in self._repository.list_for_user(memory.user_id):
+        for existing in repository.list_for_user(memory.user_id):
             if existing.tenant_id != memory.tenant_id:
                 continue
             if _memory_idempotency_key(existing) == idempotency_key:
@@ -289,14 +325,91 @@ class MemoryService:
         return None
 
 
-def _idempotency_key(evidence_refs: Sequence[EvidenceRef], extractor_version: str) -> str:
+def _normalized_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _normalized_text(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return [_canonical_json_value(item) for item in value]
+    return value
+
+
+def _canonical_sort_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
+    serialized = memory.model_dump(mode="json")
+    metadata = serialized["metadata"]
+    return {
+        "memory_kind": serialized["memory_kind"],
+        "normalized_content": _normalized_text(memory.normalized_content or memory.content),
+        "event_time": serialized["event_time"],
+        "valid_from": serialized["valid_from"],
+        "valid_to": serialized["valid_to"],
+        "entities": sorted(
+            (_canonical_json_value(entity) for entity in serialized["entities"]),
+            key=_canonical_sort_key,
+        ),
+        "roles": sorted(
+            (
+                [_normalized_text(role_key), _normalized_text(role_value)]
+                for role_key, role_value in serialized["roles"].items()
+            ),
+            key=_canonical_sort_key,
+        ),
+        "relations": sorted(
+            (_canonical_json_value(relation) for relation in serialized["relations"]),
+            key=_canonical_sort_key,
+        ),
+        "fact_metadata": {
+            field: {
+                "present": field in metadata,
+                "value": _canonical_json_value(metadata.get(field)),
+            }
+            for field in ("fact_slot", "fact_value", "multi_valued")
+        },
+    }
+
+
+def _duplicate_decision(
+    request: MemoryWriteRequest,
+    prepared: _PreparedWrite,
+    memory_id: UUID,
+) -> MemoryWriteDecision:
+    return MemoryWriteDecision(
+        request_id=request.request_id,
+        candidate_id=prepared.candidate.candidate_id,
+        status=MemoryWriteDecisionStatus.DUPLICATE,
+        reason="candidate has already been written with the same identity",
+        idempotency_key=prepared.idempotency_key,
+        memory_id=memory_id,
+        evidence_refs=list(prepared.memory.evidence_refs),
+        raw_observations=prepared.raw_observations,
+        candidate_snapshot=_candidate_snapshot(prepared.candidate),
+    )
+
+
+def _idempotency_key(memory: MemoryRecord, extractor_version: str) -> str:
     evidence_payload = sorted(
-        json.dumps(ref.model_dump(mode="json", exclude_none=True), sort_keys=True)
-        for ref in evidence_refs
+        (
+            _canonical_json_value(ref.model_dump(mode="json"))
+            for ref in memory.evidence_refs
+        ),
+        key=_canonical_sort_key,
     )
     payload = {
         "extractor_version": extractor_version,
         "evidence_refs": evidence_payload,
+        "candidate_identity": _candidate_identity(memory),
     }
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

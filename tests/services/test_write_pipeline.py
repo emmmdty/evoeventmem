@@ -1,6 +1,16 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
-from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
+import pytest
+
+from evoeventmem.domain.models import (
+    EntityRef,
+    EvidenceRef,
+    MemoryKind,
+    MemoryRecord,
+    RelationRef,
+)
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.services.memory_service import (
     MemoryService,
@@ -36,6 +46,35 @@ def _event_memory(*, content: str = "Caroline joined a support group.") -> Memor
             "source_sample_id": "sample-1",
         },
     )
+
+
+class _FailingSecondAddTransaction:
+    def __init__(self, repository: InMemoryMemoryRepository) -> None:
+        self._repository = repository
+        self._add_count = 0
+
+    def add(self, memory: MemoryRecord) -> MemoryRecord:
+        self._add_count += 1
+        if self._add_count == 2:
+            raise RuntimeError("injected storage failure")
+        return self._repository.add(memory)
+
+    def list_for_user(self, user_id: str) -> list[MemoryRecord]:
+        return self._repository.list_for_user(user_id)
+
+
+class _FailingSecondAddRepository:
+    def __init__(self) -> None:
+        self._repository = InMemoryMemoryRepository()
+
+    def list_for_user(self, user_id: str) -> list[MemoryRecord]:
+        return self._repository.list_for_user(user_id)
+
+    @contextmanager
+    def transaction(self) -> Iterator[_FailingSecondAddTransaction]:
+        with self._repository.transaction() as transaction:
+            assert isinstance(transaction, InMemoryMemoryRepository)
+            yield _FailingSecondAddTransaction(transaction)
 
 
 def test_write_pipeline_preserves_provenance_temporal_fields_and_decision_log() -> None:
@@ -75,6 +114,184 @@ def test_write_pipeline_preserves_provenance_temporal_fields_and_decision_log() 
     assert written.metadata["write_pipeline"]["idempotency_key"].startswith("memory-write.v1:")
 
 
+def test_different_contents_from_same_evidence_are_both_accepted() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    request = MemoryWriteRequest(
+        request_id="req-distinct-content",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-1",
+                memory=_event_memory(content="Caroline joined a support group."),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-2",
+                memory=_event_memory(content="Caroline invited a friend to the group."),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    assert len(repository.list_for_user("u1")) == 2
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+
+
+def test_different_extractor_versions_remain_distinct() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    request = MemoryWriteRequest(
+        request_id="req-distinct-extractor-version",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-1",
+                memory=_event_memory(),
+                extractor_version="Rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-2",
+                memory=_event_memory(),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    assert len(repository.list_for_user("u1")) == 2
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+
+
+@pytest.mark.parametrize(
+    ("first_updates", "second_updates"),
+    [
+        (
+            {"memory_kind": MemoryKind.EVENT},
+            {"memory_kind": MemoryKind.FACT},
+        ),
+        (
+            {"event_time": datetime(2023, 5, 7, tzinfo=UTC)},
+            {"event_time": datetime(2023, 5, 8, tzinfo=UTC)},
+        ),
+        (
+            {"valid_from": datetime(2023, 5, 7, tzinfo=UTC)},
+            {"valid_from": datetime(2023, 5, 8, tzinfo=UTC)},
+        ),
+        (
+            {"valid_to": datetime(2023, 5, 8, tzinfo=UTC)},
+            {"valid_to": datetime(2023, 5, 9, tzinfo=UTC)},
+        ),
+        (
+            {"entities": [EntityRef(name="Caroline", role="participant")]},
+            {"entities": [EntityRef(name="Maya", role="participant")]},
+        ),
+        (
+            {"roles": {"Caroline": "member"}},
+            {"roles": {"Caroline": "facilitator"}},
+        ),
+        (
+            {
+                "relations": [
+                    RelationRef(
+                        source="Caroline",
+                        predicate="joined",
+                        target="support-group-a",
+                    )
+                ]
+            },
+            {
+                "relations": [
+                    RelationRef(
+                        source="Caroline",
+                        predicate="joined",
+                        target="support-group-b",
+                    )
+                ]
+            },
+        ),
+        (
+            {
+                "metadata": {
+                    "fact_slot": "profile.city",
+                    "fact_value": "Taipei",
+                    "multi_valued": False,
+                }
+            },
+            {
+                "metadata": {
+                    "fact_slot": "work.city",
+                    "fact_value": "Taipei",
+                    "multi_valued": False,
+                }
+            },
+        ),
+        (
+            {
+                "metadata": {
+                    "fact_slot": "profile.city",
+                    "fact_value": "Taipei",
+                    "multi_valued": False,
+                }
+            },
+            {
+                "metadata": {
+                    "fact_slot": "profile.city",
+                    "fact_value": "Paris",
+                    "multi_valued": False,
+                }
+            },
+        ),
+        (
+            {
+                "metadata": {
+                    "fact_slot": "profile.phone",
+                    "fact_value": "+886-555-0100",
+                    "multi_valued": False,
+                }
+            },
+            {
+                "metadata": {
+                    "fact_slot": "profile.phone",
+                    "fact_value": "+886-555-0100",
+                    "multi_valued": True,
+                }
+            },
+        ),
+    ],
+)
+def test_candidate_identity_distinguishes_memory_semantics(
+    first_updates: dict[str, object],
+    second_updates: dict[str, object],
+) -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    request = MemoryWriteRequest(
+        request_id="req-distinct-semantics",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-1",
+                memory=_event_memory().model_copy(update=first_updates),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-2",
+                memory=_event_memory().model_copy(update=second_updates),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    assert len(repository.list_for_user("u1")) == 2
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+
+
 def test_retrying_same_evidence_and_extractor_version_creates_no_duplicate_memory() -> None:
     repository = InMemoryMemoryRepository()
     service = MemoryService(repository)
@@ -93,7 +310,7 @@ def test_retrying_same_evidence_and_extractor_version_creates_no_duplicate_memor
         candidates=[
             MemoryWriteCandidate(
                 candidate_id="cand-2",
-                memory=_event_memory(content="Caroline attended a support group."),
+                memory=_event_memory(content="Caroline joined a support group."),
                 extractor_version="rule.v1",
             )
         ],
@@ -106,6 +323,69 @@ def test_retrying_same_evidence_and_extractor_version_creates_no_duplicate_memor
     assert retry_result.accepted_memories == []
     assert retry_result.metrics.duplicates == 1
     assert retry_result.decisions[0].status is MemoryWriteDecisionStatus.DUPLICATE
+    assert retry_result.decisions[0].memory_id == first_result.accepted_memories[0].memory_id
+
+
+def test_exact_retry_canonicalizes_entity_role_and_relation_order() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    first_memory = _event_memory().model_copy(
+        update={
+            "entities": [
+                EntityRef(entity_id="group", name="Support Group", role="location"),
+                EntityRef(entity_id="person", name="Caroline", role="participant"),
+            ],
+            "roles": {"person": "participant", "group": "location"},
+            "relations": [
+                RelationRef(source="person", predicate="joined", target="group"),
+                RelationRef(source="group", predicate="includes", target="person"),
+            ],
+        }
+    )
+    retry_memory = _event_memory().model_copy(
+        update={
+            "entities": list(reversed(first_memory.entities)),
+            "roles": {"group": "location", "person": "participant"},
+            "relations": list(reversed(first_memory.relations)),
+            "evidence_refs": [
+                EvidenceRef(
+                    source_type=" TURN ",
+                    source_id=" d1:1 ",
+                    locator=" CHARS=0:43 ",
+                    quote="  i WENT to an lgbtq support group yesterday. ",
+                    metadata={"speaker": " caroline "},
+                )
+            ],
+        }
+    )
+
+    first_result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-canonical-first",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-1",
+                    memory=first_memory,
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+    retry_result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-canonical-retry",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-2",
+                    memory=retry_memory,
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+
+    assert len(repository.list_for_user("u1")) == 1
+    assert retry_result.metrics.duplicates == 1
     assert retry_result.decisions[0].memory_id == first_result.accepted_memories[0].memory_id
 
 
@@ -158,7 +438,12 @@ def test_request_with_invalid_candidate_does_not_partially_commit_valid_candidat
         request_id="req-mixed",
         candidates=[
             MemoryWriteCandidate(
-                candidate_id="cand-valid",
+                candidate_id="cand-valid-1",
+                memory=_event_memory(),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-valid-2",
                 memory=_event_memory(),
                 extractor_version="rule.v1",
             ),
@@ -180,13 +465,20 @@ def test_request_with_invalid_candidate_does_not_partially_commit_valid_candidat
     assert repository.list_for_user("u1") == []
     assert result.accepted_memories == []
     assert result.metrics.accepted == 0
-    assert result.metrics.rejected == 2
+    assert result.metrics.duplicates == 0
+    assert result.metrics.rejected == 3
     assert result.metrics.failure_categories == {
         MemoryWriteFailureCategory.MISSING_EVIDENCE.value: 1,
-        MemoryWriteFailureCategory.REQUEST_VALIDATION_FAILED.value: 1,
+        MemoryWriteFailureCategory.REQUEST_VALIDATION_FAILED.value: 2,
     }
+    assert all(
+        decision.status is MemoryWriteDecisionStatus.REJECTED
+        and decision.memory_id is None
+        for decision in result.decisions
+    )
     assert {decision.candidate_id for decision in result.decisions} == {
-        "cand-valid",
+        "cand-valid-1",
+        "cand-valid-2",
         "cand-invalid",
     }
 
@@ -204,7 +496,7 @@ def test_duplicate_candidates_in_one_request_are_duplicate_safe() -> None:
             ),
             MemoryWriteCandidate(
                 candidate_id="cand-2",
-                memory=_event_memory(content="Caroline joined a support group again."),
+                memory=_event_memory(content="Caroline joined a support group."),
                 extractor_version="rule.v1",
             ),
         ],
@@ -219,3 +511,40 @@ def test_duplicate_candidates_in_one_request_are_duplicate_safe() -> None:
         MemoryWriteDecisionStatus.DUPLICATE,
         MemoryWriteDecisionStatus.ACCEPTED,
     ]
+
+
+def test_storage_failure_rolls_back_and_rejects_all_writable_candidates() -> None:
+    repository = _FailingSecondAddRepository()
+    service = MemoryService(repository)
+    request = MemoryWriteRequest(
+        request_id="req-storage-failure",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-1",
+                memory=_event_memory(content="Caroline joined a support group."),
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-2",
+                memory=_event_memory(content="Caroline invited a friend to the group."),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    assert repository.list_for_user("u1") == []
+    assert result.accepted_memories == []
+    assert result.metrics.accepted == 0
+    assert result.metrics.duplicates == 0
+    assert result.metrics.rejected == 2
+    assert result.metrics.failure_categories == {
+        MemoryWriteFailureCategory.STORAGE_FAILED.value: 2
+    }
+    assert all(
+        decision.status is MemoryWriteDecisionStatus.REJECTED
+        and decision.failure_category is MemoryWriteFailureCategory.STORAGE_FAILED
+        and decision.memory_id is None
+        for decision in result.decisions
+    )

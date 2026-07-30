@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
+import evoeventmem.linking as linking_module
 from evoeventmem.core.ports import EmbeddingResponse
 from evoeventmem.domain.models import MemoryKind, MemoryRecord, MemoryStatus
 from evoeventmem.linking import (
@@ -32,6 +33,27 @@ class CountingEmbeddingModel:
         self.calls += 1
         self.embedded_texts.extend(texts)
         return self._wrapped.embed_texts(texts)
+
+
+class FakeEmbeddingCandidateIndex:
+    def __init__(
+        self,
+        *,
+        entity_refs: Sequence[object] = (),
+        event_ids: Sequence[UUID] = (),
+    ) -> None:
+        self.entity_refs = list(entity_refs)
+        self.event_ids = list(event_ids)
+        self.entity_queries: list[tuple[str, int]] = []
+        self.event_queries: list[tuple[str, int]] = []
+
+    def query_entity_candidates(self, query: str, *, limit: int) -> Sequence[object]:
+        self.entity_queries.append((query, limit))
+        return self.entity_refs[:limit]
+
+    def query_event_candidates(self, query: str, *, limit: int) -> Sequence[UUID]:
+        self.event_queries.append((query, limit))
+        return self.event_ids[:limit]
 
 
 def _fixture_records() -> tuple[MemoryRecord, list[MemoryRecord], dict[str, list[str]]]:
@@ -90,8 +112,7 @@ def test_event_candidates_use_time_window_and_preserve_memory_provenance() -> No
         "event-time-window-embedding.v1"
     }
     assert all(
-        candidate.candidate_kind is LinkCandidateKind.EVENT
-        for candidate in result.event_candidates
+        candidate.candidate_kind is LinkCandidateKind.EVENT for candidate in result.event_candidates
     )
     assert all("within_time_window" in candidate.reasons for candidate in result.event_candidates)
     assert str(existing[1].memory_id) not in target_ids
@@ -292,9 +313,7 @@ def test_scope_identity_and_status_filters_apply_to_both_policies() -> None:
     entity_target_ids = {
         candidate.target_memory.memory_id for candidate in result.entity_candidates
     }
-    event_target_ids = {
-        candidate.target_memory.memory_id for candidate in result.event_candidates
-    }
+    event_target_ids = {candidate.target_memory.memory_id for candidate in result.event_candidates}
 
     assert entity_target_ids == {valid.memory_id}
     assert event_target_ids == {valid.memory_id}
@@ -382,3 +401,269 @@ def test_candidate_limits_bound_embeddings_independent_of_existing_size() -> Non
     assert len(large_model.embedded_texts) == len(set(large_model.embedded_texts))
     assert small_result.entity_comparison_count == large_result.entity_comparison_count == 3
     assert small_result.event_comparison_count == large_result.event_comparison_count == 2
+
+
+def test_injected_embedding_index_retrieves_semantic_gold_beyond_uuid_fallback() -> None:
+    source, existing, _ = _fixture_records()
+    smaller_fallback = existing[0].model_copy(
+        update={
+            "memory_id": UUID("00000000-0000-4000-8000-000000000010"),
+            "content": "Carrie quartz.",
+            "entities": [source.entities[0].model_copy(update={"name": "Carrie Zephyr"})],
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+            "metadata": {},
+        }
+    )
+    semantic_gold = smaller_fallback.model_copy(
+        update={
+            "memory_id": UUID("ffffffff-ffff-4fff-8fff-ffffffffffff"),
+            "content": "Nebula cobalt.",
+            "entities": [source.entities[0].model_copy(update={"name": "Cora"})],
+        }
+    )
+    entity_ref = linking_module.EntityCandidateTargetRef(
+        memory_id=semantic_gold.memory_id,
+        entity_position=0,
+    )
+    candidate_index = FakeEmbeddingCandidateIndex(
+        entity_refs=[entity_ref],
+        event_ids=[semantic_gold.memory_id],
+    )
+
+    result = LinkCandidateGenerator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_index=candidate_index,
+    ).generate(
+        CandidateGenerationRequest(
+            source=source,
+            existing=[smaller_fallback, semantic_gold],
+            max_entity_candidates=1,
+            max_event_candidates=1,
+            min_embedding_similarity=-1.0,
+        )
+    )
+
+    assert result.entity_candidates[0].target_memory.memory_id == semantic_gold.memory_id
+    assert result.event_candidates[0].target_memory.memory_id == semantic_gold.memory_id
+    assert "embedding_index_candidate" in result.entity_candidates[0].reasons
+    assert "embedding_index_candidate" in result.event_candidates[0].reasons
+    assert candidate_index.entity_queries == [(source.entities[0].name, 1)]
+    assert candidate_index.event_queries == [(source.content, 1)]
+
+
+def test_embedding_index_results_are_revalidated_against_request_scope_and_time() -> None:
+    source, existing, _ = _fixture_records()
+    base = existing[0].model_copy(
+        update={
+            "content": "Quartz zephyr.",
+            "entities": [source.entities[0].model_copy(update={"name": "Zed"})],
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+            "metadata": {},
+        }
+    )
+    valid = base.model_copy(update={"memory_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1")})
+    other_user = base.model_copy(
+        update={
+            "memory_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2"),
+            "user_id": "u2",
+        }
+    )
+    other_tenant = base.model_copy(
+        update={
+            "memory_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3"),
+            "tenant_id": "tenant-2",
+        }
+    )
+    deleted = base.model_copy(
+        update={
+            "memory_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee4"),
+            "status": MemoryStatus.DELETED,
+        }
+    )
+    outside_window = base.model_copy(
+        update={
+            "memory_id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5"),
+            "event_time": source.event_time + timedelta(days=2),
+            "valid_from": source.event_time + timedelta(days=2),
+        }
+    )
+    indexed = [other_user, other_tenant, deleted, valid]
+    candidate_index = FakeEmbeddingCandidateIndex(
+        entity_refs=[
+            linking_module.EntityCandidateTargetRef(
+                memory_id=target.memory_id,
+                entity_position=0,
+            )
+            for target in indexed
+        ],
+        event_ids=[
+            other_user.memory_id,
+            other_tenant.memory_id,
+            deleted.memory_id,
+            outside_window.memory_id,
+            valid.memory_id,
+        ],
+    )
+
+    result = LinkCandidateGenerator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_index=candidate_index,
+    ).generate(
+        CandidateGenerationRequest(
+            source=source,
+            existing=[*indexed, outside_window],
+            max_entity_candidates=4,
+            max_event_candidates=5,
+            event_time_window_days=0,
+            min_embedding_similarity=-1.0,
+        )
+    )
+
+    assert {candidate.target_memory.memory_id for candidate in result.entity_candidates} == {
+        valid.memory_id
+    }
+    assert {candidate.target_memory.memory_id for candidate in result.event_candidates} == {
+        valid.memory_id
+    }
+
+
+def test_invalid_entity_index_results_still_consume_global_query_budget() -> None:
+    source, _, _ = _fixture_records()
+    source_with_many_entities = source.model_copy(
+        update={
+            "entities": [
+                source.entities[0].model_copy(update={"name": f"query entity {index}"})
+                for index in range(20)
+            ],
+            "metadata": {},
+        }
+    )
+    candidate_index = FakeEmbeddingCandidateIndex(
+        entity_refs=[
+            linking_module.EntityCandidateTargetRef(
+                memory_id=UUID(int=index + 20_000),
+                entity_position=0,
+            )
+            for index in range(4)
+        ]
+    )
+
+    result = LinkCandidateGenerator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_index=candidate_index,
+    ).generate(
+        CandidateGenerationRequest(
+            source=source_with_many_entities,
+            existing=[],
+            max_entity_candidates=4,
+            max_event_candidates=1,
+        )
+    )
+
+    assert result.entity_comparison_count == 0
+    assert len(candidate_index.entity_queries) == 1
+    assert candidate_index.entity_queries[0][1] == 4
+
+
+def test_duplicate_same_name_entity_occurrences_have_unique_candidate_ids() -> None:
+    source, existing, _ = _fixture_records()
+    duplicate_source = source.model_copy(
+        update={"entities": [source.entities[0], source.entities[0].model_copy()]}
+    )
+    target = existing[0].model_copy(
+        update={
+            "entities": [source.entities[0], source.entities[0].model_copy()],
+            "metadata": {},
+        }
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=duplicate_source,
+            existing=[target],
+            max_entity_candidates=4,
+            max_event_candidates=1,
+        )
+    )
+    candidate_ids = [candidate.candidate_id for candidate in result.entity_candidates]
+
+    assert len(candidate_ids) == 4
+    assert len(set(candidate_ids)) == 4
+
+
+def test_fallback_reason_does_not_claim_corpus_wide_embedding_retrieval() -> None:
+    source, existing, _ = _fixture_records()
+    unrelated = existing[0].model_copy(
+        update={
+            "content": "Quartz zephyr.",
+            "entities": [source.entities[0].model_copy(update={"name": "Zed"})],
+            "metadata": {},
+        }
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=source,
+            existing=[unrelated],
+            max_entity_candidates=1,
+            max_event_candidates=1,
+            min_embedding_similarity=-1.0,
+        )
+    )
+
+    for candidate in [*result.entity_candidates, *result.event_candidates]:
+        assert "stable_fallback" in candidate.reasons
+        assert "embedding_similarity" in candidate.reasons
+        assert "embedding_candidate" not in candidate.reasons
+        assert "embedding_index_candidate" not in candidate.reasons
+
+
+def test_common_token_selection_work_is_globally_bounded() -> None:
+    source, existing, _ = _fixture_records()
+    source_with_common_entities = source.model_copy(
+        update={
+            "content": "common source event",
+            "entities": [
+                source.entities[0].model_copy(update={"name": f"common source {index}"})
+                for index in range(20)
+            ],
+            "metadata": {},
+        }
+    )
+    template = existing[0].model_copy(
+        update={
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+            "metadata": {},
+        }
+    )
+    targets = [
+        template.model_copy(
+            update={
+                "memory_id": UUID(int=index + 1_000),
+                "content": f"common target event {index}",
+                "entities": [
+                    source.entities[0].model_copy(update={"name": f"common target {index}"})
+                ],
+            }
+        )
+        for index in range(1_000)
+    ]
+    model = CountingEmbeddingModel()
+
+    result = LinkCandidateGenerator(model).generate(
+        CandidateGenerationRequest(
+            source=source_with_common_entities,
+            existing=targets,
+            max_entity_candidates=4,
+            max_event_candidates=3,
+            min_embedding_similarity=-1.0,
+        )
+    )
+
+    assert result.entity_comparison_count == 4
+    assert result.event_comparison_count == 3
+    assert model.calls == 1
+    assert len(model.embedded_texts) <= 2 * (4 + 3)

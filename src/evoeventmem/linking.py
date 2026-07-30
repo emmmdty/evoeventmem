@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 import math
 import re
 from collections.abc import Iterable, Sequence
@@ -9,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from time import perf_counter
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -66,9 +66,27 @@ class CandidateRecallMetrics(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class EntityCandidateTargetRef:
+    memory_id: UUID
+    entity_position: int
+
+
+class EmbeddingCandidateIndex(Protocol):
+    def query_entity_candidates(
+        self,
+        query: str,
+        *,
+        limit: int,
+    ) -> Sequence[EntityCandidateTargetRef]: ...
+
+    def query_event_candidates(self, query: str, *, limit: int) -> Sequence[UUID]: ...
+
+
+@dataclass(frozen=True, slots=True)
 class _EntityIndexEntry:
     memory: MemoryRecord
     entity: EntityRef
+    position: int
     name_key: str
     keys: frozenset[str]
     stable_key: tuple[str, ...]
@@ -76,11 +94,14 @@ class _EntityIndexEntry:
 
 @dataclass(slots=True)
 class _RequestIndexes:
+    targets_by_id: dict[UUID, MemoryRecord] = field(default_factory=dict)
     entity_entries: list[_EntityIndexEntry] = field(default_factory=list)
+    entity_ref_index: dict[tuple[UUID, int], _EntityIndexEntry] = field(default_factory=dict)
     entity_name_index: dict[str, list[_EntityIndexEntry]] = field(default_factory=dict)
     entity_key_index: dict[str, list[_EntityIndexEntry]] = field(default_factory=dict)
     entity_token_index: dict[str, list[_EntityIndexEntry]] = field(default_factory=dict)
     event_targets: list[MemoryRecord] = field(default_factory=list)
+    event_target_ids: set[UUID] = field(default_factory=set)
     event_content_index: dict[str, list[MemoryRecord]] = field(default_factory=dict)
     event_token_index: dict[str, list[MemoryRecord]] = field(default_factory=dict)
     event_entity_key_index: dict[str, list[MemoryRecord]] = field(default_factory=dict)
@@ -105,14 +126,28 @@ class LinkCandidateGenerator:
     ENTITY_POLICY = "entity-normalized-alias-embedding.v1"
     EVENT_POLICY = "event-time-window-embedding.v1"
 
-    def __init__(self, embedding_model: EmbeddingModel) -> None:
+    def __init__(
+        self,
+        embedding_model: EmbeddingModel,
+        *,
+        candidate_index: EmbeddingCandidateIndex | None = None,
+    ) -> None:
         self._embedding_model = embedding_model
+        self._candidate_index = candidate_index
 
     def generate(self, request: CandidateGenerationRequest) -> CandidateGenerationResult:
         started = perf_counter()
         indexes = _build_request_indexes(request)
-        entity_pool = _entity_comparison_pool(request, indexes)
-        event_pool = _event_comparison_pool(request, indexes)
+        entity_pool = _entity_comparison_pool(
+            request,
+            indexes,
+            self._candidate_index,
+        )
+        event_pool = _event_comparison_pool(
+            request,
+            indexes,
+            self._candidate_index,
+        )
         embeddings = self._embed_unique(
             [
                 text
@@ -143,8 +178,7 @@ class LinkCandidateGenerator:
             return {}
         responses = self._embedding_model.embed_texts(unique_texts)
         return {
-            text: response.vector
-            for text, response in zip(unique_texts, responses, strict=True)
+            text: response.vector for text, response in zip(unique_texts, responses, strict=True)
         }
 
 
@@ -152,16 +186,18 @@ _ENTITY_REASON_ORDER = (
     "exact_normalized_entity_key",
     "alias_match",
     "lexical_token_match",
+    "embedding_index_candidate",
     "stable_fallback",
-    "embedding_candidate",
+    "embedding_similarity",
 )
 _EVENT_REASON_ORDER = (
     "fact_slot_match",
     "exact_normalized_content",
     "shared_entity_key",
     "lexical_token_match",
+    "embedding_index_candidate",
     "stable_fallback",
-    "embedding_candidate",
+    "embedding_similarity",
     "within_time_window",
     "time_unbounded",
 )
@@ -169,11 +205,10 @@ _EVENT_REASON_ORDER = (
 
 def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndexes:
     indexes = _RequestIndexes()
-    seen_memory_ids: set[UUID] = set()
     for target in _eligible_existing(request.source, request.existing):
-        if target.memory_id in seen_memory_ids:
+        if target.memory_id in indexes.targets_by_id:
             continue
-        seen_memory_ids.add(target.memory_id)
+        indexes.targets_by_id[target.memory_id] = target
 
         memory_entity_keys: set[str] = set()
         for position, entity in enumerate(target.entities):
@@ -182,11 +217,13 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
             entry = _EntityIndexEntry(
                 memory=target,
                 entity=entity,
+                position=position,
                 name_key=name_key,
                 keys=keys,
                 stable_key=_entity_target_identity(target, entity, position),
             )
             indexes.entity_entries.append(entry)
+            indexes.entity_ref_index[(target.memory_id, position)] = entry
             indexes.entity_name_index.setdefault(name_key, []).append(entry)
             for key in keys:
                 indexes.entity_key_index.setdefault(key, []).append(entry)
@@ -200,6 +237,7 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
         )
         if time_eligible_event:
             indexes.event_targets.append(target)
+            indexes.event_target_ids.add(target.memory_id)
             content_key = normalized_linking_key(target.content)
             indexes.event_content_index.setdefault(content_key, []).append(target)
             for token in _linking_tokens(content_key):
@@ -210,40 +248,57 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
         fact_slot = _fact_slot_key(target)
         if fact_slot and (target.memory_kind is not MemoryKind.EVENT or time_eligible_event):
             indexes.fact_slot_index.setdefault(fact_slot, []).append(target)
+
+    indexes.entity_entries.sort(key=lambda entry: entry.stable_key)
+    for entity_postings in (
+        indexes.entity_name_index,
+        indexes.entity_key_index,
+        indexes.entity_token_index,
+    ):
+        for entity_posting in entity_postings.values():
+            entity_posting.sort(key=lambda entry: entry.stable_key)
+    indexes.event_targets.sort(key=lambda memory: str(memory.memory_id))
+    for event_postings in (
+        indexes.event_content_index,
+        indexes.event_token_index,
+        indexes.event_entity_key_index,
+        indexes.fact_slot_index,
+    ):
+        for event_posting in event_postings.values():
+            event_posting.sort(key=lambda memory: str(memory.memory_id))
     return indexes
 
 
 def _entity_comparison_pool(
     request: CandidateGenerationRequest,
     indexes: _RequestIndexes,
+    candidate_index: EmbeddingCandidateIndex | None,
 ) -> list[_EntityPoolItem]:
     pool: dict[tuple[object, ...], _EntityPoolItem] = {}
     source_entities = sorted(
         enumerate(request.source.entities),
         key=lambda item: (*_entity_identity(item[1]), item[0]),
     )
+    limit = request.max_entity_candidates
+
+    for source_position, source_entity in source_entities:
+        name_key = normalized_linking_key(source_entity.name)
+        if _fill_entity_pool(
+            pool,
+            source_position,
+            source_entity,
+            indexes.entity_name_index.get(name_key, ()),
+            "exact_normalized_entity_key",
+            limit,
+        ):
+            return _finalize_entity_pool(pool, limit)
+
     for source_position, source_entity in source_entities:
         source_name_key = normalized_linking_key(source_entity.name)
-        source_keys = _entity_keys(request.source, source_entity)
-
-        for entry in _take_entity_entries(
-            indexes.entity_name_index.get(source_name_key, ()),
-            request.max_entity_candidates,
-        ):
-            _add_entity_pool_item(
-                pool,
-                source_position,
-                source_entity,
-                entry,
-                "exact_normalized_entity_key",
-            )
-
-        for source_key in sorted(source_keys):
-            for entry in _take_entity_entries(
-                indexes.entity_key_index.get(source_key, ()),
-                request.max_entity_candidates,
-            ):
-                reason = (
+        for source_key in sorted(_entity_keys(request.source, source_entity)):
+            entries = indexes.entity_key_index.get(source_key, ())
+            for entry in entries[:limit]:
+                entry_reason = (
                     "exact_normalized_entity_key"
                     if source_name_key == entry.name_key
                     else "alias_match"
@@ -253,94 +308,195 @@ def _entity_comparison_pool(
                     source_position,
                     source_entity,
                     entry,
-                    reason,
+                    entry_reason,
                 )
+                if len(pool) >= limit:
+                    return _finalize_entity_pool(pool, limit)
 
+    if candidate_index is not None:
+        remaining_refs = limit - len(pool)
+        remaining_queries = remaining_refs
+        for source_position, source_entity in source_entities:
+            if remaining_refs <= 0 or remaining_queries <= 0:
+                break
+            refs = candidate_index.query_entity_candidates(
+                source_entity.name,
+                limit=remaining_refs,
+            )[:remaining_refs]
+            remaining_queries -= 1
+            remaining_refs -= len(refs)
+            for ref in refs:
+                indexed_entry = indexes.entity_ref_index.get((ref.memory_id, ref.entity_position))
+                if indexed_entry is None:
+                    continue
+                _add_entity_pool_item(
+                    pool,
+                    source_position,
+                    source_entity,
+                    indexed_entry,
+                    "embedding_index_candidate",
+                )
+                if len(pool) >= limit:
+                    break
+        return _finalize_entity_pool(pool, limit)
+
+    for source_position, source_entity in source_entities:
         source_tokens = {
-            token for key in source_keys for token in _linking_tokens(key)
+            token
+            for key in _entity_keys(request.source, source_entity)
+            for token in _linking_tokens(key)
         }
         for token in sorted(source_tokens):
-            for entry in _take_entity_entries(
+            if _fill_entity_pool(
+                pool,
+                source_position,
+                source_entity,
                 indexes.entity_token_index.get(token, ()),
-                request.max_entity_candidates,
+                "lexical_token_match",
+                limit,
             ):
-                _add_entity_pool_item(
-                    pool,
-                    source_position,
-                    source_entity,
-                    entry,
-                    "lexical_token_match",
-                )
+                return _finalize_entity_pool(pool, limit)
 
-    if len(pool) < request.max_entity_candidates:
-        for source_position, source_entity in source_entities:
-            for entry in _take_entity_entries(
-                indexes.entity_entries,
-                request.max_entity_candidates,
-            ):
-                _add_entity_pool_item(
-                    pool,
-                    source_position,
-                    source_entity,
-                    entry,
-                    "stable_fallback",
-                )
-                if len(pool) >= request.max_entity_candidates:
-                    break
-            if len(pool) >= request.max_entity_candidates:
-                break
+    for source_position, source_entity in source_entities:
+        if _fill_entity_pool(
+            pool,
+            source_position,
+            source_entity,
+            indexes.entity_entries,
+            "stable_fallback",
+            limit,
+        ):
+            break
 
-    return sorted(pool.values(), key=_entity_pool_sort_key)[
-        : request.max_entity_candidates
-    ]
+    return _finalize_entity_pool(pool, limit)
 
 
 def _event_comparison_pool(
     request: CandidateGenerationRequest,
     indexes: _RequestIndexes,
+    candidate_index: EmbeddingCandidateIndex | None,
 ) -> list[_EventPoolItem]:
     pool: dict[UUID, _EventPoolItem] = {}
+    limit = request.max_event_candidates
+
     fact_slot = _fact_slot_key(request.source)
-    if fact_slot:
-        for target in _take_memories(
-            indexes.fact_slot_index.get(fact_slot, ()),
-            request.max_event_candidates,
-        ):
-            _add_event_pool_item(pool, request.source, target, "fact_slot_match")
+    if fact_slot and _fill_event_pool(
+        pool,
+        request.source,
+        indexes.fact_slot_index.get(fact_slot, ()),
+        "fact_slot_match",
+        limit,
+    ):
+        return _finalize_event_pool(pool, limit)
 
     content_key = normalized_linking_key(request.source.content)
-    for target in _take_memories(
+    if _fill_event_pool(
+        pool,
+        request.source,
         indexes.event_content_index.get(content_key, ()),
-        request.max_event_candidates,
+        "exact_normalized_content",
+        limit,
     ):
-        _add_event_pool_item(pool, request.source, target, "exact_normalized_content")
+        return _finalize_event_pool(pool, limit)
 
     for entity_key in sorted(_entity_key_sets(request.source)):
-        for target in _take_memories(
+        if _fill_event_pool(
+            pool,
+            request.source,
             indexes.event_entity_key_index.get(entity_key, ()),
-            request.max_event_candidates,
+            "shared_entity_key",
+            limit,
         ):
-            _add_event_pool_item(pool, request.source, target, "shared_entity_key")
+            return _finalize_event_pool(pool, limit)
+
+    if candidate_index is not None:
+        remaining = limit - len(pool)
+        if remaining > 0:
+            target_ids = candidate_index.query_event_candidates(
+                request.source.content,
+                limit=remaining,
+            )[:remaining]
+            for target_id in target_ids:
+                if target_id not in indexes.event_target_ids:
+                    continue
+                target = indexes.targets_by_id[target_id]
+                _add_event_pool_item(
+                    pool,
+                    request.source,
+                    target,
+                    "embedding_index_candidate",
+                )
+                if len(pool) >= limit:
+                    break
+        return _finalize_event_pool(pool, limit)
 
     for token in sorted(_linking_tokens(content_key)):
-        for target in _take_memories(
+        if _fill_event_pool(
+            pool,
+            request.source,
             indexes.event_token_index.get(token, ()),
-            request.max_event_candidates,
+            "lexical_token_match",
+            limit,
         ):
-            _add_event_pool_item(pool, request.source, target, "lexical_token_match")
+            return _finalize_event_pool(pool, limit)
 
-    if len(pool) < request.max_event_candidates:
-        for target in _take_memories(
-            indexes.event_targets,
-            request.max_event_candidates,
-        ):
-            _add_event_pool_item(pool, request.source, target, "stable_fallback")
-            if len(pool) >= request.max_event_candidates:
-                break
+    _fill_event_pool(
+        pool,
+        request.source,
+        indexes.event_targets,
+        "stable_fallback",
+        limit,
+    )
+    return _finalize_event_pool(pool, limit)
 
-    return sorted(pool.values(), key=_event_pool_sort_key)[
-        : request.max_event_candidates
-    ]
+
+def _fill_entity_pool(
+    pool: dict[tuple[object, ...], _EntityPoolItem],
+    source_position: int,
+    source_entity: EntityRef,
+    entries: Sequence[_EntityIndexEntry],
+    reason: str,
+    limit: int,
+) -> bool:
+    for entry in entries[:limit]:
+        _add_entity_pool_item(
+            pool,
+            source_position,
+            source_entity,
+            entry,
+            reason,
+        )
+        if len(pool) >= limit:
+            return True
+    return False
+
+
+def _fill_event_pool(
+    pool: dict[UUID, _EventPoolItem],
+    source: MemoryRecord,
+    targets: Sequence[MemoryRecord],
+    reason: str,
+    limit: int,
+) -> bool:
+    for target in targets[:limit]:
+        _add_event_pool_item(pool, source, target, reason)
+        if len(pool) >= limit:
+            return True
+    return False
+
+
+def _finalize_entity_pool(
+    pool: dict[tuple[object, ...], _EntityPoolItem],
+    limit: int,
+) -> list[_EntityPoolItem]:
+    return sorted(pool.values(), key=_entity_pool_sort_key)[:limit]
+
+
+def _finalize_event_pool(
+    pool: dict[UUID, _EventPoolItem],
+    limit: int,
+) -> list[_EventPoolItem]:
+    return sorted(pool.values(), key=_event_pool_sort_key)[:limit]
 
 
 def _add_entity_pool_item(
@@ -396,13 +552,11 @@ def _score_entity_pool(
             embeddings[item.source_entity.name],
             embeddings[item.target.entity.name],
         )
-        if not (item.reasons & direct_reasons) and (
-            similarity < request.min_embedding_similarity
-        ):
+        if not (item.reasons & direct_reasons) and (similarity < request.min_embedding_similarity):
             continue
         reasons = set(item.reasons)
         if similarity >= request.min_embedding_similarity:
-            reasons.add("embedding_candidate")
+            reasons.add("embedding_similarity")
         score = _entity_score(tuple(reasons), similarity)
         if "lexical_token_match" in reasons:
             score += 0.1
@@ -415,6 +569,8 @@ def _score_entity_pool(
                     item.target.memory,
                     item.source_entity,
                     item.target.entity,
+                    source_entity_position=item.source_position,
+                    target_entity_position=item.target.position,
                 ),
                 candidate_kind=LinkCandidateKind.ENTITY,
                 policy_name=LinkCandidateGenerator.ENTITY_POLICY,
@@ -446,13 +602,11 @@ def _score_event_pool(
             embeddings[request.source.content],
             embeddings[item.target.content],
         )
-        if not (item.reasons & direct_reasons) and (
-            similarity < request.min_embedding_similarity
-        ):
+        if not (item.reasons & direct_reasons) and (similarity < request.min_embedding_similarity):
             continue
         reasons = set(item.reasons)
         if similarity >= request.min_embedding_similarity:
-            reasons.add("embedding_candidate")
+            reasons.add("embedding_similarity")
         score = similarity
         if "fact_slot_match" in reasons:
             score += 0.5
@@ -481,20 +635,6 @@ def _score_event_pool(
     return _bounded(candidates, request.max_event_candidates)
 
 
-def _take_entity_entries(
-    entries: Iterable[_EntityIndexEntry],
-    limit: int,
-) -> list[_EntityIndexEntry]:
-    return heapq.nsmallest(limit, entries, key=lambda entry: entry.stable_key)
-
-
-def _take_memories(
-    memories: Iterable[MemoryRecord],
-    limit: int,
-) -> list[MemoryRecord]:
-    return heapq.nsmallest(limit, memories, key=lambda memory: str(memory.memory_id))
-
-
 def _entity_pool_sort_key(item: _EntityPoolItem) -> tuple[object, ...]:
     return (
         _reason_priority(
@@ -503,6 +643,7 @@ def _entity_pool_sort_key(item: _EntityPoolItem) -> tuple[object, ...]:
                 "exact_normalized_entity_key",
                 "alias_match",
                 "lexical_token_match",
+                "embedding_index_candidate",
                 "stable_fallback",
             ),
         ),
@@ -521,6 +662,7 @@ def _event_pool_sort_key(item: _EventPoolItem) -> tuple[object, ...]:
                 "exact_normalized_content",
                 "shared_entity_key",
                 "lexical_token_match",
+                "embedding_index_candidate",
                 "stable_fallback",
             ),
         ),
@@ -610,26 +752,6 @@ def _eligible_existing(
         yield target
 
 
-def _entity_reasons(
-    source_entity: EntityRef,
-    target_entity: EntityRef,
-    source_keys: set[str],
-    target_keys: set[str],
-    similarity: float,
-    min_embedding_similarity: float,
-) -> list[str]:
-    reasons: list[str] = []
-    source_name_key = normalized_linking_key(source_entity.name)
-    target_name_key = normalized_linking_key(target_entity.name)
-    if source_name_key == target_name_key:
-        reasons.append("exact_normalized_entity_key")
-    elif source_keys & target_keys:
-        reasons.append("alias_match")
-    if similarity >= min_embedding_similarity:
-        reasons.append("embedding_candidate")
-    return reasons
-
-
 def _entity_score(reasons: Sequence[str], similarity: float) -> float:
     score = similarity
     if "exact_normalized_entity_key" in reasons:
@@ -691,8 +813,7 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if left_norm == 0.0 or right_norm == 0.0:
         return 0.0
     dot_product = sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
+        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
     )
     return dot_product / (left_norm * right_norm)
 
@@ -716,6 +837,9 @@ def _candidate_id(
     target: MemoryRecord,
     source_entity: EntityRef | None = None,
     target_entity: EntityRef | None = None,
+    *,
+    source_entity_position: int | None = None,
+    target_entity_position: int | None = None,
 ) -> str:
     parts = [
         policy_name,
@@ -725,6 +849,22 @@ def _candidate_id(
         str(target.memory_id),
         target_entity.name if target_entity else "",
     ]
+    if source_entity is not None:
+        parts.extend(
+            (
+                "source_entity",
+                *_entity_identity(source_entity),
+                str(source_entity_position),
+            )
+        )
+    if target_entity is not None:
+        parts.extend(
+            (
+                "target_entity",
+                *_entity_identity(target_entity),
+                str(target_entity_position),
+            )
+        )
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:24]
     return f"{kind.value}-candidate-{digest}"
 
@@ -743,6 +883,8 @@ __all__ = [
     "CandidateGenerationRequest",
     "CandidateGenerationResult",
     "CandidateRecallMetrics",
+    "EmbeddingCandidateIndex",
+    "EntityCandidateTargetRef",
     "LinkCandidate",
     "LinkCandidateGenerator",
     "LinkCandidateKind",

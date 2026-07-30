@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -102,6 +102,47 @@ def test_event_candidates_use_time_window_and_preserve_memory_provenance() -> No
     assert candidate.source_memory.event_time == datetime(2023, 5, 8, tzinfo=UTC)
     assert candidate.source_memory.valid_from == candidate.source_memory.event_time
     assert candidate.target_memory.valid_to is None
+
+
+def test_zero_day_event_window_excludes_both_directions_symmetrically() -> None:
+    source, existing, _ = _fixture_records()
+    assert source.event_time is not None
+    base = existing[0]
+    exact = base.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+        }
+    )
+    before = base.model_copy(
+        update={
+            "memory_id": UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            "event_time": source.event_time - timedelta(hours=1),
+            "valid_from": source.event_time - timedelta(hours=1),
+        }
+    )
+    after = base.model_copy(
+        update={
+            "memory_id": UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+            "event_time": source.event_time + timedelta(hours=1),
+            "valid_from": source.event_time + timedelta(hours=1),
+        }
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=source,
+            existing=[before, exact, after],
+            max_entity_candidates=1,
+            max_event_candidates=3,
+            event_time_window_days=0,
+        )
+    )
+
+    assert [candidate.target_memory.memory_id for candidate in result.event_candidates] == [
+        exact.memory_id
+    ]
 
 
 def test_gold_candidate_recall_at_k_and_latency_are_measurable() -> None:

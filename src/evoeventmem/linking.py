@@ -670,12 +670,13 @@ def _entity_key_sets(memory: MemoryRecord) -> set[str]:
     return keys
 
 
-def _time_delta_days(source: MemoryRecord, target: MemoryRecord) -> int | None:
+def _time_delta_days(source: MemoryRecord, target: MemoryRecord) -> float | None:
     source_time = _anchor_time(source)
     target_time = _anchor_time(target)
     if source_time is None or target_time is None:
         return None
-    return abs((source_time - target_time).days)
+    duration = abs(source_time - target_time)
+    return duration.total_seconds() / 86_400.0
 
 
 def _anchor_time(memory: MemoryRecord) -> datetime | None:

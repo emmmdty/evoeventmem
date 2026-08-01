@@ -1068,3 +1068,58 @@ def test_stale_multi_target_uses_actual_winner_target_decision() -> None:
     assert decision["target_memory_id"] == str(target_2024.memory_id)
     assert decision["features"]["semantic_similarity"] == 1.0
     assert "newer_source_supersedes_older_target" in decision["rule_hits"]
+
+
+def test_stale_duplicate_target_records_explicit_cleanup_supersession() -> None:
+    repository = InMemoryMemoryRepository()
+    intermediate = _memory(
+        "71000000-0000-0000-0000-000000000001",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="cleanup:2024",
+    )
+    winner = _memory(
+        "71000000-0000-0000-0000-000000000002",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="cleanup:2025",
+    )
+    stale_source = _memory(
+        "71000000-0000-0000-0000-000000000003",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2023, 1, 1, tzinfo=UTC),
+        evidence_id="cleanup:2023",
+    )
+    repository.add(intermediate)
+    repository.add(winner)
+    generator = _RecordingCandidateGenerator([intermediate, winner])
+    consolidator = ETECConsolidator(
+        _MappedEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+    actual_pair = consolidator.decide(winner, [intermediate])
+    assert actual_pair.action is ConsolidationAction.MERGE
+
+    consolidator.apply(repository, stale_source)
+
+    stored_intermediate = repository.get(intermediate.memory_id)
+    stored_winner = repository.get(winner.memory_id)
+    assert stored_intermediate is not None and stored_winner is not None
+    assert stored_intermediate.status is MemoryStatus.SUPERSEDED
+    assert stored_intermediate.superseded_by == winner.memory_id
+    assert stored_winner.status is MemoryStatus.ACTIVE
+    decision = stored_intermediate.metadata["etec"]["decision"]
+    assert decision["action"] == ConsolidationAction.SUPERSEDE.value
+    assert decision["source_memory_id"] == str(winner.memory_id)
+    assert decision["target_memory_id"] == str(intermediate.memory_id)
+    assert decision["features"] == actual_pair.features.model_dump(mode="json")
+    assert decision["thresholds"] == actual_pair.thresholds.model_dump(mode="json")
+    assert "duplicate_fact" in decision["rule_hits"]
+    assert "duplicate_current_fact_cleanup" in decision["rule_hits"]
+    assert "cleanup" in decision["reason"].casefold()

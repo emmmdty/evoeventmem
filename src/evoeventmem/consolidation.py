@@ -253,7 +253,7 @@ class ETECConsolidator:
                 actual_decision = (
                     pair
                     if superseder.memory_id == source.memory_id
-                    else self._score_pair(superseder, target)
+                    else _cleanup_supersede_decision(self._score_pair(superseder, target))
                 )
                 updated_target = self._supersede_memory(
                     target,
@@ -581,6 +581,25 @@ class ETECConsolidator:
                 "updated_at": datetime.now(UTC),
             },
         )
+
+
+def _cleanup_supersede_decision(decision: ETECDecision) -> ETECDecision:
+    if decision.action is ConsolidationAction.SUPERSEDE:
+        return decision
+    cleanup_rule = (
+        "duplicate_current_fact_cleanup"
+        if decision.action is ConsolidationAction.MERGE
+        else "current_fact_cleanup"
+    )
+    return decision.model_copy(
+        update={
+            "action": ConsolidationAction.SUPERSEDE,
+            "rule_hits": [*decision.rule_hits, cleanup_rule],
+            "reason": (
+                "Current-fact cleanup supersedes the intermediate target with the selected winner."
+            ),
+        }
+    )
 
 
 def _resolve_explicit_candidates(

@@ -1123,3 +1123,59 @@ def test_stale_duplicate_target_records_explicit_cleanup_supersession() -> None:
     assert "duplicate_fact" in decision["rule_hits"]
     assert "duplicate_current_fact_cleanup" in decision["rule_hits"]
     assert "cleanup" in decision["reason"].casefold()
+
+
+def test_equal_time_current_winners_reject_stale_source_without_mutation() -> None:
+    target_a = _memory(
+        "72000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="ambiguous-winner:a",
+    )
+    target_b = _memory(
+        "72000000-0000-0000-0000-000000000002",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="ambiguous-winner:b",
+    )
+    stale_source = _memory(
+        "72000000-0000-0000-0000-000000000003",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2023, 1, 1, tzinfo=UTC),
+        evidence_id="ambiguous-winner:source",
+    )
+    decisions: list[dict[str, object]] = []
+
+    for ordered_targets in ([target_a, target_b], [target_b, target_a]):
+        repository = InMemoryMemoryRepository()
+        repository.add(target_a)
+        repository.add(target_b)
+        target_a_snapshot = target_a.model_copy(deep=True)
+        target_b_snapshot = target_b.model_copy(deep=True)
+        generator = _RecordingCandidateGenerator(ordered_targets)
+        result = ETECConsolidator(
+            _MappedEmbeddingModel(),
+            candidate_generator=generator,  # type: ignore[arg-type]
+        ).apply(repository, stale_source)
+
+        assert result.decision.action is ConsolidationAction.REJECT
+        assert result.decision.source_memory_id == stale_source.memory_id
+        assert result.decision.target_memory_id == target_b.memory_id
+        assert "equal_fact_effective_time" in result.decision.rule_hits
+        assert "ambiguous_current_fact_winners" in result.decision.rule_hits
+        assert "ambiguous" in result.decision.reason.casefold()
+        assert "equal effective time" in result.decision.reason.casefold()
+        assert result.stored_memory is None
+        assert result.updated_memories == []
+        assert repository.get(stale_source.memory_id) is None
+        assert repository.get(target_a.memory_id) == target_a_snapshot
+        assert repository.get(target_b.memory_id) == target_b_snapshot
+        decisions.append(result.decision.model_dump(mode="json"))
+
+    assert decisions[0] == decisions[1]

@@ -234,8 +234,9 @@ class ETECConsolidator:
         if stale_pairs:
             winner_decision = max(
                 stale_pairs,
-                key=lambda pair: _require_fact_effective_time(
-                    targets_by_id[_decision_target_id(pair)]
+                key=lambda pair: (
+                    _require_fact_effective_time(targets_by_id[_decision_target_id(pair)]),
+                    str(_decision_target_id(pair)),
                 ),
             )
             winner = targets_by_id[_decision_target_id(winner_decision)]
@@ -250,11 +251,22 @@ class ETECConsolidator:
                 if target_time is None:
                     continue
                 superseder = source if target_time < source_time else winner
-                actual_decision = (
-                    pair
-                    if superseder.memory_id == source.memory_id
-                    else _cleanup_supersede_decision(self._score_pair(superseder, target))
-                )
+                if superseder.memory_id == source.memory_id:
+                    actual_decision = pair
+                else:
+                    actual_pair_decision = self._score_pair(superseder, target)
+                    if actual_pair_decision.action not in (
+                        ConsolidationAction.MERGE,
+                        ConsolidationAction.SUPERSEDE,
+                    ):
+                        return ETECApplyResult(
+                            decision=_ambiguous_current_winners_decision(
+                                source,
+                                winner_decision,
+                                actual_pair_decision,
+                            )
+                        )
+                    actual_decision = _cleanup_supersede_decision(actual_pair_decision)
                 updated_target = self._supersede_memory(
                     target,
                     superseder,
@@ -584,19 +596,41 @@ class ETECConsolidator:
 
 
 def _cleanup_supersede_decision(decision: ETECDecision) -> ETECDecision:
-    if decision.action is ConsolidationAction.SUPERSEDE:
+    if decision.action is not ConsolidationAction.MERGE:
         return decision
-    cleanup_rule = (
-        "duplicate_current_fact_cleanup"
-        if decision.action is ConsolidationAction.MERGE
-        else "current_fact_cleanup"
-    )
     return decision.model_copy(
         update={
             "action": ConsolidationAction.SUPERSEDE,
-            "rule_hits": [*decision.rule_hits, cleanup_rule],
+            "rule_hits": [*decision.rule_hits, "duplicate_current_fact_cleanup"],
             "reason": (
                 "Current-fact cleanup supersedes the intermediate target with the selected winner."
+            ),
+        }
+    )
+
+
+def _ambiguous_current_winners_decision(
+    source: MemoryRecord,
+    winner_decision: ETECDecision,
+    actual_pair_decision: ETECDecision,
+) -> ETECDecision:
+    rule_hits = list(
+        dict.fromkeys(
+            [
+                *winner_decision.rule_hits,
+                *actual_pair_decision.rule_hits,
+                "ambiguous_current_fact_winners",
+            ]
+        )
+    )
+    return winner_decision.model_copy(
+        update={
+            "action": ConsolidationAction.REJECT,
+            "source_memory_id": source.memory_id,
+            "rule_hits": rule_hits,
+            "reason": (
+                "Current facts are ambiguous because contradictory winners share an "
+                "equal effective time; the incoming source is rejected without mutation."
             ),
         }
     )

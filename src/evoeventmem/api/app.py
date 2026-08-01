@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemorySearchHit
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
-from evoeventmem.services.memory_service import MemoryService
+from evoeventmem.services.memory_service import MemoryIdentityCollisionError, MemoryService
 
 
 class _V1EvidenceResponse(BaseModel):
@@ -91,7 +91,10 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/memories", response_model=_V1MemoryResponse)
 def write_memory(memory: MemoryRecord) -> _V1MemoryResponse:
-    return _V1MemoryResponse.from_domain(_service.write(memory))
+    try:
+        return _V1MemoryResponse.from_domain(_service.write(memory))
+    except MemoryIdentityCollisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/v1/memories/search", response_model=list[_V1MemorySearchHitResponse])
@@ -99,11 +102,17 @@ def search_memories(
     user_id: str,
     q: str = Query(min_length=1),
     limit: int = Query(default=5, ge=1, le=50),
+    tenant_id: str | None = None,
 ) -> list[_V1MemorySearchHitResponse]:
     try:
         return [
             _V1MemorySearchHitResponse.from_domain(hit)
-            for hit in _service.search(user_id=user_id, query=q, limit=limit)
+            for hit in _service.search(
+                user_id=user_id,
+                query=q,
+                limit=limit,
+                tenant_id=tenant_id,
+            )
         ]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

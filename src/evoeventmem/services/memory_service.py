@@ -31,8 +31,14 @@ class MemoryWriteDecisionStatus(StrEnum):
 class MemoryWriteFailureCategory(StrEnum):
     INVALID_CANDIDATE = "invalid_candidate"
     MISSING_EVIDENCE = "missing_evidence"
+    MEMORY_ID_COLLISION = "memory_id_collision"
     REQUEST_VALIDATION_FAILED = "request_validation_failed"
     STORAGE_FAILED = "storage_failed"
+
+
+class MemoryIdentityCollisionError(ValueError):
+    def __init__(self) -> None:
+        super().__init__(MemoryWriteFailureCategory.MEMORY_ID_COLLISION.value)
 
 
 class RawObservationLink(BaseModel):
@@ -117,14 +123,20 @@ class MemoryService:
         self._write_decisions: list[MemoryWriteDecision] = []
 
     def write(self, memory: MemoryRecord) -> MemoryRecord:
-        normalized = memory.normalized_content or " ".join(memory.content.split()).casefold()
-        for existing in self._repository.list_for_user(memory.user_id):
-            existing_normalized = (
-                existing.normalized_content or " ".join(existing.content.split()).casefold()
-            )
-            if existing_normalized == normalized:
-                return existing
-        return self._repository.add(memory)
+        normalized = _normalized_text(memory.content)
+        with self._repository.transaction() as transaction:
+            existing_by_id = transaction.get(memory.memory_id)
+            if existing_by_id is not None:
+                if _legacy_write_identity(existing_by_id) != _legacy_write_identity(memory):
+                    raise MemoryIdentityCollisionError
+                return existing_by_id
+
+            for existing in transaction.list_for_user(memory.user_id):
+                if existing.tenant_id != memory.tenant_id:
+                    continue
+                if _normalized_text(existing.content) == normalized:
+                    return existing
+            return transaction.add(memory)
 
     def write_extracted_events(self, request: MemoryWriteRequest) -> MemoryWriteResult:
         validation_decisions: list[MemoryWriteDecision] = []
@@ -164,42 +176,54 @@ class MemoryService:
         persistent_duplicate_decisions: list[MemoryWriteDecision] = []
         batch_duplicate_decisions: list[MemoryWriteDecision] = []
         accepted_pairs: list[tuple[_PreparedWrite, MemoryRecord]] = []
+        collision_decisions: list[MemoryWriteDecision] = []
 
         try:
             with self._repository.transaction() as transaction:
-                pending_writes: list[_PreparedWrite] = []
-                seen_keys: dict[tuple[str | None, str, str], UUID] = {}
-
-                for prepared in prepared_candidates:
-                    existing = self._find_by_idempotency_key(
-                        transaction,
-                        prepared.memory,
-                        prepared.idempotency_key,
+                collision_indexes = _memory_id_collision_indexes(
+                    transaction,
+                    prepared_candidates,
+                )
+                if collision_indexes:
+                    collision_decisions = _memory_id_collision_decisions(
+                        request,
+                        prepared_candidates,
+                        collision_indexes,
                     )
-                    if existing is not None:
-                        persistent_duplicate_decisions.append(
-                            _duplicate_decision(request, prepared, existing.memory_id)
+                else:
+                    pending_writes: list[_PreparedWrite] = []
+                    seen_keys: dict[tuple[str | None, str, str], UUID] = {}
+
+                    for prepared in prepared_candidates:
+                        existing = self._find_by_idempotency_key(
+                            transaction,
+                            prepared.memory,
+                            prepared.idempotency_key,
                         )
-                        continue
+                        if existing is not None:
+                            persistent_duplicate_decisions.append(
+                                _duplicate_decision(request, prepared, existing.memory_id)
+                            )
+                            continue
 
-                    scoped_key = (
-                        prepared.memory.tenant_id,
-                        prepared.memory.user_id,
-                        prepared.idempotency_key,
-                    )
-                    duplicate_id = seen_keys.get(scoped_key)
-                    if duplicate_id is not None:
-                        batch_duplicate_decisions.append(
-                            _duplicate_decision(request, prepared, duplicate_id)
+                        scoped_key = (
+                            prepared.memory.tenant_id,
+                            prepared.memory.user_id,
+                            prepared.idempotency_key,
                         )
-                        continue
+                        duplicate_id = seen_keys.get(scoped_key)
+                        if duplicate_id is not None:
+                            batch_duplicate_decisions.append(
+                                _duplicate_decision(request, prepared, duplicate_id)
+                            )
+                            continue
 
-                    pending_writes.append(prepared)
-                    seen_keys[scoped_key] = prepared.memory.memory_id
+                        pending_writes.append(prepared)
+                        seen_keys[scoped_key] = prepared.memory.memory_id
 
-                for prepared in pending_writes:
-                    memory = transaction.add(prepared.memory)
-                    accepted_pairs.append((prepared, memory))
+                    for prepared in pending_writes:
+                        memory = transaction.add(prepared.memory)
+                        accepted_pairs.append((prepared, memory))
         except Exception:
             decisions: list[MemoryWriteDecision] = []
             decisions.extend(
@@ -222,6 +246,16 @@ class MemoryService:
                 request_id=request.request_id,
                 accepted_memories=[],
                 decisions=decisions,
+                metrics=metrics,
+            )
+
+        if collision_decisions:
+            metrics = _build_write_metrics(len(request.candidates), collision_decisions)
+            self._write_decisions.extend(collision_decisions)
+            return MemoryWriteResult(
+                request_id=request.request_id,
+                accepted_memories=[],
+                decisions=collision_decisions,
                 metrics=metrics,
             )
 
@@ -257,12 +291,21 @@ class MemoryService:
             return list(self._write_decisions)
         return [decision for decision in self._write_decisions if decision.request_id == request_id]
 
-    def search(self, user_id: str, query: str, limit: int = 5) -> list[MemorySearchHit]:
+    def search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[MemorySearchHit]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
         query_tokens = _tokens(query)
         hits: list[MemorySearchHit] = []
         for memory in self._repository.list_for_user(user_id):
+            if memory.tenant_id != tenant_id:
+                continue
             entity_text = " ".join(entity.name for entity in memory.entities)
             memory_tokens = _tokens(memory.content + " " + entity_text)
             union = query_tokens | memory_tokens
@@ -333,6 +376,79 @@ def _normalized_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _legacy_write_identity(memory: MemoryRecord) -> tuple[str | None, str, str]:
+    return (
+        memory.tenant_id,
+        memory.user_id,
+        _normalized_text(memory.content),
+    )
+
+
+def _memory_id_collision_indexes(
+    repository: MemoryRepository,
+    prepared_candidates: Sequence[_PreparedWrite],
+) -> set[int]:
+    collision_indexes: set[int] = set()
+    batch_identities: dict[UUID, list[tuple[int, tuple[str | None, str, str]]]] = {}
+
+    for index, prepared in enumerate(prepared_candidates):
+        identity = (
+            prepared.memory.tenant_id,
+            prepared.memory.user_id,
+            prepared.idempotency_key,
+        )
+        batch_identities.setdefault(prepared.memory.memory_id, []).append((index, identity))
+
+        existing = repository.get(prepared.memory.memory_id)
+        if existing is None:
+            continue
+        existing_identity = (
+            existing.tenant_id,
+            existing.user_id,
+            _memory_idempotency_key(existing),
+        )
+        if existing_identity != identity:
+            collision_indexes.add(index)
+
+    for identities in batch_identities.values():
+        if len({identity for _, identity in identities}) > 1:
+            collision_indexes.update(index for index, _ in identities)
+
+    return collision_indexes
+
+
+def _memory_id_collision_decisions(
+    request: MemoryWriteRequest,
+    prepared_candidates: Sequence[_PreparedWrite],
+    collision_indexes: set[int],
+) -> list[MemoryWriteDecision]:
+    decisions: list[MemoryWriteDecision] = []
+    for index, prepared in enumerate(prepared_candidates):
+        collision = index in collision_indexes
+        decisions.append(
+            MemoryWriteDecision(
+                request_id=request.request_id,
+                candidate_id=prepared.candidate.candidate_id,
+                status=MemoryWriteDecisionStatus.REJECTED,
+                reason=(
+                    "memory_id belongs to a different durable or request identity"
+                    if collision
+                    else "request contains memory_id collisions; no durable memories written"
+                ),
+                idempotency_key=prepared.idempotency_key,
+                failure_category=(
+                    MemoryWriteFailureCategory.MEMORY_ID_COLLISION
+                    if collision
+                    else MemoryWriteFailureCategory.REQUEST_VALIDATION_FAILED
+                ),
+                evidence_refs=list(prepared.memory.evidence_refs),
+                raw_observations=prepared.raw_observations,
+                candidate_snapshot=_candidate_snapshot(prepared.candidate),
+            )
+        )
+    return decisions
+
+
 def _canonical_json_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _canonical_json_value(value.model_dump(mode="python"))
@@ -362,7 +478,7 @@ def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
     )
     return {
         "memory_kind": memory.memory_kind.value,
-        "normalized_content": _normalized_text(memory.normalized_content or memory.content),
+        "normalized_content": _normalized_text(memory.content),
         "event_time": temporal["event_time"],
         "valid_from": temporal["valid_from"],
         "valid_to": temporal["valid_to"],

@@ -4,6 +4,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 
@@ -63,6 +64,9 @@ class _FailingSecondAddTransaction:
         if self._add_count == 2:
             raise RuntimeError(_FAKE_STORAGE_SECRET)
         return self._repository.add(memory)
+
+    def get(self, memory_id: UUID) -> MemoryRecord | None:
+        return self._repository.get(memory_id)
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
         return self._repository.list_for_user(user_id)
@@ -143,6 +147,70 @@ def test_different_contents_from_same_evidence_are_both_accepted() -> None:
     assert len(repository.list_for_user("u1")) == 2
     assert result.metrics.accepted == 2
     assert result.metrics.duplicates == 0
+
+
+def test_caller_normalized_content_cannot_collapse_distinct_contents() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-untrusted-normalized-content-distinct",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-1",
+                    memory=_event_memory(content="Caroline joined a support group.").model_copy(
+                        update={"normalized_content": "forged-shared-value"}
+                    ),
+                    extractor_version="rule.v1",
+                ),
+                MemoryWriteCandidate(
+                    candidate_id="cand-2",
+                    memory=_event_memory(
+                        content="Caroline invited a friend to the group."
+                    ).model_copy(
+                        update={
+                            "normalized_content": "forged-shared-value",
+                        }
+                    ),
+                    extractor_version="rule.v1",
+                ),
+            ],
+        )
+    )
+
+    assert len(repository.list_for_user("u1")) == 2
+    assert result.metrics.accepted == 2
+    assert result.metrics.duplicates == 0
+
+
+def test_caller_normalized_content_cannot_split_identical_contents() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-untrusted-normalized-content-identical",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-1",
+                    memory=_event_memory().model_copy(
+                        update={"normalized_content": "forged-first-value"}
+                    ),
+                    extractor_version="rule.v1",
+                ),
+                MemoryWriteCandidate(
+                    candidate_id="cand-2",
+                    memory=_event_memory().model_copy(
+                        update={"normalized_content": "forged-second-value"}
+                    ),
+                    extractor_version="rule.v1",
+                ),
+            ],
+        )
+    )
+
+    assert len(repository.list_for_user("u1")) == 1
+    assert result.metrics.accepted == 1
+    assert result.metrics.duplicates == 1
 
 
 def test_different_extractor_versions_remain_distinct() -> None:
@@ -868,6 +936,188 @@ def test_duplicate_candidates_in_one_request_are_duplicate_safe() -> None:
     assert [decision.status for decision in result.decisions] == [
         MemoryWriteDecisionStatus.DUPLICATE,
         MemoryWriteDecisionStatus.ACCEPTED,
+    ]
+
+
+@pytest.mark.parametrize(
+    "collision_updates",
+    [
+        {"tenant_id": "tenant-2"},
+        {"user_id": "user-2"},
+        {
+            "content": "Caroline joined a different support group.",
+            "normalized_content": "caroline joined a different support group.",
+        },
+    ],
+    ids=["cross-tenant", "cross-user", "different-idempotency-identity"],
+)
+def test_durable_memory_id_collision_rejects_entire_request(
+    collision_updates: dict[str, object],
+) -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    original = _event_memory().model_copy(update={"tenant_id": "tenant-1"})
+    initial = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-existing-id",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-existing",
+                    memory=original,
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+    stored_before = initial.accepted_memories[0]
+    colliding = original.model_copy(update=collision_updates)
+    request = MemoryWriteRequest(
+        request_id="req-durable-id-collision",
+        candidates=[
+            MemoryWriteCandidate(
+                candidate_id="cand-collision",
+                memory=colliding,
+                extractor_version="rule.v1",
+            ),
+            MemoryWriteCandidate(
+                candidate_id="cand-otherwise-valid",
+                memory=_event_memory(content="Caroline invited a friend to the group."),
+                extractor_version="rule.v1",
+            ),
+        ],
+    )
+
+    result = service.write_extracted_events(request)
+
+    assert repository.get(original.memory_id) == stored_before
+    assert repository.list_for_user("u1") == [stored_before]
+    assert repository.list_for_user("user-2") == []
+    assert result.accepted_memories == []
+    assert result.metrics.accepted == 0
+    assert result.metrics.duplicates == 0
+    assert result.metrics.rejected == 2
+    assert result.metrics.failure_categories == {
+        MemoryWriteFailureCategory.MEMORY_ID_COLLISION.value: 1,
+        MemoryWriteFailureCategory.REQUEST_VALIDATION_FAILED.value: 1,
+    }
+    decisions = {decision.candidate_id: decision for decision in result.decisions}
+    assert decisions["cand-collision"].failure_category is (
+        MemoryWriteFailureCategory.MEMORY_ID_COLLISION
+    )
+    assert decisions["cand-otherwise-valid"].failure_category is (
+        MemoryWriteFailureCategory.REQUEST_VALIDATION_FAILED
+    )
+    assert all(decision.memory_id is None for decision in result.decisions)
+
+
+def test_same_request_different_identities_cannot_reuse_memory_id() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    first = _event_memory(content="Caroline joined a support group.")
+    second = _event_memory(content="Caroline invited a friend to the group.").model_copy(
+        update={"memory_id": first.memory_id}
+    )
+
+    result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-batch-id-collision",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-first",
+                    memory=first,
+                    extractor_version="rule.v1",
+                ),
+                MemoryWriteCandidate(
+                    candidate_id="cand-second",
+                    memory=second,
+                    extractor_version="rule.v1",
+                ),
+            ],
+        )
+    )
+
+    assert repository.list_for_user("u1") == []
+    assert result.accepted_memories == []
+    assert result.metrics.accepted == 0
+    assert result.metrics.duplicates == 0
+    assert result.metrics.rejected == 2
+    assert result.metrics.failure_categories == {
+        MemoryWriteFailureCategory.MEMORY_ID_COLLISION.value: 2
+    }
+    assert all(
+        decision.status is MemoryWriteDecisionStatus.REJECTED
+        and decision.failure_category is MemoryWriteFailureCategory.MEMORY_ID_COLLISION
+        for decision in result.decisions
+    )
+
+
+def test_exact_retry_with_same_memory_id_remains_duplicate() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    memory = _event_memory()
+    first = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-same-id-first",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-first",
+                    memory=memory,
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+
+    retry = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-same-id-retry",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-retry",
+                    memory=memory,
+                    extractor_version="rule.v1",
+                )
+            ],
+        )
+    )
+
+    assert repository.list_for_user("u1") == first.accepted_memories
+    assert retry.accepted_memories == []
+    assert retry.metrics.duplicates == 1
+    assert retry.decisions[0].status is MemoryWriteDecisionStatus.DUPLICATE
+    assert retry.decisions[0].memory_id == memory.memory_id
+
+
+def test_same_request_exact_identity_can_reuse_memory_id_as_duplicate() -> None:
+    repository = InMemoryMemoryRepository()
+    service = MemoryService(repository)
+    memory = _event_memory()
+
+    result = service.write_extracted_events(
+        MemoryWriteRequest(
+            request_id="req-same-batch-id",
+            candidates=[
+                MemoryWriteCandidate(
+                    candidate_id="cand-first",
+                    memory=memory,
+                    extractor_version="rule.v1",
+                ),
+                MemoryWriteCandidate(
+                    candidate_id="cand-duplicate",
+                    memory=memory,
+                    extractor_version="rule.v1",
+                ),
+            ],
+        )
+    )
+
+    assert repository.list_for_user("u1") == result.accepted_memories
+    assert len(result.accepted_memories) == 1
+    assert result.metrics.accepted == 1
+    assert result.metrics.duplicates == 1
+    assert sorted(decision.status for decision in result.decisions) == [
+        MemoryWriteDecisionStatus.ACCEPTED,
+        MemoryWriteDecisionStatus.DUPLICATE,
     ]
 
 

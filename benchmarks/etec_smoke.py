@@ -14,7 +14,12 @@ from benchmarks.common.artifacts import (
     write_json_write_once,
     write_jsonl_write_once,
 )
-from evoeventmem.consolidation import ConsolidationAction, ETECConsolidator
+from evoeventmem.consolidation import (
+    ConsolidationAction,
+    ETECConsolidator,
+    fact_slot_key,
+    fact_value_key,
+)
 from evoeventmem.domain.models import MemoryRecord, MemoryStatus
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
@@ -137,19 +142,16 @@ def _has_stale_active_contradiction(memories: list[MemoryRecord]) -> bool:
     ]
     for index, left in enumerate(active):
         for right in active[index + 1 :]:
-            if _fact_slot(left) == _fact_slot(right) and _fact_value(left) != _fact_value(right):
+            slot = fact_slot_key(left)
+            if (
+                slot is not None
+                and left.tenant_id == right.tenant_id
+                and left.user_id == right.user_id
+                and slot == fact_slot_key(right)
+                and fact_value_key(left) != fact_value_key(right)
+            ):
                 return True
     return False
-
-
-def _fact_slot(memory: MemoryRecord) -> str | None:
-    value = memory.metadata.get("fact_slot")
-    return str(value) if isinstance(value, str) else None
-
-
-def _fact_value(memory: MemoryRecord) -> str:
-    value = memory.metadata.get("fact_value")
-    return str(value) if isinstance(value, str) else memory.normalized_content or memory.content
 
 
 def _new_run_dir(output_root: Path) -> Path:

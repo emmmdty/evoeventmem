@@ -48,6 +48,8 @@ def _memory(
     tenant_id: str | None = None,
     user_id: str = "u1",
     status: MemoryStatus = MemoryStatus.ACTIVE,
+    supersedes: list[UUID] | None = None,
+    superseded_by: UUID | None = None,
     derived_from: list[UUID] | None = None,
     multi_valued: bool = False,
     synthetic: bool = False,
@@ -72,6 +74,8 @@ def _memory(
         valid_from=valid_from,
         valid_to=valid_to,
         status=status,
+        supersedes=supersedes or [],
+        superseded_by=superseded_by,
         derived_from=derived_from or [],
         metadata=metadata,
         synthetic=synthetic,
@@ -1179,3 +1183,191 @@ def test_equal_time_current_winners_reject_stale_source_without_mutation() -> No
         decisions.append(result.decision.model_dump(mode="json"))
 
     assert decisions[0] == decisions[1]
+
+
+def test_add_sanitizes_caller_supersedes_to_verified_reciprocal_history() -> None:
+    repository = InMemoryMemoryRepository()
+    source_id = UUID("73000000-0000-0000-0000-000000000001")
+    other_source_id = UUID("73000000-0000-0000-0000-000000000099")
+    valid_history = _memory(
+        "73000000-0000-0000-0000-000000000010",
+        "Verified historical memory.",
+        fact_slot="history.verified",
+        fact_value="verified",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:valid",
+        tenant_id="tenant-a",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    cross_tenant = _memory(
+        "73000000-0000-0000-0000-000000000011",
+        "Foreign historical memory.",
+        fact_slot="history.foreign",
+        fact_value="foreign",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:tenant",
+        tenant_id="tenant-b",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    wrong_user = _memory(
+        "73000000-0000-0000-0000-000000000012",
+        "Another user's historical memory.",
+        fact_slot="history.user",
+        fact_value="other-user",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:user",
+        tenant_id="tenant-a",
+        user_id="u2",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    active_target = _memory(
+        "73000000-0000-0000-0000-000000000013",
+        "Still active memory.",
+        fact_slot="history.active",
+        fact_value="active",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:active",
+        tenant_id="tenant-a",
+    )
+    nonreciprocal = _memory(
+        "73000000-0000-0000-0000-000000000014",
+        "Superseded by a different memory.",
+        fact_slot="history.nonreciprocal",
+        fact_value="nonreciprocal",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:nonreciprocal",
+        tenant_id="tenant-a",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=other_source_id,
+    )
+    missing_id = UUID("73000000-0000-0000-0000-000000000015")
+    source = _memory(
+        str(source_id),
+        "Caroline prefers UTC timestamps.",
+        fact_slot="preference.timezone",
+        fact_value="UTC",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-add:source",
+        tenant_id="tenant-a",
+        supersedes=[
+            cross_tenant.memory_id,
+            wrong_user.memory_id,
+            missing_id,
+            active_target.memory_id,
+            nonreciprocal.memory_id,
+            valid_history.memory_id,
+        ],
+    )
+    for memory in (valid_history, cross_tenant, wrong_user, active_target, nonreciprocal):
+        repository.add(memory)
+    generator = _RecordingCandidateGenerator([])
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, source)
+
+    stored = repository.get(source.memory_id)
+    assert result.decision.action is ConsolidationAction.ADD
+    assert stored is not None
+    assert stored.supersedes == [valid_history.memory_id]
+
+
+def test_supersede_sanitizes_caller_links_but_keeps_etec_generated_target() -> None:
+    repository = InMemoryMemoryRepository()
+    source_id = UUID("74000000-0000-0000-0000-000000000003")
+    other_source_id = UUID("74000000-0000-0000-0000-000000000099")
+    older_target = _memory(
+        "74000000-0000-0000-0000-000000000001",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:target",
+        tenant_id="tenant-a",
+    )
+    unrelated_active = _memory(
+        "74000000-0000-0000-0000-000000000002",
+        "Caroline prefers detailed logs.",
+        fact_slot="preference.logs",
+        fact_value="detailed",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:active",
+        tenant_id="tenant-a",
+    )
+    cross_tenant = _memory(
+        "74000000-0000-0000-0000-000000000004",
+        "Foreign historical memory.",
+        fact_slot="history.foreign",
+        fact_value="foreign",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:tenant",
+        tenant_id="tenant-b",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    nonreciprocal = _memory(
+        "74000000-0000-0000-0000-000000000005",
+        "Superseded by another memory.",
+        fact_slot="history.nonreciprocal",
+        fact_value="nonreciprocal",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:nonreciprocal",
+        tenant_id="tenant-a",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=other_source_id,
+    )
+    valid_history = _memory(
+        "74000000-0000-0000-0000-000000000006",
+        "Verified historical memory.",
+        fact_slot="history.verified",
+        fact_value="verified",
+        valid_from=datetime(2020, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:valid",
+        tenant_id="tenant-a",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    missing_id = UUID("74000000-0000-0000-0000-000000000009")
+    source = _memory(
+        str(source_id),
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="sanitize-super:source",
+        tenant_id="tenant-a",
+        supersedes=[
+            older_target.memory_id,
+            unrelated_active.memory_id,
+            cross_tenant.memory_id,
+            nonreciprocal.memory_id,
+            missing_id,
+            valid_history.memory_id,
+        ],
+    )
+    for memory in (
+        older_target,
+        unrelated_active,
+        cross_tenant,
+        nonreciprocal,
+        valid_history,
+    ):
+        repository.add(memory)
+    generator = _RecordingCandidateGenerator([older_target])
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    ).apply(repository, source)
+
+    stored_source = repository.get(source.memory_id)
+    stored_target = repository.get(older_target.memory_id)
+    assert result.decision.action is ConsolidationAction.SUPERSEDE
+    assert stored_source is not None and stored_target is not None
+    assert stored_source.supersedes == [valid_history.memory_id, older_target.memory_id]
+    assert stored_target.status is MemoryStatus.SUPERSEDED
+    assert stored_target.superseded_by == source.memory_id

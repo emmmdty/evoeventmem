@@ -95,6 +95,7 @@ class ETECConsolidator:
         candidates: Sequence[MemoryRecord] | None = None,
     ) -> ETECApplyResult:
         with repository.transaction() as transaction:
+            source = _sanitize_source_supersedes(transaction, source)
             source_rejection = self._reject_inactive_source(source)
             if source_rejection is not None:
                 return ETECApplyResult(decision=source_rejection)
@@ -634,6 +635,27 @@ def _ambiguous_current_winners_decision(
             ),
         }
     )
+
+
+def _sanitize_source_supersedes(
+    repository: MemoryRepository,
+    source: MemoryRecord,
+) -> MemoryRecord:
+    verified: list[UUID] = []
+    for memory_id in _unique_uuids(source.supersedes):
+        durable = repository.get(memory_id)
+        if durable is None:
+            continue
+        if durable.user_id != source.user_id or durable.tenant_id != source.tenant_id:
+            continue
+        if durable.status is not MemoryStatus.SUPERSEDED:
+            continue
+        if durable.superseded_by != source.memory_id:
+            continue
+        verified.append(memory_id)
+    if verified == source.supersedes:
+        return source
+    return _validated_copy(source, {"supersedes": verified})
 
 
 def _resolve_explicit_candidates(

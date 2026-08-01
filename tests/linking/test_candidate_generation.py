@@ -540,6 +540,206 @@ def test_injected_embedding_index_retrieves_semantic_gold_beyond_uuid_fallback()
     assert candidate_index.event_queries == [(source.content, 1)]
 
 
+def test_embedding_index_shortfalls_are_supplemented_deterministically() -> None:
+    source, existing, _ = _fixture_records()
+    template = existing[0].model_copy(
+        update={"event_time": source.event_time, "valid_from": source.event_time, "metadata": {}}
+    )
+    indexed = template.model_copy(
+        update={
+            "memory_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"),
+            "content": "Nebula cobalt.",
+            "entities": [source.entities[0].model_copy(update={"name": "Cora"})],
+        }
+    )
+    lexical = template.model_copy(
+        update={
+            "memory_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"),
+            "content": "Carrie discussed quartz.",
+            "entities": [source.entities[0].model_copy(update={"name": "Carrie Smith"})],
+        }
+    )
+    indexed_ref = linking_module.EntityCandidateTargetRef(
+        memory_id=indexed.memory_id,
+        entity_position=0,
+    )
+    candidate_index = FakeEmbeddingCandidateIndex(
+        entity_refs=[indexed_ref, indexed_ref],
+        event_ids=[indexed.memory_id, indexed.memory_id],
+    )
+    generator = LinkCandidateGenerator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_index=candidate_index,
+    )
+    request = CandidateGenerationRequest(
+        source=source,
+        existing=[lexical, indexed],
+        max_entity_candidates=2,
+        max_event_candidates=2,
+        min_embedding_similarity=-1.0,
+    )
+
+    first = generator.generate(request)
+    second = generator.generate(request)
+
+    assert {candidate.target_memory.memory_id for candidate in first.entity_candidates} == {
+        indexed.memory_id,
+        lexical.memory_id,
+    }
+    assert {candidate.target_memory.memory_id for candidate in first.event_candidates} == {
+        indexed.memory_id,
+        lexical.memory_id,
+    }
+    assert [candidate.candidate_id for candidate in first.entity_candidates] == [
+        candidate.candidate_id for candidate in second.entity_candidates
+    ]
+    assert [candidate.candidate_id for candidate in first.event_candidates] == [
+        candidate.candidate_id for candidate in second.event_candidates
+    ]
+    assert first.entity_comparison_count == 2
+    assert first.event_comparison_count == 2
+    indexed_entity = next(
+        candidate
+        for candidate in first.entity_candidates
+        if candidate.target_memory.memory_id == indexed.memory_id
+    )
+    indexed_event = next(
+        candidate
+        for candidate in first.event_candidates
+        if candidate.target_memory.memory_id == indexed.memory_id
+    )
+    assert "embedding_index_candidate" in indexed_entity.reasons
+    assert "embedding_index_candidate" in indexed_event.reasons
+
+
+def test_invalid_embedding_index_refs_do_not_consume_candidate_capacity() -> None:
+    source, existing, _ = _fixture_records()
+    template = existing[0].model_copy(
+        update={
+            "content": "Quartz zephyr.",
+            "entities": [source.entities[0].model_copy(update={"name": "Zed"})],
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+            "metadata": {},
+        }
+    )
+    valid = template.model_copy(
+        update={"memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1")}
+    )
+    other_user = template.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"),
+            "user_id": "u2",
+        }
+    )
+    other_tenant = template.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3"),
+            "tenant_id": "tenant-2",
+        }
+    )
+    deleted = template.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4"),
+            "status": MemoryStatus.DELETED,
+        }
+    )
+    outside_window = template.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb5"),
+            "event_time": source.event_time + timedelta(days=2),
+            "valid_from": source.event_time + timedelta(days=2),
+        }
+    )
+    wrong_event_kind = template.model_copy(
+        update={
+            "memory_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb6"),
+            "memory_kind": MemoryKind.FACT,
+            "event_time": None,
+        }
+    )
+    missing_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb7")
+    entity_refs = [
+        linking_module.EntityCandidateTargetRef(memory_id=missing_id, entity_position=0),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=source.memory_id,
+            entity_position=0,
+        ),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=other_user.memory_id,
+            entity_position=0,
+        ),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=other_tenant.memory_id,
+            entity_position=0,
+        ),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=deleted.memory_id,
+            entity_position=0,
+        ),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=valid.memory_id,
+            entity_position=99,
+        ),
+        linking_module.EntityCandidateTargetRef(
+            memory_id=valid.memory_id,
+            entity_position=0,
+        ),
+    ]
+    candidate_index = FakeEmbeddingCandidateIndex(
+        entity_refs=entity_refs,
+        event_ids=[
+            missing_id,
+            source.memory_id,
+            other_user.memory_id,
+            other_tenant.memory_id,
+            deleted.memory_id,
+            wrong_event_kind.memory_id,
+            outside_window.memory_id,
+        ],
+    )
+
+    result = LinkCandidateGenerator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_index=candidate_index,
+    ).generate(
+        CandidateGenerationRequest(
+            source=source,
+            existing=[
+                source,
+                other_user,
+                other_tenant,
+                deleted,
+                wrong_event_kind,
+                outside_window,
+                valid,
+            ],
+            max_entity_candidates=8,
+            max_event_candidates=8,
+            event_time_window_days=0,
+            min_embedding_similarity=-1.0,
+        )
+    )
+
+    assert {candidate.target_memory.memory_id for candidate in result.entity_candidates} == {
+        valid.memory_id,
+        wrong_event_kind.memory_id,
+        outside_window.memory_id,
+    }
+    assert {candidate.target_memory.memory_id for candidate in result.event_candidates} == {
+        valid.memory_id
+    }
+    assert result.entity_comparison_count == 3
+    assert result.event_comparison_count == 1
+    assert "embedding_index_candidate" in next(
+        candidate
+        for candidate in result.entity_candidates
+        if candidate.target_memory.memory_id == valid.memory_id
+    ).reasons
+    assert "embedding_index_candidate" not in result.event_candidates[0].reasons
+    assert "stable_fallback" in result.event_candidates[0].reasons
+
+
 def test_embedding_index_results_are_revalidated_against_request_scope_and_time() -> None:
     source, existing, _ = _fixture_records()
     base = existing[0].model_copy(
@@ -610,14 +810,15 @@ def test_embedding_index_results_are_revalidated_against_request_scope_and_time(
     )
 
     assert {candidate.target_memory.memory_id for candidate in result.entity_candidates} == {
-        valid.memory_id
+        valid.memory_id,
+        outside_window.memory_id,
     }
     assert {candidate.target_memory.memory_id for candidate in result.event_candidates} == {
         valid.memory_id
     }
 
 
-def test_invalid_entity_index_results_still_consume_global_query_budget() -> None:
+def test_invalid_entity_index_results_share_a_global_result_budget() -> None:
     source, _, _ = _fixture_records()
     source_with_many_entities = source.model_copy(
         update={
@@ -651,8 +852,7 @@ def test_invalid_entity_index_results_still_consume_global_query_budget() -> Non
     )
 
     assert result.entity_comparison_count == 0
-    assert len(candidate_index.entity_queries) == 1
-    assert candidate_index.entity_queries[0][1] == 4
+    assert candidate_index.entity_queries == [("query entity 0", 4)]
 
 
 def test_duplicate_same_name_entity_occurrences_have_unique_candidate_ids() -> None:

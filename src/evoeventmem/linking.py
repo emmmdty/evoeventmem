@@ -327,17 +327,23 @@ def _entity_comparison_pool(
                     return _finalize_entity_pool(pool, limit)
 
     if candidate_index is not None:
-        remaining_refs = limit - len(pool)
-        remaining_queries = remaining_refs
+        remaining_index_results = limit
+        remaining_queries = limit
         for source_position, source_entity in source_entities:
-            if remaining_refs <= 0 or remaining_queries <= 0:
+            remaining_candidate_slots = limit - len(pool)
+            if (
+                remaining_candidate_slots <= 0
+                or remaining_index_results <= 0
+                or remaining_queries <= 0
+            ):
                 break
+            query_limit = min(remaining_candidate_slots, remaining_index_results)
             refs = candidate_index.query_entity_candidates(
                 source_entity.name,
-                limit=remaining_refs,
-            )[:remaining_refs]
+                limit=query_limit,
+            )[:query_limit]
             remaining_queries -= 1
-            remaining_refs -= len(refs)
+            remaining_index_results -= len(refs)
             for ref in refs:
                 indexed_entry = indexes.entity_ref_index.get((ref.memory_id, ref.entity_position))
                 if indexed_entry is None:
@@ -351,7 +357,8 @@ def _entity_comparison_pool(
                 )
                 if len(pool) >= limit:
                     break
-        return _finalize_entity_pool(pool, limit)
+        if len(pool) >= limit:
+            return _finalize_entity_pool(pool, limit)
 
     for source_position, source_entity in source_entities:
         source_tokens = {
@@ -441,7 +448,8 @@ def _event_comparison_pool(
                 )
                 if len(pool) >= limit:
                     break
-        return _finalize_event_pool(pool, limit)
+        if len(pool) >= limit:
+            return _finalize_event_pool(pool, limit)
 
     for token in sorted(_linking_tokens(content_key)):
         if _fill_event_pool(

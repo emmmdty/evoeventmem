@@ -15,6 +15,10 @@ from pydantic import (
 )
 
 
+def normalize_memory_content(content: str) -> str:
+    return " ".join(content.split()).casefold()
+
+
 class MemoryKind(StrEnum):
     FACT = "fact"
     EVENT = "event"
@@ -125,8 +129,7 @@ class MemoryRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> MemoryRecord:
-        if self.normalized_content is None:
-            self.normalized_content = " ".join(self.content.split()).casefold()
+        self.normalized_content = normalize_memory_content(self.content)
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValueError("valid_to must not be earlier than valid_from")
         if self.updated_at < self.created_at:

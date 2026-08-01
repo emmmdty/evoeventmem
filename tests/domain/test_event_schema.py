@@ -128,3 +128,14 @@ def test_entities_relations_derivation_and_legacy_aliases_serialize_to_json() ->
     assert payload["evidence_refs"][0]["source_id"] == "session-1:turn-2"
     assert payload["derived_from"] == [str(source_id)]
     assert datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00")).tzinfo == UTC
+
+
+def test_normalized_content_is_always_derived_from_content() -> None:
+    memory = MemoryRecord(
+        user_id="u1",
+        content="  Straße\t\n  Update  ",
+        normalized_content="caller supplied stale value",
+        evidence_refs=[evidence()],
+    )
+
+    assert memory.normalized_content == "strasse update"

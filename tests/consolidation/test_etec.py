@@ -232,6 +232,44 @@ def test_merge_path_combines_evidence_and_persists_rule_hits() -> None:
     assert merged.metadata["etec"]["decision"]["thresholds"]["merge_score_min"] == 0.68
 
 
+def test_forged_normalized_content_cannot_hide_a_fact_contradiction() -> None:
+    repository = InMemoryMemoryRepository()
+    existing = _memory(
+        "20000000-0000-0000-0000-000000000011",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="normalized:1",
+    ).model_copy(
+        update={
+            "normalized_content": "forged shared value",
+            "metadata": {"fact_slot": "profile.city"},
+        }
+    )
+    incoming = _memory(
+        "20000000-0000-0000-0000-000000000012",
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="normalized:2",
+    ).model_copy(
+        update={
+            "normalized_content": "forged shared value",
+            "metadata": {"fact_slot": "profile.city"},
+        }
+    )
+    repository.add(existing)
+
+    result = _consolidator().apply(repository, incoming)
+
+    assert consolidation_module.fact_value_key(existing) == "caroline lives in seattle."
+    assert consolidation_module.fact_value_key(incoming) == "caroline lives in boston."
+    assert result.decision.action is ConsolidationAction.SUPERSEDE
+    assert result.decision.features.contradiction_score >= 0.7
+
+
 def test_supersede_path_closes_temporal_contradiction() -> None:
     repository = InMemoryMemoryRepository()
     old_city = _memory(

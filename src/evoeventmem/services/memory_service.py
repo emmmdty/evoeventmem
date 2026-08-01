@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_core import to_jsonable_python
 
 from evoeventmem.core.ports import MemoryRepository
-from evoeventmem.domain.models import EvidenceRef, MemoryRecord, MemorySearchHit
+from evoeventmem.domain.models import (
+    EvidenceRef,
+    MemoryRecord,
+    MemorySearchHit,
+    normalize_memory_content,
+)
 
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 _STORAGE_FAILURE_REASON = "memory storage transaction failed"
@@ -123,7 +128,7 @@ class MemoryService:
         self._write_decisions: list[MemoryWriteDecision] = []
 
     def write(self, memory: MemoryRecord) -> MemoryRecord:
-        normalized = _normalized_text(memory.content)
+        normalized = normalize_memory_content(memory.content)
         with self._repository.transaction() as transaction:
             existing_by_id = transaction.get(memory.memory_id)
             if existing_by_id is not None:
@@ -134,7 +139,7 @@ class MemoryService:
             for existing in transaction.list_for_user(memory.user_id):
                 if existing.tenant_id != memory.tenant_id:
                     continue
-                if _normalized_text(existing.content) == normalized:
+                if normalize_memory_content(existing.content) == normalized:
                     return existing
             return transaction.add(memory)
 
@@ -372,15 +377,11 @@ class MemoryService:
         return None
 
 
-def _normalized_text(value: str) -> str:
-    return " ".join(value.split()).casefold()
-
-
 def _legacy_write_identity(memory: MemoryRecord) -> tuple[str | None, str, str]:
     return (
         memory.tenant_id,
         memory.user_id,
-        _normalized_text(memory.content),
+        normalize_memory_content(memory.content),
     )
 
 
@@ -478,7 +479,7 @@ def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
     )
     return {
         "memory_kind": memory.memory_kind.value,
-        "normalized_content": _normalized_text(memory.content),
+        "normalized_content": normalize_memory_content(memory.content),
         "event_time": temporal["event_time"],
         "valid_from": temporal["valid_from"],
         "valid_to": temporal["valid_to"],
@@ -486,7 +487,7 @@ def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
             (
                 {
                     "entity_id": entity.entity_id,
-                    "name": _normalized_text(entity.name),
+                    "name": normalize_memory_content(entity.name),
                     "kind": entity.kind,
                     "role": entity.role,
                 }

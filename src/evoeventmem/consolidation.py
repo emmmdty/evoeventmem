@@ -9,7 +9,13 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from evoeventmem.core.ports import EmbeddingModel, MemoryRepository
-from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryRecord, MemoryStatus
+from evoeventmem.domain.models import (
+    EntityRef,
+    EvidenceRef,
+    MemoryRecord,
+    MemoryStatus,
+    normalize_memory_content,
+)
 from evoeventmem.linking import (
     CandidateGenerationRequest,
     CandidateGenerationResult,
@@ -452,9 +458,9 @@ class ETECConsolidator:
     def _features(self, source: MemoryRecord, target: MemoryRecord) -> ETECFeatureVector:
         embeddings = self._embedding_model.embed_texts([source.content, target.content])
         semantic = _semantic_similarity(embeddings[0].vector, embeddings[1].vector)
-        if source.normalized_content == target.normalized_content or _same_fact_value(
-            source, target
-        ):
+        if normalize_memory_content(source.content) == normalize_memory_content(
+            target.content
+        ) or _same_fact_value(source, target):
             semantic = 1.0
         entity_role = _jaccard(_entity_role_keys(source), _entity_role_keys(target))
         if entity_role == 0.0 and _same_fact_slot(source, target):
@@ -893,7 +899,7 @@ def fact_value_key(memory: MemoryRecord) -> str:
     value = memory.metadata.get("fact_value")
     if isinstance(value, str) and normalized_linking_key(value):
         return normalized_linking_key(value)
-    return memory.normalized_content or normalized_linking_key(memory.content)
+    return normalize_memory_content(memory.content)
 
 
 def _same_fact_value(source: MemoryRecord, target: MemoryRecord) -> bool:

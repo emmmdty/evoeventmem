@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from benchmarks.common.artifacts import (
 from evoeventmem.consolidation import (
     ConsolidationAction,
     ETECConsolidator,
+    ETECThresholds,
     fact_slot_key,
     fact_value_key,
 )
@@ -26,15 +28,24 @@ from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
 
 ANNOTATIONS = Path("tests/fixtures/consolidation/m10_etec_annotations.json")
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m10_etec_smoke")
+METRICS_VERSION = "etec-smoke-metrics.v2"
 
 
 class ETECSmokeSummary(BaseModel):
-    schema_version: str = "etec.smoke.v1"
+    schema_version: str = "etec.smoke.v2"
     run_id: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     git_commit: str = Field(min_length=1)
+    git_dirty: bool
     annotation_path: str
-    sample_count: int = Field(ge=0)
+    annotation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metrics_version: str = Field(min_length=1)
+    policy_name: str = Field(min_length=1)
+    embedding_model_id: str = Field(min_length=1)
+    thresholds: ETECThresholds
+    sample_count: int = Field(ge=1)
+    action_accuracy: float = Field(ge=0.0, le=1.0)
+    target_accuracy: float = Field(ge=0.0, le=1.0)
     merge_f1: float = Field(ge=0.0, le=1.0)
     conflict_accuracy: float = Field(ge=0.0, le=1.0)
     provenance_coverage: float = Field(ge=0.0, le=1.0)
@@ -54,11 +65,19 @@ def main() -> None:
 
 
 def run_etec_smoke(annotation_path: Path, output_dir: Path) -> ETECSmokeSummary:
-    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
-    cases = payload["cases"]
+    annotation_bytes = annotation_path.read_bytes()
+    payload = json.loads(annotation_bytes)
+    cases = _validated_cases(payload["cases"])
+    git_commit = current_git_commit()
+    git_dirty = _git_is_dirty()
+    embedding_model = DeterministicFakeEmbeddingModel()
+    thresholds = ETECThresholds()
+    consolidator = ETECConsolidator(embedding_model, thresholds)
     decisions: list[dict[str, Any]] = []
     merge_expected: list[bool] = []
     merge_predicted: list[bool] = []
+    action_correct = 0
+    target_correct = 0
     conflict_correct = 0
     provenance_checks = 0
     provenance_passes = 0
@@ -69,11 +88,21 @@ def run_etec_smoke(annotation_path: Path, output_dir: Path) -> ETECSmokeSummary:
         for item in case["existing"]:
             repository.add(MemoryRecord.model_validate(item))
         incoming = MemoryRecord.model_validate(case["incoming"])
-        result = ETECConsolidator(DeterministicFakeEmbeddingModel()).apply(repository, incoming)
+        result = consolidator.apply(repository, incoming)
         action = result.decision.action
+        predicted_target_memory_id = (
+            str(result.decision.target_memory_id)
+            if result.decision.target_memory_id is not None
+            else None
+        )
+        expected_target_memory_id = case.get("expected_target_memory_id")
+        action_match = action.value == case["expected_action"]
+        target_match = predicted_target_memory_id == expected_target_memory_id
 
         merge_expected.append(bool(case["merge_gold"]))
         merge_predicted.append(action is ConsolidationAction.MERGE)
+        action_correct += int(action_match)
+        target_correct += int(target_match)
         if (action is ConsolidationAction.SUPERSEDE) == bool(case["conflict_gold"]):
             conflict_correct += 1
         for memory in result.updated_memories:
@@ -88,11 +117,10 @@ def run_etec_smoke(annotation_path: Path, output_dir: Path) -> ETECSmokeSummary:
                 "case_id": case["case_id"],
                 "expected_action": case["expected_action"],
                 "predicted_action": action.value,
-                "target_memory_id": (
-                    str(result.decision.target_memory_id)
-                    if result.decision.target_memory_id is not None
-                    else None
-                ),
+                "action_match": action_match,
+                "expected_target_memory_id": expected_target_memory_id,
+                "target_memory_id": predicted_target_memory_id,
+                "target_match": target_match,
                 "decision": result.decision.model_dump(mode="json"),
                 "updated_memory_ids": [str(memory.memory_id) for memory in result.updated_memories],
             }
@@ -103,15 +131,21 @@ def run_etec_smoke(annotation_path: Path, output_dir: Path) -> ETECSmokeSummary:
     write_jsonl_write_once(decisions_path, decisions)
     summary = ETECSmokeSummary(
         run_id=output_dir.name,
-        git_commit=current_git_commit(),
+        git_commit=git_commit,
+        git_dirty=git_dirty,
         annotation_path=str(annotation_path),
+        annotation_sha256=hashlib.sha256(annotation_bytes).hexdigest(),
+        metrics_version=METRICS_VERSION,
+        policy_name=ETECConsolidator.POLICY_NAME,
+        embedding_model_id=embedding_model.model_id,
+        thresholds=thresholds,
         sample_count=len(cases),
+        action_accuracy=action_correct / len(cases),
+        target_accuracy=target_correct / len(cases),
         merge_f1=_binary_f1(merge_expected, merge_predicted),
-        conflict_accuracy=conflict_correct / len(cases) if cases else 0.0,
-        provenance_coverage=(
-            provenance_passes / provenance_checks if provenance_checks else 1.0
-        ),
-        stale_memory_error=stale_errors / len(cases) if cases else 0.0,
+        conflict_accuracy=conflict_correct / len(cases),
+        provenance_coverage=provenance_passes / provenance_checks if provenance_checks else 0.0,
+        stale_memory_error=stale_errors / len(cases),
         decisions_path=str(decisions_path),
     )
     write_json_write_once(summary_path, summary)
@@ -128,8 +162,48 @@ def _binary_f1(expected: list[bool], predicted: list[bool]) -> float:
     )
     denominator = 2 * true_positive + false_positive + false_negative
     if denominator == 0:
-        return 1.0
+        return 0.0
     return (2 * true_positive) / denominator
+
+
+def _validated_cases(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("ETEC smoke annotations must contain at least one case")
+    cases: list[dict[str, Any]] = []
+    for value_case in value:
+        if not isinstance(value_case, dict):
+            raise ValueError("each ETEC smoke case must be an object")
+        case = dict(value_case)
+        case_id = case.get("case_id", "<unknown>")
+        try:
+            expected_action = ConsolidationAction(case.get("expected_action"))
+        except ValueError as error:
+            raise ValueError(f"{case_id}: expected_action is invalid") from error
+        for field, action in (
+            ("merge_gold", ConsolidationAction.MERGE),
+            ("conflict_gold", ConsolidationAction.SUPERSEDE),
+        ):
+            gold = case.get(field)
+            if not isinstance(gold, bool) or gold != (expected_action is action):
+                raise ValueError(f"{case_id}: {field} is inconsistent with expected_action")
+        expected_target = case.get("expected_target_memory_id")
+        if expected_target is not None and not isinstance(expected_target, str):
+            raise ValueError(f"{case_id}: expected_target_memory_id must be a string or null")
+        cases.append(case)
+    return cases
+
+
+def _git_is_dirty() -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return True
+    return bool(result.stdout.strip())
 
 
 def _has_stale_active_contradiction(memories: list[MemoryRecord]) -> bool:

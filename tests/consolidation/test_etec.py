@@ -1409,3 +1409,160 @@ def test_supersede_sanitizes_caller_links_but_keeps_etec_generated_target() -> N
     assert stored_source.supersedes == [valid_history.memory_id, older_target.memory_id]
     assert stored_target.status is MemoryStatus.SUPERSEDED
     assert stored_target.superseded_by == source.memory_id
+
+
+def test_merge_atomically_relinks_verified_source_histories_to_target() -> None:
+    repository = InMemoryMemoryRepository()
+    target_id = UUID("77000000-0000-0000-0000-000000000001")
+    source_id = UUID("77000000-0000-0000-0000-000000000002")
+    target_parent = UUID("77000000-0000-0000-0000-000000000090")
+    source_parent = UUID("77000000-0000-0000-0000-000000000091")
+    existing_history = _memory(
+        "77000000-0000-0000-0000-000000000010",
+        "Existing target history.",
+        fact_slot="profile.city",
+        fact_value="Paris",
+        valid_from=datetime(2022, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2023, 1, 1, tzinfo=UTC),
+        evidence_id="merge-relink:existing",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=target_id,
+    )
+    history_2023 = _memory(
+        "77000000-0000-0000-0000-000000000011",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2023, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="merge-relink:2023",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    history_2024 = _memory(
+        "77000000-0000-0000-0000-000000000012",
+        "Caroline lives in Austin.",
+        fact_slot="profile.city",
+        fact_value="Austin",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="merge-relink:2024",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    target = _memory(
+        str(target_id),
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="merge-relink:target",
+        supersedes=[existing_history.memory_id],
+        derived_from=[target_parent],
+    )
+    source = _memory(
+        str(source_id),
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 2, tzinfo=UTC),
+        evidence_id="merge-relink:source",
+        supersedes=[history_2023.memory_id, history_2024.memory_id],
+        derived_from=[source_parent],
+    )
+    for memory in (existing_history, history_2023, history_2024, target):
+        repository.add(memory)
+    existing_snapshot = existing_history.model_copy(deep=True)
+    generator = _RecordingCandidateGenerator([target])
+    consolidator = ETECConsolidator(
+        _MappedEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+    expected_2023 = consolidator.decide(target, [history_2023])
+    expected_2024 = consolidator.decide(target, [history_2024])
+    assert expected_2023.action is ConsolidationAction.SUPERSEDE
+    assert expected_2024.action is ConsolidationAction.SUPERSEDE
+
+    result = consolidator.apply(repository, source)
+
+    merged = repository.get(target.memory_id)
+    stored_2023 = repository.get(history_2023.memory_id)
+    stored_2024 = repository.get(history_2024.memory_id)
+    assert result.decision.action is ConsolidationAction.MERGE
+    assert repository.get(source.memory_id) is None
+    assert merged is not None and stored_2023 is not None and stored_2024 is not None
+    assert merged.supersedes == [
+        existing_history.memory_id,
+        history_2023.memory_id,
+        history_2024.memory_id,
+    ]
+    assert merged.derived_from == [target_parent, source_parent, source.memory_id]
+    assert repository.get(existing_history.memory_id) == existing_snapshot
+    assert stored_2023.superseded_by == target.memory_id
+    assert stored_2024.superseded_by == target.memory_id
+    for stored, expected in (
+        (stored_2023, expected_2023),
+        (stored_2024, expected_2024),
+    ):
+        decision = stored.metadata["etec"]["decision"]
+        assert decision["action"] == ConsolidationAction.SUPERSEDE.value
+        assert decision["source_memory_id"] == str(target.memory_id)
+        assert decision["target_memory_id"] == str(stored.memory_id)
+        assert decision["features"] == expected.features.model_dump(mode="json")
+        assert decision["thresholds"] == expected.thresholds.model_dump(mode="json")
+        assert "merged_source_history_relink" in decision["rule_hits"]
+    assert {memory.memory_id for memory in result.updated_memories} == {
+        history_2023.memory_id,
+        history_2024.memory_id,
+        target.memory_id,
+    }
+
+
+def test_merge_history_relink_failure_rolls_back_every_write() -> None:
+    repository = _FailingOnSecondWriteRepository()
+    target_id = UUID("78000000-0000-0000-0000-000000000001")
+    source_id = UUID("78000000-0000-0000-0000-000000000002")
+    history = _memory(
+        "78000000-0000-0000-0000-000000000010",
+        "Caroline lives in Seattle.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        valid_to=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="merge-rollback:history",
+        status=MemoryStatus.SUPERSEDED,
+        superseded_by=source_id,
+    )
+    target = _memory(
+        str(target_id),
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 1, tzinfo=UTC),
+        evidence_id="merge-rollback:target",
+    )
+    source = _memory(
+        str(source_id),
+        "Caroline lives in Boston.",
+        fact_slot="profile.city",
+        fact_value="Boston",
+        valid_from=datetime(2025, 1, 2, tzinfo=UTC),
+        evidence_id="merge-rollback:source",
+        supersedes=[history.memory_id],
+    )
+    repository.add(history)
+    repository.add(target)
+    history_snapshot = history.model_copy(deep=True)
+    target_snapshot = target.model_copy(deep=True)
+    generator = _RecordingCandidateGenerator([target])
+    consolidator = ETECConsolidator(
+        _MappedEmbeddingModel(),
+        candidate_generator=generator,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="injected repository failure"):
+        consolidator.apply(repository, source)
+
+    assert repository.get(history.memory_id) == history_snapshot
+    assert repository.get(target.memory_id) == target_snapshot
+    assert repository.get(source.memory_id) is None

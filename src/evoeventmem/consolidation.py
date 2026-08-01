@@ -133,11 +133,18 @@ class ETECConsolidator:
             if decision.action is ConsolidationAction.MERGE:
                 target = _require_target(decision, bounded_targets)
                 merged = self._merge_memory(target, source, decision)
+                relinked_histories = self._relink_merged_source_histories(
+                    transaction,
+                    merged,
+                    source,
+                )
+                for history in relinked_histories:
+                    transaction.add(history)
                 transaction.add(merged)
                 return ETECApplyResult(
                     decision=decision,
                     stored_memory=merged,
-                    updated_memories=[merged],
+                    updated_memories=[*relinked_histories, merged],
                 )
 
             if decision.action is ConsolidationAction.SUPERSEDE:
@@ -519,6 +526,7 @@ class ETECConsolidator:
                 "evidence_refs": _unique_evidence([*target.evidence_refs, *source.evidence_refs]),
                 "entities": _unique_entities([*target.entities, *source.entities]),
                 "relations": [*target.relations, *source.relations],
+                "supersedes": _unique_uuids([*target.supersedes, *source.supersedes]),
                 "derived_from": merged_source_ids,
                 "valid_from": _earliest_time(target.valid_from, source.valid_from),
                 "valid_to": _latest_time(target.valid_to, source.valid_to),
@@ -527,6 +535,31 @@ class ETECConsolidator:
                 "updated_at": datetime.now(UTC),
             },
         )
+
+    def _relink_merged_source_histories(
+        self,
+        repository: MemoryRepository,
+        merged: MemoryRecord,
+        source: MemoryRecord,
+    ) -> list[MemoryRecord]:
+        relinked: list[MemoryRecord] = []
+        for memory_id in source.supersedes:
+            history = repository.get(memory_id)
+            if history is None:
+                raise ValueError("verified source history disappeared during merge")
+            pair_decision = self._score_pair(merged, history)
+            relink_decision = _merged_source_history_relink_decision(pair_decision)
+            relinked.append(
+                _validated_copy(
+                    history,
+                    {
+                        "superseded_by": merged.memory_id,
+                        "metadata": _metadata_with_decision(history, relink_decision),
+                        "updated_at": datetime.now(UTC),
+                    },
+                )
+            )
+        return relinked
 
     def _supersede_memory(
         self,
@@ -600,6 +633,18 @@ class ETECConsolidator:
                 "updated_at": datetime.now(UTC),
             },
         )
+
+
+def _merged_source_history_relink_decision(decision: ETECDecision) -> ETECDecision:
+    return decision.model_copy(
+        update={
+            "action": ConsolidationAction.SUPERSEDE,
+            "rule_hits": list(dict.fromkeys([*decision.rule_hits, "merged_source_history_relink"])),
+            "reason": (
+                "The merged target inherits the source's verified historical supersession link."
+            ),
+        }
+    )
 
 
 def _cleanup_supersede_decision(decision: ETECDecision) -> ETECDecision:

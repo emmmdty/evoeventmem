@@ -228,6 +228,94 @@ def test_normalized_alias_and_lexical_entity_indexes_produce_direct_candidates()
     assert "lexical_token_match" in reasons_by_target[lexical.memory_id]
 
 
+def test_normalized_linking_keys_preserve_unicode_letters_and_ascii_boundaries() -> None:
+    assert linking_module.normalized_linking_key(" Café_東京 42 ") == "café 東京 42"
+    assert linking_module.normalized_linking_key("ＡＢＣ") == "abc"
+
+
+def test_distinct_unicode_entity_names_do_not_get_an_exact_direct_match() -> None:
+    source, existing, _ = _fixture_records()
+    unicode_source = source.model_copy(
+        update={
+            "content": "source event",
+            "entities": [source.entities[0].model_copy(update={"name": "北京"})],
+            "metadata": {},
+        }
+    )
+    unicode_target = existing[0].model_copy(
+        update={
+            "content": "target event",
+            "entities": [source.entities[0].model_copy(update={"name": "上海"})],
+            "metadata": {},
+        }
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=unicode_source,
+            existing=[unicode_target],
+            max_entity_candidates=1,
+            max_event_candidates=1,
+            min_embedding_similarity=0.5,
+        )
+    )
+
+    assert result.entity_candidates == []
+
+
+def test_distinct_unicode_event_contents_do_not_get_an_exact_direct_match() -> None:
+    source, existing, _ = _fixture_records()
+    unicode_source = source.model_copy(
+        update={"content": "今天下雨", "entities": [], "metadata": {}}
+    )
+    unicode_target = existing[0].model_copy(
+        update={"content": "明天晴天", "entities": [], "metadata": {}}
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=unicode_source,
+            existing=[unicode_target],
+            max_entity_candidates=1,
+            max_event_candidates=1,
+            min_embedding_similarity=0.5,
+        )
+    )
+
+    assert result.event_candidates == []
+
+
+def test_empty_normalized_keys_do_not_bypass_embedding_thresholds() -> None:
+    source, existing, _ = _fixture_records()
+    punctuation_source = source.model_copy(
+        update={
+            "content": "!!!",
+            "entities": [source.entities[0].model_copy(update={"name": "???"})],
+            "metadata": {"entity_aliases": {"???": ["..."]}},
+        }
+    )
+    punctuation_target = existing[0].model_copy(
+        update={
+            "content": "...",
+            "entities": [source.entities[0].model_copy(update={"name": "---"})],
+            "metadata": {"entity_aliases": {"---": ["!!!"]}},
+        }
+    )
+
+    result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+        CandidateGenerationRequest(
+            source=punctuation_source,
+            existing=[punctuation_target],
+            max_entity_candidates=1,
+            max_event_candidates=1,
+            min_embedding_similarity=0.5,
+        )
+    )
+
+    assert result.entity_candidates == []
+    assert result.event_candidates == []
+
+
 def test_fact_slot_is_a_direct_event_policy_candidate_and_reports_recall() -> None:
     source, existing, _ = _fixture_records()
     source_fact = source.model_copy(

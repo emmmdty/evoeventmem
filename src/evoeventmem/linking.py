@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field
 from evoeventmem.core.ports import EmbeddingModel
 from evoeventmem.domain.models import EntityRef, MemoryKind, MemoryRecord, MemoryStatus
 
-_KEY_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_KEY_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
 
 
 class LinkCandidateKind(StrEnum):
@@ -234,7 +235,8 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
             )
             indexes.entity_entries.append(entry)
             indexes.entity_ref_index[(target.memory_id, position)] = entry
-            indexes.entity_name_index.setdefault(name_key, []).append(entry)
+            if name_key:
+                indexes.entity_name_index.setdefault(name_key, []).append(entry)
             for key in keys:
                 indexes.entity_key_index.setdefault(key, []).append(entry)
                 memory_entity_keys.add(key)
@@ -249,7 +251,8 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
             indexes.event_targets.append(target)
             indexes.event_target_ids.add(target.memory_id)
             content_key = normalized_linking_key(target.content)
-            indexes.event_content_index.setdefault(content_key, []).append(target)
+            if content_key:
+                indexes.event_content_index.setdefault(content_key, []).append(target)
             for token in _linking_tokens(content_key):
                 indexes.event_token_index.setdefault(token, []).append(target)
             for key in memory_entity_keys:
@@ -293,7 +296,7 @@ def _entity_comparison_pool(
 
     for source_position, source_entity in source_entities:
         name_key = normalized_linking_key(source_entity.name)
-        if _fill_entity_pool(
+        if name_key and _fill_entity_pool(
             pool,
             source_position,
             source_entity,
@@ -400,7 +403,7 @@ def _event_comparison_pool(
         return _finalize_event_pool(pool, limit)
 
     content_key = normalized_linking_key(request.source.content)
-    if _fill_event_pool(
+    if content_key and _fill_event_pool(
         pool,
         request.source,
         indexes.event_content_index.get(content_key, ()),
@@ -741,7 +744,8 @@ def calculate_candidate_recall(
 
 
 def normalized_linking_key(value: str) -> str:
-    return " ".join(_KEY_TOKEN_RE.findall(value.casefold()))
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return " ".join(_KEY_TOKEN_RE.findall(normalized))
 
 
 def _eligible_existing(
@@ -772,19 +776,20 @@ def _entity_score(reasons: Sequence[str], similarity: float) -> float:
 
 
 def _entity_keys(memory: MemoryRecord, entity: EntityRef) -> set[str]:
-    keys = {normalized_linking_key(entity.name)}
+    entity_key = normalized_linking_key(entity.name)
+    if not entity_key:
+        return set()
+    keys = {entity_key}
     aliases = memory.metadata.get("entity_aliases", {})
     if not isinstance(aliases, dict):
         return keys
-    entity_key = normalized_linking_key(entity.name)
     for raw_name, raw_aliases in aliases.items():
         if normalized_linking_key(str(raw_name)) != entity_key:
             continue
-        keys.update(
-            normalized_linking_key(str(alias))
-            for alias in _iter_alias_values(raw_aliases)
-            if normalized_linking_key(str(alias))
-        )
+        for alias in _iter_alias_values(raw_aliases):
+            alias_key = normalized_linking_key(str(alias))
+            if alias_key:
+                keys.add(alias_key)
     return keys
 
 

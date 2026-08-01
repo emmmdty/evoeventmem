@@ -17,16 +17,22 @@ class InMemoryMemoryRepository:
 
     def add(self, memory: MemoryRecord) -> MemoryRecord:
         with self._lock:
-            self._items[memory.memory_id] = memory
-        return memory
+            stored_memory = memory.model_copy(deep=True)
+            self._items[stored_memory.memory_id] = stored_memory
+            return stored_memory.model_copy(deep=True)
 
     def get(self, memory_id: UUID) -> MemoryRecord | None:
         with self._lock:
-            return self._items.get(memory_id)
+            memory = self._items.get(memory_id)
+            return memory.model_copy(deep=True) if memory is not None else None
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
         with self._lock:
-            return [item for item in self._items.values() if item.user_id == user_id]
+            return [
+                item.model_copy(deep=True)
+                for item in self._items.values()
+                if item.user_id == user_id
+            ]
 
     @contextmanager
     def transaction(self) -> Iterator[MemoryRepository]:

@@ -15,6 +15,75 @@ def _memory(content: str) -> MemoryRecord:
     return MemoryRecord(user_id="u1", content=content, synthetic=True)
 
 
+def test_add_detaches_input_memory_state() -> None:
+    repository = InMemoryMemoryRepository()
+    memory = MemoryRecord(
+        user_id="u1",
+        content="original",
+        synthetic=True,
+        roles={"subject": "original"},
+        metadata={"details": {"state": "original"}},
+    )
+    repository.add(memory)
+
+    memory.content = "changed"
+    memory.roles["subject"] = "changed"
+    memory.metadata["details"]["state"] = "changed"
+
+    stored_memory = repository.get(memory.memory_id)
+    assert stored_memory is not None
+    assert stored_memory.content == "original"
+    assert stored_memory.roles == {"subject": "original"}
+    assert stored_memory.metadata == {"details": {"state": "original"}}
+
+
+def test_get_returns_detached_memory_state() -> None:
+    repository = InMemoryMemoryRepository()
+    memory = MemoryRecord(
+        user_id="u1",
+        content="original",
+        synthetic=True,
+        roles={"subject": "original"},
+        metadata={"details": {"state": "original"}},
+    )
+    repository.add(memory)
+
+    fetched_memory = repository.get(memory.memory_id)
+    assert fetched_memory is not None
+    fetched_memory.content = "changed"
+    fetched_memory.roles["subject"] = "changed"
+    fetched_memory.metadata["details"]["state"] = "changed"
+
+    stored_memory = repository.get(memory.memory_id)
+    assert stored_memory is not None
+    assert stored_memory.content == "original"
+    assert stored_memory.roles == {"subject": "original"}
+    assert stored_memory.metadata == {"details": {"state": "original"}}
+
+
+def test_list_for_user_returns_detached_memory_state() -> None:
+    repository = InMemoryMemoryRepository()
+    memory = MemoryRecord(
+        user_id="u1",
+        content="original",
+        synthetic=True,
+        roles={"subject": "original"},
+        metadata={"details": {"state": "original"}},
+    )
+    repository.add(memory)
+
+    listed_memory = repository.list_for_user("u1")[0]
+    listed_memory.content = "changed"
+    listed_memory.roles["subject"] = "changed"
+    listed_memory.metadata["details"]["state"] = "changed"
+
+    stored_memory = repository.get(memory.memory_id)
+    assert stored_memory is not None
+    assert stored_memory.content == "original"
+    assert stored_memory.roles == {"subject": "original"}
+    assert stored_memory.metadata == {"details": {"state": "original"}}
+
+
 def test_transaction_rolls_back_all_writes_on_error() -> None:
     repository = InMemoryMemoryRepository()
     first = _memory("first")
@@ -84,6 +153,7 @@ def test_transaction_detaches_published_nested_memory_state() -> None:
         working_memory = transaction.get(original.memory_id)
         assert working_memory is not None
         working_memory.metadata["details"]["state"] = "committed"
+        transaction.add(working_memory)
 
     working_memory.metadata["details"]["state"] = "changed after commit"
 

@@ -81,7 +81,9 @@ class ETECConsolidator:
         source: MemoryRecord,
         candidates: Sequence[MemoryRecord],
     ) -> ETECDecision:
-        reject_decision = self._reject_without_evidence(source)
+        reject_decision = self._reject_inactive_source(source) or self._reject_without_evidence(
+            source
+        )
         if reject_decision is not None:
             return reject_decision
         return self._select_decision(source, self._score_candidates(source, candidates))
@@ -93,6 +95,12 @@ class ETECConsolidator:
         candidates: Sequence[MemoryRecord] | None = None,
     ) -> ETECApplyResult:
         with repository.transaction() as transaction:
+            source_rejection = self._reject_inactive_source(source)
+            if source_rejection is not None:
+                return ETECApplyResult(decision=source_rejection)
+            if transaction.get(source.memory_id) is not None:
+                return ETECApplyResult(decision=self._reject_source_id_collision(source))
+
             existing = (
                 _resolve_explicit_candidates(transaction, candidates)
                 if candidates is not None
@@ -192,7 +200,11 @@ class ETECConsolidator:
                 update={
                     "action": ConsolidationAction.ADD,
                     "rule_hits": [*best.rule_hits, "no_merge_or_conflict_rule_hit"],
-                    "reason": "No candidate satisfied MERGE or SUPERSEDE thresholds.",
+                    "reason": (
+                        best.reason
+                        if "disjoint_temporal_intervals" in best.rule_hits
+                        else "No candidate satisfied MERGE or SUPERSEDE thresholds."
+                    ),
                 }
             )
 
@@ -238,7 +250,16 @@ class ETECConsolidator:
                 if target_time is None:
                     continue
                 superseder = source if target_time < source_time else winner
-                updated_target = self._supersede_memory(target, superseder, pair)
+                actual_decision = (
+                    pair
+                    if superseder.memory_id == source.memory_id
+                    else self._score_pair(superseder, target)
+                )
+                updated_target = self._supersede_memory(
+                    target,
+                    superseder,
+                    actual_decision,
+                )
                 changed_targets.append(updated_target)
                 if superseder.memory_id == source.memory_id:
                     source_supersedes.append(target.memory_id)
@@ -285,6 +306,30 @@ class ETECConsolidator:
             decision=decision,
             stored_memory=stored,
             updated_memories=[*superseded, stored],
+        )
+
+    def _reject_inactive_source(self, source: MemoryRecord) -> ETECDecision | None:
+        if source.status is MemoryStatus.ACTIVE:
+            return None
+        return ETECDecision(
+            action=ConsolidationAction.REJECT,
+            source_memory_id=source.memory_id,
+            score=0.0,
+            features=self._standalone_features(source),
+            thresholds=self._thresholds,
+            rule_hits=["inactive_source"],
+            reason="ETEC accepts only active source memories for consolidation.",
+        )
+
+    def _reject_source_id_collision(self, source: MemoryRecord) -> ETECDecision:
+        return ETECDecision(
+            action=ConsolidationAction.REJECT,
+            source_memory_id=source.memory_id,
+            score=0.0,
+            features=self._standalone_features(source),
+            thresholds=self._thresholds,
+            rule_hits=["source_memory_id_collision"],
+            reason="A durable memory with the source memory ID already exists.",
         )
 
     def _reject_without_evidence(self, source: MemoryRecord) -> ETECDecision | None:
@@ -366,11 +411,16 @@ class ETECConsolidator:
             and features.entity_role_overlap >= self._thresholds.merge_entity_role_min
             and score >= self._thresholds.merge_score_min
         ):
-            action = ConsolidationAction.MERGE
-            rule_hits.append("duplicate_fact")
-            reason = (
-                "Candidate is semantically and structurally consistent with the incoming memory."
-            )
+            if _merge_temporally_compatible(source, target):
+                action = ConsolidationAction.MERGE
+                rule_hits.append("duplicate_fact")
+                reason = (
+                    "Candidate is semantically and structurally consistent with the "
+                    "incoming memory."
+                )
+            else:
+                rule_hits.append("disjoint_temporal_intervals")
+                reason = "Known temporal intervals are disjoint, so the facts remain separate."
 
         if _same_fact_value(source, target):
             rule_hits.append("same_fact_value")
@@ -435,18 +485,22 @@ class ETECConsolidator:
         source: MemoryRecord,
         decision: ETECDecision,
     ) -> MemoryRecord:
-        metadata = _metadata_with_decision(target, decision)
-        metadata["merged_source_memory_ids"] = [
-            *[str(memory_id) for memory_id in target.derived_from],
-            str(source.memory_id),
+        merged_source_ids = [
+            memory_id
+            for memory_id in _unique_uuids(
+                [*target.derived_from, *source.derived_from, source.memory_id]
+            )
+            if memory_id != target.memory_id
         ]
+        metadata = _metadata_with_decision(target, decision)
+        metadata["merged_source_memory_ids"] = [str(memory_id) for memory_id in merged_source_ids]
         return _validated_copy(
             target,
             {
                 "evidence_refs": _unique_evidence([*target.evidence_refs, *source.evidence_refs]),
                 "entities": _unique_entities([*target.entities, *source.entities]),
                 "relations": [*target.relations, *source.relations],
-                "derived_from": _unique_uuids([*target.derived_from, source.memory_id]),
+                "derived_from": merged_source_ids,
                 "valid_from": _earliest_time(target.valid_from, source.valid_from),
                 "valid_to": _latest_time(target.valid_to, source.valid_to),
                 "confidence": max(target.confidence, source.confidence),
@@ -670,6 +724,14 @@ def _temporal_overlap_score(source: MemoryRecord, target: MemoryRecord) -> float
     if _intervals_overlap(source_start, source_end, target_start, target_end):
         return 1.0
     return 0.0
+
+
+def _merge_temporally_compatible(source: MemoryRecord, target: MemoryRecord) -> bool:
+    source_start, source_end = _interval(source)
+    target_start, target_end = _interval(target)
+    if source_start is None or target_start is None:
+        return True
+    return _intervals_overlap(source_start, source_end, target_start, target_end)
 
 
 def _contradiction_score(

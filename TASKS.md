@@ -18,7 +18,7 @@
 | M09 | [Candidate generation and entity/event linking](tasks/mainline/M09_linking.md) | DONE |
 | M10 | [ETEC temporal consolidation](tasks/mainline/M10_etec.md) | DONE |
 | M11 | [Rule-based query router](tasks/mainline/M11_query_router.md) | DONE |
-| M12 | [QEMR hybrid retrieval and budget packing](tasks/mainline/M12_qemr.md) | TODO |
+| M12 | [QEMR hybrid retrieval and budget packing](tasks/mainline/M12_qemr.md) | DONE |
 | M13 | [LongMemEval main experiment](tasks/mainline/M13_longmemeval.md) | TODO |
 | M14 | [LoCoMo main experiment](tasks/mainline/M14_locomo.md) | TODO |
 | M15 | [Ablations, statistics, and error analysis](tasks/mainline/M15_analysis.md) | TODO |

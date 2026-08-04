@@ -1,0 +1,241 @@
+{
+  "schema_version": "retrieval.smoke.annotations.v1",
+  "cases": [
+    {
+      "case_id": "semantic_favorite_color",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "71000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "semantic:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        },
+        {
+          "memory_id": "71000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Alex lives in Austin.",
+          "entities": [{"name": "Alex", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "semantic:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-02-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "temporal_superseded_city",
+      "query": "When did Caroline move to Seattle?",
+      "expected_intent": "temporal",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "72000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}, {"name": "Seattle"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "temporal:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2023-05-01T00:00:00Z"
+        },
+        {
+          "memory_id": "72000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline lived in Austin.",
+          "entities": [{"name": "Caroline", "role": "subject"}, {"name": "Austin"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "temporal:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2021-03-01T00:00:00Z",
+          "status": "superseded",
+          "superseded_by": "72000000-0000-0000-0000-000000000001"
+        }
+      ]
+    },
+    {
+      "case_id": "graph_relation",
+      "query": "Who is Caroline related to?",
+      "expected_intent": "graph",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "73000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline is related to Alex.",
+          "entities": [{"name": "Caroline", "role": "subject"}, {"name": "Alex", "role": "relative"}],
+          "relations": [
+            {
+              "source": "Caroline",
+              "predicate": "related to",
+              "target": "Alex",
+              "confidence": 1.0
+            }
+          ],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "graph:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-03-01T00:00:00Z"
+        },
+        {
+          "memory_id": "73000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "graph:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "episodic_trip",
+      "query": "Did I tell you about my trip to Kyoto?",
+      "expected_intent": "episodic",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "74000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "episode",
+          "content": "I told you about my trip to Kyoto last month.",
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "episodic:1", "locator": "messages[0]"}
+          ],
+          "event_time": "2026-07-01T00:00:00Z"
+        },
+        {
+          "memory_id": "74000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "episodic:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "procedural_howto",
+      "query": "How do I create a memory in evoeventmem?",
+      "expected_intent": "procedural",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "75000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "procedure",
+          "content": "To create a memory, call the write endpoint with evidence.",
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "procedural:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-04-01T00:00:00Z"
+        },
+        {
+          "memory_id": "75000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "procedural:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "hybrid_general",
+      "query": "What can you tell me about Caroline?",
+      "expected_intent": "hybrid",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "76000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "hybrid:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        },
+        {
+          "memory_id": "76000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "procedure",
+          "content": "To create a memory, call the write endpoint with evidence.",
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "hybrid:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-04-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "budget_tight",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "budget_tokens": 4,
+      "memories": [
+        {
+          "memory_id": "77000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "tight:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        },
+        {
+          "memory_id": "77000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Alex lives in Austin.",
+          "entities": [{"name": "Alex", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "tight:2", "locator": "messages[1]"}
+          ],
+          "valid_from": "2024-02-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "no_memory_greeting",
+      "query": "Hello!",
+      "expected_intent": "no-memory",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "greeting:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}

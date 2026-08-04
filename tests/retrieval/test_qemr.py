@@ -75,6 +75,7 @@ def _harness(
     vectors: dict[str, tuple[float, ...]] | None = None,
     default_budget_tokens: int = 200,
     max_items_per_source: int = 4,
+    max_candidates_per_source: int | None = None,
 ) -> RetrievalHarness:
     repository = InMemoryMemoryRepository()
     for memory in memories:
@@ -85,6 +86,7 @@ def _harness(
         embedding,
         default_budget_tokens=default_budget_tokens,
         max_items_per_source=max_items_per_source,
+        max_candidates_per_source=max_candidates_per_source,
     )
 
 
@@ -377,3 +379,102 @@ def test_retrieval_service_persists_component_scores_and_exclusions() -> None:
     assert all(item["evidence_refs"] for item in packed)
     assert exported[1]["exclusions"], "no-memory query must record exclusion reasons"
     assert exported[1]["selected_context"] == []
+
+
+def test_weighted_average_final_score_discriminates_without_saturation() -> None:
+    multi_facet = _memory(
+        content="alpha beta",
+        evidence_id="evidence-1",
+        entities=[{"name": "Epsilon", "role": "subject"}],
+        memory_id=UUID("20000000-0000-0000-0000-000000000001"),
+    )
+    single_facet = _memory(
+        content="gamma delta",
+        evidence_id="evidence-2",
+        memory_id=UUID("20000000-0000-0000-0000-000000000002"),
+    )
+    vectors = {
+        "epsilon": (1.0, 0.0),
+        multi_facet.content: (1.0, 0.0),
+        single_facet.content: (0.8, 0.6),
+    }
+    harness = _harness([multi_facet, single_facet], vectors=vectors)
+    result = harness.retrieve("epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID)
+
+    assert result.selected_context[0].memory.memory_id == multi_facet.memory_id
+    assert result.selected_context[0].final_score == pytest.approx(0.4)
+    assert result.selected_context[1].final_score == pytest.approx(0.16)
+    assert all(0.0 <= item.final_score <= 1.0 for item in result.selected_context)
+
+
+def test_reference_time_controls_temporal_scores() -> None:
+    old = _memory(
+        content="Caroline lived in Austin.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    recent = _memory(
+        content="Caroline lives in Seattle.",
+        valid_from=datetime(2023, 5, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    harness = _harness([old, recent])
+    query = "When did Caroline move to Seattle?"
+
+    near = harness.retrieve(query, user_id="u1", reference_time=datetime(2023, 6, 1, tzinfo=UTC))
+    far = harness.retrieve(query, user_id="u1", reference_time=datetime(2026, 8, 1, tzinfo=UTC))
+    near_old = _component(near, old.memory_id, "temporal")
+    far_old = _component(far, old.memory_id, "temporal")
+    near_recent = _component(near, recent.memory_id, "temporal")
+    far_recent = _component(far, recent.memory_id, "temporal")
+
+    assert near_recent == pytest.approx(1.0)
+    assert far_recent == pytest.approx(1.0)
+    assert 0.0 < near_old < near_recent
+    assert 0.0 < far_old < far_recent
+    assert far_old > near_old
+
+    default = harness.retrieve(query, user_id="u1")
+    assert default.total_tokens <= default.budget_tokens
+
+
+def test_candidate_cap_truncates_and_records_exclusion() -> None:
+    memories = [
+        _memory(
+            content=f"candidate memory number {index}",
+            evidence_id=f"cap:{index}",
+        )
+        for index in range(4)
+    ]
+    vectors = {
+        "query": (1.0, 0.0),
+        memories[0].content: (1.0, 0.0),
+        memories[1].content: (0.9, 0.435889894354067),
+        memories[2].content: (0.8, 0.6),
+        memories[3].content: (0.7, 0.714142842854285),
+    }
+    harness = _harness(memories, vectors=vectors, max_candidates_per_source=2)
+    result = harness.retrieve("query", user_id="u1", strategy=RetrievalStrategy.FIXED_VECTOR)
+
+    scored_ids = {item.memory.memory_id for item in result.candidates}
+    assert memories[0].memory_id in scored_ids
+    assert memories[1].memory_id in scored_ids
+    assert memories[2].memory_id not in scored_ids
+    assert memories[3].memory_id not in scored_ids
+    assert any(
+        exclusion.reason == "candidate_cap_reached"
+        and exclusion.memory_id == memories[3].memory_id
+        for exclusion in result.exclusions
+    )
+    assert any(
+        exclusion.reason == "candidate_cap_reached"
+        and exclusion.memory_id == memories[2].memory_id
+        for exclusion in result.exclusions
+    )
+
+
+def _component(result: QEMRRetrievalResult, memory_id: UUID, source: str) -> float:
+    for item in result.selected_context:
+        if item.memory.memory_id == memory_id:
+            return item.component_scores[source]
+    raise AssertionError(f"memory {memory_id} not in selected context")

@@ -200,17 +200,21 @@ class RetrievalHarness:
         router: QueryRouter | None = None,
         default_budget_tokens: int = DEFAULT_BUDGET_TOKENS,
         max_items_per_source: int = 4,
+        max_candidates_per_source: int | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if default_budget_tokens < 1:
             raise ValueError("default_budget_tokens must be at least 1")
         if max_items_per_source < 1:
             raise ValueError("max_items_per_source must be at least 1")
+        if max_candidates_per_source is not None and max_candidates_per_source < 1:
+            raise ValueError("max_candidates_per_source must be at least 1")
         self._repository = repository
         self._embedding_model = embedding_model
         self._router = router or QueryRouter()
         self._default_budget_tokens = default_budget_tokens
         self._max_items_per_source = max_items_per_source
+        self._max_candidates_per_source = max_candidates_per_source
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def retrieve(
@@ -221,6 +225,7 @@ class RetrievalHarness:
         tenant_id: str | None = None,
         strategy: RetrievalStrategy = RetrievalStrategy.QEMR,
         budget_tokens: int | None = None,
+        reference_time: datetime | None = None,
     ) -> QEMRRetrievalResult:
         budget = self._default_budget_tokens if budget_tokens is None else budget_tokens
         if budget < 1:
@@ -242,9 +247,17 @@ class RetrievalHarness:
                 memories,
             )
         weights = resolve_weights(strategy, routing.intent)
-        candidates = self._normalize(self._collect_candidates(query, routing, memories))
-        scored = self._merge_candidates(candidates, weights, routing.intent)
+        reference = _query_reference_datetime(
+            query,
+            reference_time if reference_time is not None else self._clock(),
+        )
+        candidates, capped_memory_ids = self._cap_candidates(
+            self._collect_candidates(query, routing, memories, reference)
+        )
+        normalized = self._normalize(candidates)
+        scored = self._merge_candidates(normalized, weights, routing.intent)
         eligible, exclusions = self._classify_memories(scored, routing.intent)
+        exclusions.extend(self._capped_memory_exclusions(scored, capped_memory_ids))
         selected, packing_exclusions = self._pack(eligible, budget)
         exclusions.extend(packing_exclusions)
         selected_context = self._build_packed_items(selected, routing.intent)
@@ -300,6 +313,7 @@ class RetrievalHarness:
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
         candidates: list[Candidate] = []
         sources = (
@@ -310,14 +324,51 @@ class RetrievalHarness:
             self._procedural_candidates,
         )
         for source in sources:
-            candidates.extend(source(query, routing, memories))
+            candidates.extend(source(query, routing, memories, reference))
         return candidates
+
+    def _cap_candidates(
+        self,
+        candidates: Sequence[Candidate],
+    ) -> tuple[list[Candidate], set[UUID]]:
+        if self._max_candidates_per_source is None:
+            return list(candidates), set()
+        kept: list[Candidate] = []
+        dropped: set[UUID] = set()
+        for source in ALL_SOURCES:
+            source_candidates = sorted(
+                [candidate for candidate in candidates if candidate.source is source],
+                key=lambda candidate: (-candidate.raw_score, str(candidate.memory.memory_id)),
+            )
+            kept.extend(source_candidates[: self._max_candidates_per_source])
+            dropped.update(
+                candidate.memory.memory_id
+                for candidate in source_candidates[self._max_candidates_per_source :]
+            )
+        return kept, dropped
+
+    def _capped_memory_exclusions(
+        self,
+        scored: Sequence[ScoredMemory],
+        capped_memory_ids: set[UUID],
+    ) -> list[ExclusionRecord]:
+        scored_ids = {item.memory.memory_id for item in scored}
+        return [
+            ExclusionRecord(
+                memory_id=memory_id,
+                reason="candidate_cap_reached",
+                details={"max_candidates_per_source": self._max_candidates_per_source},
+            )
+            for memory_id in sorted(capped_memory_ids, key=str)
+            if memory_id not in scored_ids
+        ]
 
     def _dense_candidates(
         self,
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
         actives = [memory for memory in memories if memory.status is MemoryStatus.ACTIVE]
         if not actives:
@@ -340,8 +391,8 @@ class RetrievalHarness:
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
-        reference = _query_reference_datetime(query, self._clock())
         return [
             Candidate(
                 memory=memory,
@@ -359,6 +410,7 @@ class RetrievalHarness:
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
         query_tokens = _token_set(query)
         return [
@@ -378,8 +430,8 @@ class RetrievalHarness:
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
-        reference = _query_reference_datetime(query, self._clock())
         query_tokens = _token_set(query)
         return [
             Candidate(
@@ -398,6 +450,7 @@ class RetrievalHarness:
         query: str,
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
+        reference: datetime,
     ) -> list[Candidate]:
         query_tokens = _token_set(query)
         return [
@@ -465,10 +518,9 @@ class RetrievalHarness:
                     if source in per_source
                 )
             ]
-            final_score = min(
-                1.0,
-                sum(score.weighted_score for score in source_scores),
-            )
+            weight_total = sum(weight for weight in weights.values() if weight > 0.0)
+            weighted_sum = sum(score.weighted_score for score in source_scores)
+            final_score = weighted_sum / weight_total if weight_total > 0.0 else 0.0
             if memory.status is MemoryStatus.SUPERSEDED and intent in HISTORICAL_INTENTS:
                 final_score *= self.SUPERSEDED_HISTORICAL_PENALTY
             merged.append(
@@ -634,6 +686,7 @@ class RetrievalService:
         tenant_id: str | None = None,
         strategy: RetrievalStrategy = RetrievalStrategy.QEMR,
         budget_tokens: int | None = None,
+        reference_time: datetime | None = None,
     ) -> QEMRRetrievalResult:
         result = self._harness.retrieve(
             query,
@@ -641,6 +694,7 @@ class RetrievalService:
             tenant_id=tenant_id,
             strategy=strategy,
             budget_tokens=budget_tokens,
+            reference_time=reference_time,
         )
         self._results.append(result)
         return result

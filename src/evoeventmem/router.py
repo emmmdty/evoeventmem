@@ -5,6 +5,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from evoeventmem.core.ports import EntityLexicon
+
 POLICY_NAME = "query-router.rules.v1"
 
 
@@ -26,9 +28,12 @@ class QueryFeatures(BaseModel):
     has_relation_cue: bool = False
     has_episodic_cue: bool = False
     has_procedure_cue: bool = False
+    has_name_phrase: bool = False
     has_entity: bool = False
     entity_count: int = Field(default=0, ge=0)
     temporal_cue_count: int = Field(default=0, ge=0)
+    strong_temporal_count: int = Field(default=0, ge=0)
+    weak_temporal_count: int = Field(default=0, ge=0)
 
 
 class QueryRoutingDecision(BaseModel):
@@ -42,10 +47,29 @@ class QueryRoutingDecision(BaseModel):
 
 
 class QueryRouter:
-    """Deterministic rules-first query router with transparent features."""
+    """Deterministic query router that arbitrates intents by cue scores.
+
+    Confidence is bounded evidence strength (0.1 + winner score, capped at
+    1.0); it is an ordinal ranking signal, not a calibrated probability.
+    """
 
     POLICY_NAME = POLICY_NAME
     MIN_COMMIT_CONFIDENCE = 0.5
+
+    _INTENT_PRIORITY = {
+        QueryIntent.PROCEDURAL: 0,
+        QueryIntent.EPISODIC: 1,
+        QueryIntent.TEMPORAL: 2,
+        QueryIntent.GRAPH: 3,
+        QueryIntent.SEMANTIC: 4,
+    }
+    _INTENT_REASONS = {
+        QueryIntent.PROCEDURAL: "Query asks for a procedure or how-to steps.",
+        QueryIntent.EPISODIC: "Query recalls a past episode or prior conversation.",
+        QueryIntent.TEMPORAL: "Query anchors on temporal expressions.",
+        QueryIntent.GRAPH: "Query asks about entity relationships or connections.",
+        QueryIntent.SEMANTIC: "Query looks up a semantic fact or attribute.",
+    }
 
     _CHIT_CHAT_RE = re.compile(
         r"^(hi|hi there|hello|hey|thanks|thanks a lot|thanks so much|"
@@ -62,15 +86,19 @@ class QueryRouter:
         r"instructions?|workflow|process for|best way to|guide me|walk me through",
         re.IGNORECASE,
     )
-    _TEMPORAL_RE = re.compile(
+    _TEMPORAL_STRONG_RE = re.compile(
         r"\b(january|february|march|april|may|june|july|august|september|october|"
         r"november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b|"
         r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|"
         r"thu|fri|sat|sun)\b|"
         r"\b20\d{2}\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s?(am|pm)\b|"
-        r"yesterday|today|tomorrow|last week|last month|last year|next week|next month|"
-        r"\d+\s?(days?|weeks?|months?|years?)\s?ago|\d+\s?(minutes?|hours?|days?|weeks?)\b|"
-        r"how long (did|does|has)|when (did|was|were|will|do)|at what time|"
+        r"\b(last|next|this) (week|month|year)\b|"
+        r"\d+\s?(days?|weeks?|months?|years?)\s?ago|"
+        r"how long (did|does|has)|when (did|was|were|will|do)|at what time|what time",
+        re.IGNORECASE,
+    )
+    _TEMPORAL_WEAK_RE = re.compile(
+        r"yesterday|today|tomorrow|"
         r"before|after|during|since|until|first|last|finally|then|"
         r"earlier|later|recently|previously|afterwards|subsequently|eventually|"
         r"in the beginning|at first|at the time|as of now|currently|now|"
@@ -96,6 +124,10 @@ class QueryRouter:
         r"favorite|prefers?|preference|likes?|dislikes?|lives in|works as|"
         r"based in|interested in|age|birthday|hometown|name of|do you know|"
         r"is it|does .+ prefer|hobby|hobbies",
+        re.IGNORECASE,
+    )
+    _NAME_PHRASE_RE = re.compile(
+        r"\b(first|last|middle|full|legal)\s+names?\b",
         re.IGNORECASE,
     )
     _ENTITY_RE = re.compile(
@@ -173,15 +205,9 @@ class QueryRouter:
             "has",
         }
     )
-    _FEATURE_WEIGHTS = {
-        "is_chit_chat": 0.6,
-        "has_fact_cue": 0.3,
-        "has_temporal_cue": 0.45,
-        "has_relation_cue": 0.4,
-        "has_episodic_cue": 0.5,
-        "has_procedure_cue": 0.55,
-        "has_entity": 0.2,
-    }
+
+    def __init__(self, *, entity_lexicon: EntityLexicon | None = None) -> None:
+        self._lexicon = entity_lexicon
 
     def route(self, query: str) -> QueryRoutingDecision:
         normalized = " ".join(query.split())
@@ -196,8 +222,8 @@ class QueryRouter:
                 policy_name=self.POLICY_NAME,
             )
         features = self.extract_features(normalized)
-        intent, rule_hits, reason = self._apply_rules(features)
-        confidence = self._confidence(features)
+        intent, score, rule_hits, reason = self._apply_rules(features)
+        confidence = min(1.0, 0.1 + score)
         if (
             intent is not QueryIntent.HYBRID
             and intent is not QueryIntent.NO_MEMORY
@@ -217,119 +243,146 @@ class QueryRouter:
         )
 
     def extract_features(self, query: str) -> QueryFeatures:
-        temporal_matches = self._TEMPORAL_RE.findall(query)
+        strong_temporal = self._TEMPORAL_STRONG_RE.findall(query)
+        weak_temporal = self._TEMPORAL_WEAK_RE.findall(query)
         is_formulaic = bool(self._CHIT_CHAT_RE.match(query))
         return QueryFeatures(
             is_chit_chat=is_formulaic or bool(self._CHIT_CHAT_PREFIX_RE.match(query)),
             is_formulaic_chit_chat=is_formulaic,
             has_fact_cue=bool(self._FACT_RE.search(query)),
-            has_temporal_cue=bool(temporal_matches),
+            has_temporal_cue=bool(strong_temporal or weak_temporal),
             has_relation_cue=bool(self._RELATION_RE.search(query)),
             has_episodic_cue=bool(self._EPISODIC_RE.search(query)),
             has_procedure_cue=bool(self._PROCEDURE_RE.search(query)),
+            has_name_phrase=bool(self._NAME_PHRASE_RE.search(query)),
             has_entity=self._has_entity(query),
             entity_count=self._entity_count(query),
-            temporal_cue_count=len(temporal_matches),
+            temporal_cue_count=len(strong_temporal) + len(weak_temporal),
+            strong_temporal_count=len(strong_temporal),
+            weak_temporal_count=len(weak_temporal),
         )
 
     def _apply_rules(
         self,
         features: QueryFeatures,
-    ) -> tuple[QueryIntent, list[str], str]:
+    ) -> tuple[QueryIntent, float, list[str], str]:
         if features.is_formulaic_chit_chat:
             return (
                 QueryIntent.NO_MEMORY,
+                1.0,
                 ["formulaic_chit_chat_rule"],
                 "Query is a formulaic social phrase with no memory demand.",
             )
-        if features.is_chit_chat and not self._has_memory_cue(features):
+        scores = self._score_intents(features)
+        rule_hits = self._matched_cue_hits(features)
+        if features.is_chit_chat and not scores:
             return (
                 QueryIntent.NO_MEMORY,
+                0.4,
                 ["chit_chat_rule"],
                 "Query is chit-chat with no memory demand.",
             )
-        if features.has_procedure_cue:
-            return (
-                QueryIntent.PROCEDURAL,
-                ["procedure_rule"],
-                "Query asks for a procedure or how-to steps.",
-            )
-        if features.has_episodic_cue:
-            return (
-                QueryIntent.EPISODIC,
-                ["episodic_rule"],
-                "Query recalls a past episode or prior conversation.",
-            )
-        if features.has_temporal_cue and features.temporal_cue_count >= 2:
-            return (
-                QueryIntent.TEMPORAL,
-                ["temporal_rule", "multiple_temporal_cues"],
-                "Query contains multiple temporal cues and orders events in time.",
-            )
-        if features.has_relation_cue:
-            return (
-                QueryIntent.GRAPH,
-                ["relation_rule"],
-                "Query asks about entity relationships or connections.",
-            )
-        if features.has_fact_cue:
-            return (
-                QueryIntent.SEMANTIC,
-                ["fact_rule"],
-                "Query looks up a semantic fact or attribute.",
-            )
-        if features.has_temporal_cue:
-            return (
-                QueryIntent.TEMPORAL,
-                ["temporal_rule"],
-                "Query anchors on a temporal expression.",
-            )
-        if not features.has_entity and not self._has_memory_cue(features):
+        if not scores:
+            if features.has_entity:
+                return (
+                    QueryIntent.HYBRID,
+                    0.0,
+                    ["unsupported_intent"],
+                    "No rule matched the query; hybrid fallback is required.",
+                )
             return (
                 QueryIntent.HYBRID,
+                0.0,
                 ["no_entity_no_memory_cue"],
                 "Query has neither an entity nor a memory cue; hybrid fallback is required.",
             )
-        return (
-            QueryIntent.HYBRID,
-            ["unsupported_intent"],
-            "No rule matched the query; hybrid fallback is required.",
+        winner = max(
+            scores,
+            key=lambda intent: (
+                scores[intent],
+                -self._INTENT_PRIORITY[intent],
+            ),
         )
+        winner_score = scores[winner]
+        hits = [*rule_hits, f"{winner.value}_rule"]
+        if winner is QueryIntent.TEMPORAL and features.temporal_cue_count >= 2:
+            hits.append("multiple_temporal_cues")
+        reason = (
+            "Query contains multiple temporal cues and orders events in time."
+            if winner is QueryIntent.TEMPORAL and features.temporal_cue_count >= 2
+            else self._INTENT_REASONS[winner]
+        )
+        return winner, winner_score, hits, reason
 
-    def _confidence(self, features: QueryFeatures) -> float:
-        score = 0.1
-        for feature, weight in self._FEATURE_WEIGHTS.items():
-            if getattr(features, feature):
-                score += weight
-        return min(1.0, score)
-
-    def _has_memory_cue(self, features: QueryFeatures) -> bool:
-        return any(
-            (
-                features.has_fact_cue,
-                features.has_temporal_cue,
-                features.has_relation_cue,
-                features.has_episodic_cue,
-                features.has_procedure_cue,
+    def _score_intents(self, features: QueryFeatures) -> dict[QueryIntent, float]:
+        scores: dict[QueryIntent, float] = {}
+        if features.has_procedure_cue:
+            scores[QueryIntent.PROCEDURAL] = 0.6
+        if features.has_episodic_cue:
+            scores[QueryIntent.EPISODIC] = 0.6
+        if features.has_temporal_cue:
+            temporal_score = min(
+                1.0,
+                0.6 * features.strong_temporal_count
+                + 0.4 * min(1, features.weak_temporal_count),
             )
+            scores[QueryIntent.TEMPORAL] = temporal_score
+        if features.has_relation_cue:
+            scores[QueryIntent.GRAPH] = 0.5
+        semantic_score = min(
+            1.0,
+            0.35 * int(features.has_fact_cue)
+            + 0.15 * int(features.has_entity)
+            + 0.3 * int(features.has_name_phrase),
         )
+        if semantic_score > 0.0:
+            scores[QueryIntent.SEMANTIC] = semantic_score
+        return scores
+
+    def _matched_cue_hits(self, features: QueryFeatures) -> list[str]:
+        hits: list[str] = []
+        cue_mapping = (
+            ("has_procedure_cue", "procedure_cue"),
+            ("has_episodic_cue", "episodic_cue"),
+            ("has_relation_cue", "relation_cue"),
+            ("has_fact_cue", "fact_cue"),
+            ("has_name_phrase", "name_phrase_cue"),
+            ("has_entity", "entity_cue"),
+        )
+        for field, hit in cue_mapping:
+            if getattr(features, field):
+                hits.append(hit)
+        if features.strong_temporal_count:
+            hits.append("strong_temporal_cue")
+        if features.weak_temporal_count:
+            hits.append("weak_temporal_cue")
+        return hits
 
     def _entity_count(self, query: str) -> int:
         tokens = query.split()
         first_token = tokens[0].strip(".,!?;:'\"").casefold()
-        entity_count = 0
-        previous = ""
+        candidates: list[str] = []
+        seen: set[str] = set()
         for match in self._ENTITY_RE.findall(query):
             match = match.strip()
-            if not match or match == previous:
-                continue
-            previous = match
-            first_word = match.split()[0]
-            if match == "I" or first_word == "I":
+            if match and match not in seen:
+                seen.add(match)
+                candidates.append(match)
+        if self._lexicon is not None:
+            for token in tokens:
+                cleaned = token.strip(".,!?;:'\"()[]")
+                key = cleaned.casefold()
+                if key and key not in seen and self._lexicon.contains(key):
+                    seen.add(key)
+                    candidates.append(key)
+        entity_count = 0
+        for candidate in candidates:
+            first_word = candidate.split()[0]
+            if candidate == "I" or first_word == "I":
                 continue
             if first_word.casefold() in self._ENTITY_STOPWORDS:
                 continue
-            if match.casefold() == first_token and first_token in self._QUESTION_STARTWORDS:
+            if candidate.casefold() == first_token and first_token in self._QUESTION_STARTWORDS:
                 continue
             entity_count += 1
         return entity_count

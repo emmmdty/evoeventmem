@@ -160,6 +160,50 @@ def test_decision_is_deterministic(router: QueryRouter) -> None:
         assert first.model_dump(mode="json") == second.model_dump(mode="json")
 
 
+def test_mixed_temporal_relation_query_routes_temporal() -> None:
+    decision = QueryRouter().route("When did the relationship start?")
+    assert decision.intent is QueryIntent.TEMPORAL
+    assert decision.features.has_relation_cue is True
+
+
+def test_name_phrase_query_routes_semantic() -> None:
+    decision = QueryRouter().route("What is the last name of the CEO?")
+    assert decision.intent is QueryIntent.SEMANTIC
+    assert decision.features.has_name_phrase is True
+
+
+def test_weak_temporal_cues_do_not_beat_episodic_cue() -> None:
+    decision = QueryRouter().route("What happened during our last call?")
+    assert decision.intent is QueryIntent.EPISODIC
+
+
+class _FakeEntityLexicon:
+    def __init__(self, names: set[str]) -> None:
+        self._names = {name.casefold() for name in names}
+
+    def contains(self, name: str) -> bool:
+        return name.casefold() in self._names
+
+
+def test_entity_lexicon_enables_entity_detection_for_lowercase_names() -> None:
+    query = "What is yamada favorite color?"
+    without_lexicon = QueryRouter().route(query)
+    assert without_lexicon.features.has_entity is False
+    assert without_lexicon.intent is QueryIntent.HYBRID
+
+    with_lexicon = QueryRouter(entity_lexicon=_FakeEntityLexicon({"yamada"})).route(query)
+    assert with_lexicon.features.has_entity is True
+    assert with_lexicon.intent is QueryIntent.SEMANTIC
+
+
+def test_confidence_is_bounded_evidence_strength(router: QueryRouter) -> None:
+    temporal = router.route("When did Caroline move to Seattle?")
+    single_cue = router.route("What happened first in the meeting?")
+    assert 0.1 <= temporal.confidence <= 1.0
+    assert temporal.confidence > single_cue.confidence
+    assert temporal.features.strong_temporal_count >= 1
+
+
 def test_decision_features_and_provenance_are_observable(router: QueryRouter) -> None:
     decision = router.route("When did Caroline move to Seattle?")
     assert decision.policy_name == router.POLICY_NAME

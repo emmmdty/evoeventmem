@@ -47,6 +47,12 @@ class Reranker(Protocol):
     def score(self, query: str, passages: Sequence[str]) -> list[float]: ...
 
 
+class EntityLexicon(Protocol):
+    """Known-entity vocabulary; names are compared case-insensitively."""
+
+    def contains(self, name: str) -> bool: ...
+
+
 class MemoryRepository(Protocol):
     def add(self, memory: MemoryRecord) -> MemoryRecord: ...
 

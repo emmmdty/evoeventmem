@@ -1,0 +1,132 @@
+{
+  "schema_version": "query-router.annotations.v1",
+  "policy_name": "query-router.rules.v1",
+  "cases": [
+    {
+      "case_id": "no_memory_greeting",
+      "query": "Hello!",
+      "expected_intent": "no-memory",
+      "note": "Chit-chat greeting without any memory demand."
+    },
+    {
+      "case_id": "no_memory_thanks",
+      "query": "Thanks a lot for your help!",
+      "expected_intent": "no-memory",
+      "note": "Gratitude with no memory demand."
+    },
+    {
+      "case_id": "no_memory_how_are_you",
+      "query": "How are you doing?",
+      "expected_intent": "no-memory",
+      "note": "Social query that requires no memory."
+    },
+    {
+      "case_id": "semantic_favorite_color",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "note": "Attribute lookup about an entity."
+    },
+    {
+      "case_id": "semantic_preference",
+      "query": "Does Caroline prefer UTC timestamps?",
+      "expected_intent": "semantic",
+      "note": "Single fact check about a preference."
+    },
+    {
+      "case_id": "semantic_lives_in",
+      "query": "Where does Alex live?",
+      "expected_intent": "semantic",
+      "note": "Profile fact lookup."
+    },
+    {
+      "case_id": "temporal_move_date",
+      "query": "When did Caroline move to Seattle?",
+      "expected_intent": "temporal",
+      "note": "Single event anchored on a time expression."
+    },
+    {
+      "case_id": "temporal_sequence",
+      "query": "What happened first in the meeting?",
+      "expected_intent": "temporal",
+      "note": "Ordering question over events."
+    },
+    {
+      "case_id": "temporal_duration",
+      "query": "How long did the project take?",
+      "expected_intent": "temporal",
+      "note": "Duration question."
+    },
+    {
+      "case_id": "graph_relation",
+      "query": "Who is Caroline related to?",
+      "expected_intent": "graph",
+      "note": "Relationship question between entities."
+    },
+    {
+      "case_id": "graph_colleagues",
+      "query": "Are Alex and Sam colleagues?",
+      "expected_intent": "graph",
+      "note": "Connection check between two entities."
+    },
+    {
+      "case_id": "graph_connected_to",
+      "query": "How is Caroline connected to Sam?",
+      "expected_intent": "graph",
+      "note": "Path or connection question."
+    },
+    {
+      "case_id": "episodic_trip",
+      "query": "Did I tell you about my trip to Japan?",
+      "expected_intent": "episodic",
+      "note": "Recall of a previously shared episode."
+    },
+    {
+      "case_id": "episodic_last_call",
+      "query": "What happened during our last call?",
+      "expected_intent": "episodic",
+      "note": "Recall of a past conversation."
+    },
+    {
+      "case_id": "episodic_remember",
+      "query": "Do you remember what we discussed?",
+      "expected_intent": "episodic",
+      "note": "Direct recall of prior discussion."
+    },
+    {
+      "case_id": "procedural_how_to",
+      "query": "How do I create a new memory?",
+      "expected_intent": "procedural",
+      "note": "Explicit how-to request."
+    },
+    {
+      "case_id": "procedural_steps",
+      "query": "What are the steps to write a report?",
+      "expected_intent": "procedural",
+      "note": "Step-by-step instruction request."
+    },
+    {
+      "case_id": "procedural_workflow",
+      "query": "Walk me through the deployment workflow.",
+      "expected_intent": "procedural",
+      "note": "Process walkthrough request."
+    },
+    {
+      "case_id": "hybrid_weather",
+      "query": "What is the weather like?",
+      "expected_intent": "hybrid",
+      "note": "Unknown intent with weak feature evidence; falls back to hybrid."
+    },
+    {
+      "case_id": "hybrid_opinion",
+      "query": "What do you think about the current situation?",
+      "expected_intent": "hybrid",
+      "note": "No entity and no memory cue; hybrid fallback required."
+    },
+    {
+      "case_id": "hybrid_merger",
+      "query": "Tell me about the merger details.",
+      "expected_intent": "hybrid",
+      "note": "Unspecified subject; hybrid fallback required."
+    }
+  ]
+}

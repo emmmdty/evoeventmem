@@ -1,51 +1,32 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import asyncpg
 
-_INITIAL_SCHEMA = """
-CREATE TABLE IF NOT EXISTS memories (
-    memory_id uuid PRIMARY KEY,
-    schema_version text NOT NULL,
-    tenant_id text,
-    user_id text NOT NULL,
-    session_id text,
-    memory_kind text NOT NULL,
-    content text NOT NULL,
-    normalized_content text NOT NULL,
-    entities jsonb NOT NULL DEFAULT '[]'::jsonb,
-    roles jsonb NOT NULL DEFAULT '{}'::jsonb,
-    relations jsonb NOT NULL DEFAULT '[]'::jsonb,
-    evidence_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
-    event_time timestamptz,
-    valid_from timestamptz,
-    valid_to timestamptz,
-    status text NOT NULL,
-    supersedes uuid[] NOT NULL DEFAULT '{}'::uuid[],
-    superseded_by uuid,
-    derived_from uuid[] NOT NULL DEFAULT '{}'::uuid[],
-    derivation text,
-    synthetic boolean NOT NULL DEFAULT false,
-    confidence double precision NOT NULL,
-    utility double precision NOT NULL,
-    embedding_version text,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL,
-    updated_at timestamptz NOT NULL
-);
-CREATE INDEX IF NOT EXISTS memories_user_id_idx ON memories (user_id);
-CREATE INDEX IF NOT EXISTS memories_tenant_user_idx ON memories (tenant_id, user_id);
-CREATE INDEX IF NOT EXISTS memories_status_idx ON memories (status);
-CREATE INDEX IF NOT EXISTS memories_created_at_idx ON memories (created_at);
-"""
+_SQL_DIR = Path(__file__).parent / "sql"
+
+
+def _load_sql(name: str) -> str:
+    return (_SQL_DIR / name).read_text(encoding="utf-8")
+
 
 MIGRATIONS: tuple[tuple[str, str], ...] = (
-    ("0001_initial_schema", _INITIAL_SCHEMA),
+    ("0001_core_schema", _load_sql("0001_core.sql")),
+    ("0002_pgvector", _load_sql("0002_pgvector.sql")),
 )
 
 _MIGRATION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version text PRIMARY KEY,
     applied_at timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+_SCHEMA_METADATA_TABLE = """
+CREATE TABLE IF NOT EXISTS schema_metadata (
+    key text PRIMARY KEY,
+    value text NOT NULL
 )
 """
 
@@ -69,3 +50,48 @@ async def apply_migrations(connection: asyncpg.Connection) -> list[str]:
             )
         applied_now.append(version)
     return applied_now
+
+
+async def ensure_schema_metadata(
+    connection: asyncpg.Connection,
+    *,
+    schema_version: str,
+    model_id: str,
+    dimension: int,
+) -> None:
+    """Record the configured schema/model/dimension for readiness checks.
+
+    Idempotent. If an existing value disagrees with the configured value, the
+    deployment does not silently migrate existing data; it raises so readiness
+    fails (mismatch) rather than serving with the wrong embedding shape.
+    """
+    await connection.execute(_SCHEMA_METADATA_TABLE)
+    expected = {
+        "schema_version": schema_version,
+        "embedding_model_id": model_id,
+        "embedding_dimension": str(dimension),
+    }
+    for key, value in expected.items():
+        row = await connection.fetchrow(
+            "SELECT value FROM schema_metadata WHERE key = $1", key
+        )
+        if row is None:
+            await connection.execute(
+                "INSERT INTO schema_metadata (key, value) VALUES ($1, $2)", key, value
+            )
+        elif row["value"] != value:
+            raise SchemaMismatchError(
+                f"schema_metadata[{key}] has {row['value']!r} but configured {value!r}"
+            )
+
+
+async def read_schema_metadata(
+    connection: asyncpg.Connection,
+) -> dict[str, str]:
+    await connection.execute(_SCHEMA_METADATA_TABLE)
+    rows = await connection.fetch("SELECT key, value FROM schema_metadata")
+    return {row["key"]: row["value"] for row in rows}
+
+
+class SchemaMismatchError(RuntimeError):
+    """Raised when persisted schema metadata disagrees with the configuration."""

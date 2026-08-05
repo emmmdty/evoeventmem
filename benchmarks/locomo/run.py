@@ -131,6 +131,10 @@ CONSOLIDATION_POLICY_NAME = ETECConsolidator.POLICY_NAME
 REFERENCE_TIME_SOURCE = "last_session_timestamp"
 EVIDENCE_MAPPING = "official_dia_ids_from_turn_refs"
 STRUCTURAL_MATCH_F1_THRESHOLD = 0.6
+# LoCoMo's official protocol instructs readers to replicate the exact wording
+# when feasible; this directive keeps the reader's answers metric-friendly and
+# is appended identically to every method's prompt (fairness).
+READER_FORMAT_DIRECTIVE = "Answer with only the exact answer, no explanation."
 
 # Official LoCoMo QA categories (paper Table 2 names), keyed by the numeric
 # label stored in ``qa.category``:
@@ -327,6 +331,7 @@ class LocomoSummary(BaseModel):
     embedding_model_id: str = Field(min_length=1)
     embedding_provider: str = Field(min_length=1)
     reader_thinking: str = Field(min_length=1)
+    reader_format_directive: str = Field(min_length=1)
     extraction_prompt_version: str = Field(min_length=1)
     retrieval_policy_name: str = Field(min_length=1)
     router_policy_name: str = Field(min_length=1)
@@ -545,8 +550,9 @@ def _run_context_method(
     started = perf_counter()
     context = builder.build(question, sessions)
     search_latency_ms = (perf_counter() - started) * 1000
+    prompt = _apply_reader_directive(context.prompt)
     started = perf_counter()
-    response = chat_model.generate([ChatMessage(role="user", content=context.prompt)])
+    response = chat_model.generate([ChatMessage(role="user", content=prompt)])
     question_latency_ms = (perf_counter() - started) * 1000
     return _evaluate(
         method=method,
@@ -556,7 +562,7 @@ def _run_context_method(
         question_latency_ms=question_latency_ms,
         search_latency_ms=search_latency_ms,
         write_latency_ms=None,
-        input_tokens=context.input_tokens,
+        input_tokens=_count_tokens(prompt),
         output_tokens=response.output_tokens,
         llm_calls=1,
         model_cache_key=response.cache_key,
@@ -579,8 +585,9 @@ def _run_session_summary_method(
     started = perf_counter()
     context = builder.build(question, record)
     search_latency_ms = (perf_counter() - started) * 1000
+    prompt = _apply_reader_directive(context.prompt)
     started = perf_counter()
-    response = chat_model.generate([ChatMessage(role="user", content=context.prompt)])
+    response = chat_model.generate([ChatMessage(role="user", content=prompt)])
     question_latency_ms = (perf_counter() - started) * 1000
     return _evaluate(
         method=method,
@@ -590,7 +597,7 @@ def _run_session_summary_method(
         question_latency_ms=question_latency_ms,
         search_latency_ms=search_latency_ms,
         write_latency_ms=None,
-        input_tokens=context.input_tokens,
+        input_tokens=_count_tokens(prompt),
         output_tokens=response.output_tokens,
         llm_calls=1,
         model_cache_key=response.cache_key,
@@ -624,8 +631,9 @@ def _run_memory_method(
     question_tokens = _count_tokens(f"Question: {question.question}")
     if question_tokens >= config.max_input_tokens:
         fallback = NoMemoryContextBuilder(config.max_input_tokens).build(question, [])
+        prompt = _apply_reader_directive(fallback.prompt)
         started = perf_counter()
-        response = chat_model.generate([ChatMessage(role="user", content=fallback.prompt)])
+        response = chat_model.generate([ChatMessage(role="user", content=prompt)])
         question_latency_ms = (perf_counter() - started) * 1000
         return _evaluate(
             method=method,
@@ -635,7 +643,7 @@ def _run_memory_method(
             question_latency_ms=question_latency_ms,
             search_latency_ms=0.0,
             write_latency_ms=write_latency_ms,
-            input_tokens=fallback.input_tokens,
+            input_tokens=_count_tokens(prompt),
             output_tokens=response.output_tokens,
             llm_calls=1,
             model_cache_key=response.cache_key,
@@ -652,7 +660,7 @@ def _run_memory_method(
         reference_time=reference_time,
     )
     search_latency_ms = (perf_counter() - started) * 1000
-    prompt = _build_prompt(question, result.selected_context)
+    prompt = _apply_reader_directive(_build_prompt(question, result.selected_context))
     started = perf_counter()
     response = chat_model.generate([ChatMessage(role="user", content=prompt)])
     question_latency_ms = (perf_counter() - started) * 1000
@@ -792,6 +800,10 @@ def _build_prompt(question: NormalizedQuestion, items: Sequence[PackedItem]) -> 
     lines = [f"Context: {item.memory.content}" for item in items]
     lines.append(f"Question: {question.question}")
     return "\n".join(lines)
+
+
+def _apply_reader_directive(prompt: str) -> str:
+    return f"{prompt}\n{READER_FORMAT_DIRECTIVE}"
 
 
 def _evidence_from_packed_items(items: Sequence[PackedItem]) -> list[EvidencePrediction]:
@@ -950,6 +962,7 @@ def _write_summary(
         embedding_model_id=embedding_model.model_id,
         embedding_provider=config.embedding_provider,
         reader_thinking=_reader_thinking(config),
+        reader_format_directive=READER_FORMAT_DIRECTIVE,
         extraction_prompt_version=EXTRACTION_PROMPT_VERSION,
         retrieval_policy_name=RETRIEVAL_POLICY_NAME,
         router_policy_name=ROUTER_POLICY_NAME,
@@ -1200,6 +1213,8 @@ def _config_report(config: LocomoConfig, config_path: Path) -> dict[str, Any]:
     report["router_policy_name"] = ROUTER_POLICY_NAME
     report["consolidation_policy_name"] = CONSOLIDATION_POLICY_NAME
     report["embedding_provider"] = config.embedding_provider
+    report["reader_thinking"] = _reader_thinking(config)
+    report["reader_format_directive"] = READER_FORMAT_DIRECTIVE
     report["reference_time_source"] = REFERENCE_TIME_SOURCE
     report["evidence_mapping"] = EVIDENCE_MAPPING
     if config.live_provider is not None:

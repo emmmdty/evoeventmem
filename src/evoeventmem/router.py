@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -8,6 +9,38 @@ from pydantic import BaseModel, Field
 from evoeventmem.core.ports import EntityLexicon
 
 POLICY_NAME = "query-router.rules.v1"
+
+
+class TemporalOperator(StrEnum):
+    NONE = "none"
+    AT = "at"
+    BEFORE = "before"
+    AFTER = "after"
+    BETWEEN = "between"
+    EARLIEST = "earliest"
+    LATEST = "latest"
+    SEQUENCE = "sequence"
+    DURATION = "duration"
+
+
+class TemporalConstraint(BaseModel):
+    """Explicit deterministic temporal constraint parsed from a query.
+
+    ``operator`` is independent of answer intent: a query such as "When did
+    Caroline move?" has temporal *intent* but no recency constraint
+    (``operator == NONE``) and must not implicitly favor the latest memory.
+    """
+
+    operator: TemporalOperator
+    lower_bound_utc: datetime | None = None
+    upper_bound_utc: datetime | None = None
+    matched_spans: list[str] = Field(default_factory=list)
+    rule_hits: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+    @property
+    def is_constrained(self) -> bool:
+        return self.operator is not TemporalOperator.NONE
 
 
 class QueryIntent(StrEnum):
@@ -41,6 +74,9 @@ class QueryRoutingDecision(BaseModel):
     intent: QueryIntent
     confidence: float = Field(ge=0.0, le=1.0)
     features: QueryFeatures
+    temporal_constraint: TemporalConstraint = Field(
+        default_factory=lambda: TemporalConstraint(operator=TemporalOperator.NONE)
+    )
     rule_hits: list[str] = Field(default_factory=list)
     reason: str
     policy_name: str = POLICY_NAME
@@ -206,10 +242,21 @@ class QueryRouter:
         }
     )
 
-    def __init__(self, *, entity_lexicon: EntityLexicon | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        entity_lexicon: EntityLexicon | None = None,
+        reference_time: datetime | None = None,
+    ) -> None:
         self._lexicon = entity_lexicon
+        self._default_reference_time = reference_time
 
-    def route(self, query: str) -> QueryRoutingDecision:
+    def route(
+        self,
+        query: str,
+        *,
+        reference_time: datetime | None = None,
+    ) -> QueryRoutingDecision:
         normalized = " ".join(query.split())
         if not normalized:
             return QueryRoutingDecision(
@@ -217,6 +264,10 @@ class QueryRouter:
                 intent=QueryIntent.HYBRID,
                 confidence=0.0,
                 features=QueryFeatures(),
+                temporal_constraint=self._parse_temporal_constraint(
+                    normalized,
+                    reference_time,
+                ),
                 rule_hits=["empty_query"],
                 reason="Empty query has no routing evidence.",
                 policy_name=self.POLICY_NAME,
@@ -232,15 +283,31 @@ class QueryRouter:
             intent = QueryIntent.HYBRID
             rule_hits = [*rule_hits, "low_confidence_fallback"]
             reason = "No rule matched with enough confidence; falling back to hybrid retrieval."
+        temporal_constraint = self._parse_temporal_constraint(
+            normalized,
+            reference_time,
+        )
         return QueryRoutingDecision(
             query=query,
             intent=intent,
             confidence=confidence,
             features=features,
+            temporal_constraint=temporal_constraint,
             rule_hits=rule_hits,
             reason=reason,
             policy_name=self.POLICY_NAME,
         )
+
+    def _parse_temporal_constraint(
+        self,
+        query: str,
+        reference_time: datetime | None,
+    ) -> TemporalConstraint:
+        reference = reference_time or self._default_reference_time
+        constraint = _detect_temporal_constraint(query, reference)
+        if constraint is None:
+            return TemporalConstraint(operator=TemporalOperator.NONE)
+        return constraint
 
     def extract_features(self, query: str) -> QueryFeatures:
         strong_temporal = self._TEMPORAL_STRONG_RE.findall(query)
@@ -398,8 +465,8 @@ class QueryRouterService:
         self._router = router or QueryRouter()
         self._decisions: list[QueryRoutingDecision] = []
 
-    def route(self, query: str) -> QueryRoutingDecision:
-        decision = self._router.route(query)
+    def route(self, query: str, *, reference_time: datetime | None = None) -> QueryRoutingDecision:
+        decision = self._router.route(query, reference_time=reference_time)
         self._decisions.append(decision)
         return decision
 
@@ -410,6 +477,161 @@ class QueryRouterService:
         return [decision.model_dump(mode="json") for decision in self._decisions]
 
 
+_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
+_AT_DATE_RE = re.compile(r"\b(20\d{2}|19\d{2})\b|in \b(20\d{2}|19\d{2})\b")
+_MONTH_RE = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\b",
+    re.IGNORECASE,
+)
+_TO_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b", re.IGNORECASE)
+_RELATIVE_RE = re.compile(
+    r"\b(last|next|this|past|previous|coming)\s+(week|month|year)\b",
+    re.IGNORECASE,
+)
+_BEFORE_RE = re.compile(r"\bbefore\b|\bprior to\b|\bup to\b|\buntil\b", re.IGNORECASE)
+_AFTER_RE = re.compile(r"\bafter\b|\bsince\b|\bfollowing\b|\bsubsequent to\b", re.IGNORECASE)
+_BETWEEN_RE = re.compile(r"\bbetween\b", re.IGNORECASE)
+_FIRST_RE = re.compile(r"\b(first|earliest|initial)\b", re.IGNORECASE)
+_LAST_RE = re.compile(r"\b(last|most recent|latest)\b", re.IGNORECASE)
+_SEQUENCE_RE = re.compile(
+    r"\b(order|sequence|ordering|chronolog|first.*then|then.*after|before.*after)\b",
+    re.IGNORECASE,
+)
+_DURATION_RE = re.compile(
+    r"\b(how long|duration|lasted?|for how long|length of time)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_temporal_constraint(
+    query: str,
+    reference_time: datetime | None,
+) -> TemporalConstraint | None:
+    """Return a TemporalConstraint, or None when no operator applies.
+
+    Matching is deterministic and applied in a fixed priority. ``matched_spans``
+    and ``rule_hits`` record exactly which surface cues were consumed so the
+    decision is observable and reproducible.
+    """
+    normalized = " ".join(query.lower().split())
+    spans: list[str] = []
+    rule_hits: list[str] = []
+
+    def _record(rule: str, *matched: str) -> None:
+        rule_hits.append(rule)
+        spans.extend(s for s in matched if s)
+
+    if _BETWEEN_RE.search(normalized):
+        years = _YEAR_RE.findall(normalized)
+        if len(years) >= 2:
+            lower = datetime(int(years[0]), 1, 1, tzinfo=UTC)
+            upper = datetime(int(years[1]), 12, 31, 23, 59, 59, tzinfo=UTC)
+            _record("between_rule", "between", *years)
+            return TemporalConstraint(
+                operator=TemporalOperator.BETWEEN,
+                lower_bound_utc=lower,
+                upper_bound_utc=upper,
+                matched_spans=spans,
+                rule_hits=rule_hits,
+                reason="Query bounds a range between two explicit dates.",
+            )
+    if _BEFORE_RE.search(normalized):
+        year = _YEAR_RE.search(normalized)
+        if year is not None:
+            upper = datetime(int(year.group(1)), 12, 31, 23, 59, 59, tzinfo=UTC)
+            _record("before_rule", "before", year.group(1))
+            return TemporalConstraint(
+                operator=TemporalOperator.BEFORE,
+                upper_bound_utc=upper,
+                matched_spans=spans,
+                rule_hits=rule_hits,
+                reason="Query bounds events before an explicit date.",
+            )
+    if _AFTER_RE.search(normalized):
+        year = _YEAR_RE.search(normalized)
+        if year is not None:
+            lower = datetime(int(year.group(1)), 1, 1, tzinfo=UTC)
+            _record("after_rule", "after", year.group(1))
+            return TemporalConstraint(
+                operator=TemporalOperator.AFTER,
+                lower_bound_utc=lower,
+                matched_spans=spans,
+                rule_hits=rule_hits,
+                reason="Query bounds events after an explicit date.",
+            )
+    if _AT_DATE_RE.search(normalized):
+        year = _YEAR_RE.search(normalized)
+        if year is not None:
+            lower = datetime(int(year.group(1)), 1, 1, tzinfo=UTC)
+            upper = datetime(int(year.group(1)), 12, 31, 23, 59, 59, tzinfo=UTC)
+            _record("at_rule", year.group(1))
+            return TemporalConstraint(
+                operator=TemporalOperator.AT,
+                lower_bound_utc=lower,
+                upper_bound_utc=upper,
+                matched_spans=spans,
+                rule_hits=rule_hits,
+                reason="Query anchors on an explicit date.",
+            )
+    if _DURATION_RE.search(normalized):
+        _record("duration_rule", "how long")
+        return TemporalConstraint(
+            operator=TemporalOperator.DURATION,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query asks about elapsed time.",
+        )
+    if _SEQUENCE_RE.search(normalized):
+        _record("sequence_rule", "order")
+        return TemporalConstraint(
+            operator=TemporalOperator.SEQUENCE,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query asks about event ordering.",
+        )
+    relative = _RELATIVE_RE.search(normalized)
+    if relative is not None and reference_time is not None:
+        unit = relative.group(2)
+        span_text = relative.group(0)
+        _record("relative_rule", span_text)
+        delta = {"week": 7, "month": 30, "year": 365}[unit]
+        lower = reference_time - timedelta(days=delta)
+        return TemporalConstraint(
+            operator=TemporalOperator.BETWEEN,
+            lower_bound_utc=lower,
+            upper_bound_utc=reference_time,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query bounds events relative to a UTC reference time.",
+        )
+    if _FIRST_RE.search(normalized):
+        _record("earliest_rule", "first")
+        return TemporalConstraint(
+            operator=TemporalOperator.EARLIEST,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query asks about the earliest occurrence.",
+        )
+    if _LAST_RE.search(normalized):
+        _record("latest_rule", "last")
+        return TemporalConstraint(
+            operator=TemporalOperator.LATEST,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query asks about the latest occurrence.",
+        )
+    if _BEFORE_RE.search(normalized) or _AFTER_RE.search(normalized):
+        _record("temporal_relation_without_date")
+        return TemporalConstraint(
+            operator=TemporalOperator.NONE,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query mentions a temporal relation but lacks an explicit date.",
+        )
+    return None
+
+
 __all__ = [
     "POLICY_NAME",
     "QueryFeatures",
@@ -417,4 +639,6 @@ __all__ = [
     "QueryRouter",
     "QueryRouterService",
     "QueryRoutingDecision",
+    "TemporalConstraint",
+    "TemporalOperator",
 ]

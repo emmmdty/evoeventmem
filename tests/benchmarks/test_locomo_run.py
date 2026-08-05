@@ -8,6 +8,7 @@ from benchmarks.locomo.run import (
     Method,
     SampleResult,
     _evidence_from_packed_items,
+    _make_models,
     _validate_question_ids,
     _validate_samples,
     load_config,
@@ -250,9 +251,41 @@ def test_main_config_records_dataset_and_versions() -> None:
     config = load_config(MAIN_CONFIG)
 
     assert config.provider == "openai_compatible"
+    assert config.embedding_provider == "openai_compatible"
     assert config.live_provider is not None
     assert config.live_provider.api_key_env == "OPENAI_API_KEY"
+    assert config.live_provider.base_url == "https://api.deepseek.com"
+    assert config.live_provider.chat_model == "deepseek-v4-flash"
+    assert config.live_provider.embedding_model == "bge-m3"
+    assert config.live_provider.embedding_base_url == "http://127.0.0.1:11435/v1"
     assert set(config.methods) == SMOKE_METHODS
+
+
+def test_live_chat_with_remote_embeddings(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(MAIN_CONFIG)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "test-embed-key")
+
+    chat_model, embedding_model = _make_models(config, tmp_path / "run")
+
+    assert chat_model.model_id == "deepseek-v4-flash"
+    assert embedding_model.model_id == "bge-m3"
+
+
+def test_live_chat_with_deterministic_embeddings(monkeypatch, tmp_path: Path) -> None:
+    config = load_config(SMOKE_CONFIG).model_copy(
+        update={
+            "provider": "openai_compatible",
+            "embedding_provider": "deterministic_fake",
+            "live_provider": load_config(MAIN_CONFIG).live_provider,
+        }
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    chat_model, embedding_model = _make_models(config, tmp_path / "run")
+
+    assert chat_model.model_id == "deepseek-v4-flash"
+    assert embedding_model.model_id == "deterministic-local-embedding"
 
 
 def test_extracted_events_carry_summary_evidence_refs(tmp_path: Path) -> None:

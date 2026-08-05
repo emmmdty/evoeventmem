@@ -15,6 +15,12 @@ Runs seven fair, resumable methods on LoCoMo records:
 All memory methods share one :class:`RetrievalHarness` with the same token
 budget, max items per source, and max candidates per source (M13 handoff).
 ``MemoryService.search`` is not used; retrieval goes through the harness only.
+The chat provider and the embedding provider are configured independently
+(``provider`` vs ``embedding_provider``, each with its own base URL and API
+key): providers such as DeepSeek expose chat completions but no embeddings
+API, so the embedding endpoint may point to a different OpenAI-compatible
+server (e.g., a local/GPU-hosted ``bge-m3`` service). Every method shares the
+same embedding provider, preserving cross-method fairness.
 
 LoCoMo-specific decisions (documented, do not re-litigate the M13 matrix):
 
@@ -166,7 +172,9 @@ class LiveProviderConfig(BaseModel):
     base_url: str = Field(min_length=1)
     api_key_env: str = Field(min_length=1)
     chat_model: str = Field(min_length=1)
-    embedding_model: str = Field(min_length=1)
+    embedding_model: str | None = Field(default=None, min_length=1)
+    embedding_base_url: str | None = Field(default=None, min_length=1)
+    embedding_api_key_env: str | None = Field(default=None, min_length=1)
     timeout_s: float = Field(default=60.0, gt=0)
 
 
@@ -176,6 +184,7 @@ class LocomoConfig(BaseModel):
     dataset_path: Path
     methods: list[Method] = Field(default_factory=lambda: list(Method))
     provider: Literal["deterministic_fake", "openai_compatible"] = "deterministic_fake"
+    embedding_provider: Literal["deterministic_fake", "openai_compatible"] | None = None
     chat_model_id: str = Field(default="deterministic-local-fake", min_length=1)
     embedding_model_id: str = Field(default="deterministic-local-embedding", min_length=1)
     max_input_tokens: int = Field(gt=0)
@@ -185,9 +194,23 @@ class LocomoConfig(BaseModel):
     live_provider: LiveProviderConfig | None = None
 
     @model_validator(mode="after")
+    def resolve_embedding_provider(self) -> LocomoConfig:
+        if self.embedding_provider is None:
+            self.embedding_provider = (
+                "deterministic_fake"
+                if self.provider == "deterministic_fake"
+                else "openai_compatible"
+            )
+        return self
+
+    @model_validator(mode="after")
     def require_live_provider(self) -> LocomoConfig:
         if self.provider == "openai_compatible" and self.live_provider is None:
             raise ValueError("openai_compatible provider requires explicit live_provider config")
+        if self.embedding_provider == "openai_compatible" and self.live_provider is None:
+            raise ValueError(
+                "openai_compatible embedding_provider requires explicit live_provider config"
+            )
         return self
 
 
@@ -301,6 +324,7 @@ class LocomoSummary(BaseModel):
     dataset_path: str
     chat_model_id: str = Field(min_length=1)
     embedding_model_id: str = Field(min_length=1)
+    embedding_provider: str = Field(min_length=1)
     extraction_prompt_version: str = Field(min_length=1)
     retrieval_policy_name: str = Field(min_length=1)
     router_policy_name: str = Field(min_length=1)
@@ -914,6 +938,7 @@ def _write_summary(
         dataset_path=str(config.dataset_path),
         chat_model_id=chat_model.model_id,
         embedding_model_id=embedding_model.model_id,
+        embedding_provider=config.embedding_provider,
         extraction_prompt_version=EXTRACTION_PROMPT_VERSION,
         retrieval_policy_name=RETRIEVAL_POLICY_NAME,
         router_policy_name=ROUTER_POLICY_NAME,
@@ -1163,6 +1188,7 @@ def _config_report(config: LocomoConfig, config_path: Path) -> dict[str, Any]:
     report["retrieval_policy_name"] = RETRIEVAL_POLICY_NAME
     report["router_policy_name"] = ROUTER_POLICY_NAME
     report["consolidation_policy_name"] = CONSOLIDATION_POLICY_NAME
+    report["embedding_provider"] = config.embedding_provider
     report["reference_time_source"] = REFERENCE_TIME_SOURCE
     report["evidence_mapping"] = EVIDENCE_MAPPING
     if config.live_provider is not None:
@@ -1191,10 +1217,26 @@ def _make_models(config: LocomoConfig, run_dir: Path) -> tuple[ChatModel, Embedd
         model=live.chat_model,
         timeout_s=live.timeout_s,
     )
-    return (
-        CachedChatModel(OpenAICompatibleChatClient(live_config), cache),
-        CachedEmbeddingModel(OpenAICompatibleEmbeddingClient(live_config), cache),
-    )
+    chat_model: ChatModel = CachedChatModel(OpenAICompatibleChatClient(live_config), cache)
+    if config.embedding_provider == "deterministic_fake":
+        embedding_model: EmbeddingModel = CachedEmbeddingModel(
+            DeterministicFakeEmbeddingModel(config.embedding_model_id), cache
+        )
+    else:
+        embedding_key_env = live.embedding_api_key_env or live.api_key_env
+        embedding_api_key = os.environ.get(embedding_key_env)
+        if not embedding_api_key:
+            raise RuntimeError(f"missing environment variable {embedding_key_env}")
+        embedding_config = OpenAICompatibleConfig(
+            base_url=live.embedding_base_url or live.base_url,
+            api_key=embedding_api_key,
+            model=live.embedding_model or live.chat_model,
+            timeout_s=live.timeout_s,
+        )
+        embedding_model = CachedEmbeddingModel(
+            OpenAICompatibleEmbeddingClient(embedding_config), cache
+        )
+    return chat_model, embedding_model
 
 
 def _load_records(config: LocomoConfig) -> list[NormalizedRecord]:

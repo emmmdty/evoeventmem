@@ -257,8 +257,8 @@ def test_main_config_records_dataset_and_versions() -> None:
     assert config.live_provider.base_url == "https://api.deepseek.com"
     assert config.live_provider.chat_model == "deepseek-v4-flash"
     assert config.live_provider.disable_thinking is True
-    assert config.live_provider.embedding_model == "bge-m3"
-    assert config.live_provider.embedding_base_url == "http://127.0.0.1:11435/v1"
+    assert config.live_provider.embedding_model == "qwen3-embedding-0.6b"
+    assert config.live_provider.embedding_base_url == "http://127.0.0.1:11436/v1"
     assert set(config.methods) == SMOKE_METHODS
 
 
@@ -270,7 +270,7 @@ def test_live_chat_with_remote_embeddings(monkeypatch, tmp_path: Path) -> None:
     chat_model, embedding_model = _make_models(config, tmp_path / "run")
 
     assert chat_model.model_id == "deepseek-v4-flash"
-    assert embedding_model.model_id == "bge-m3"
+    assert embedding_model.model_id == "qwen3-embedding-0.6b"
 
 
 def test_live_chat_with_deterministic_embeddings(monkeypatch, tmp_path: Path) -> None:

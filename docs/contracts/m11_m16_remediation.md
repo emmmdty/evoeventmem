@@ -10,8 +10,9 @@ are frozen at commit `F0`. Any later contract change is a stop condition.
 
 - `B0` (reviewed WIP baseline): `25f7783` `chore: preserve reviewed M15-M16 WIP baseline`
 - Integration branch: `remediation/m11-m16-integration`
-- Integral config (Lead): `880b91f` `chore: ignore dataset symlink in worktrees`
-- Candidate registry commit: (set by the Lead at freeze)
+- Lead config: `880b91f` `chore: ignore dataset symlink in worktrees`
+- Candidate registry commit: `f0ca238` `docs: draft M11-M16 contract registry`
+- `F0` (freeze): (this commit)
 
 ## Contract Index
 
@@ -127,7 +128,10 @@ are frozen at commit `F0`. Any later contract change is a stop condition.
 
 ## Implementation Commits
 
-- A-TOKEN / A-RETRIEVAL freeze: (set at `F0`)
-- B-ARTIFACT freeze: (set at `F0`)
-- D-SCOPE freeze: (set at `F0`)
-- C consumer contract: (set at `F0`)
+All owner commits were merged into the integration branch before `F0`.
+
+- A-TOKEN / A-RETRIEVAL freeze: `1e726b0` `feat(retrieval): freeze token and retrieval contracts`
+- B-ARTIFACT freeze: `86dea3b` `feat(benchmarks): freeze immutable artifact contracts`
+- D-SCOPE freeze: `0201b8f` `feat(core): freeze scoped async production ports`
+- C consumer contract: `286003b` `test(analysis): freeze benchmark artifact consumers`
+- Lead pytest import-mode fix: `pyproject.toml` `--import-mode=importlib` (resolves the `test_artifact_contract.py` basename collision between B and C)

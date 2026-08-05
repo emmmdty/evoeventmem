@@ -317,7 +317,12 @@ def _iter_json_array(path: Path, chunk_size: int = 65536) -> Iterator[Any]:
 
 
 def _parse_longmemeval_datetime(value: str) -> datetime:
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d (%a) %H:%M",
+    ):
         try:
             return datetime.strptime(value, fmt).replace(tzinfo=UTC)
         except ValueError:

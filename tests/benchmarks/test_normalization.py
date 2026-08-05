@@ -34,6 +34,15 @@ def test_longmemeval_fixture_normalizes_deterministically() -> None:
     assert record.questions[0].asked_at.isoformat() == "2024-02-03T00:00:00+00:00"
 
 
+def test_longmemeval_small_datetime_format_parses_weekday_and_time() -> None:
+    from benchmarks.common.normalization import _parse_longmemeval_datetime
+
+    parsed = _parse_longmemeval_datetime("2023/05/20 (Sat) 02:21")
+
+    assert parsed.isoformat() == "2023-05-20T02:21:00+00:00"
+    assert parsed.tzinfo is not None
+
+
 def test_locomo_fixture_normalizes_sessions_questions_and_events() -> None:
     records = list(iter_locomo_records(FIXTURES / "locomo/locomo_tiny.json"))
 

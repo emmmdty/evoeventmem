@@ -142,6 +142,79 @@ class PackedItem(BaseModel):
         return self
 
 
+class EvidencePolicy(StrEnum):
+    CONSTRAINED = "constrained"
+    PROVENANCE_ONLY = "provenance_only"
+
+
+class ComponentScore(BaseModel):
+    source: CandidateSource
+    raw_score: float = Field(ge=0.0)
+    rank: int = Field(ge=1)
+    weight: float = Field(ge=0.0)
+    fusion_contribution: float = Field(ge=0.0, le=1.0)
+
+
+class TemporalConstraint(BaseModel):
+    operator: Literal[
+        "none",
+        "at",
+        "before",
+        "after",
+        "between",
+        "earliest",
+        "latest",
+        "sequence",
+        "duration",
+    ]
+    lower_bound_utc: datetime | None = None
+    upper_bound_utc: datetime | None = None
+
+
+class SourceFailureEvent(BaseModel):
+    source: CandidateSource
+    reason_code: str = Field(min_length=1)
+    degraded_policy: EvidencePolicy
+    duration_ms: float = Field(ge=0.0)
+
+
+class RenderedMessageBudget(BaseModel):
+    content_tokens: int = Field(ge=0)
+    prompt_overhead_tokens: int = Field(ge=0)
+    total_input_tokens_estimate: int = Field(ge=0)
+
+
+class RetrievalRequest(BaseModel):
+    query: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    tenant_id: str | None = None
+    intent: QueryIntent
+    temporal_constraint: TemporalConstraint
+    evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED
+    exclusions: list[UUID] = Field(default_factory=list)
+    budget_tokens: int = Field(ge=1)
+
+
+class RetrievalResult(BaseModel):
+    query: str
+    user_id: str = Field(min_length=1)
+    tenant_id: str | None = None
+    intent: QueryIntent
+    evidence_policy: EvidencePolicy
+    temporal_constraint: TemporalConstraint
+    component_scores: list[ComponentScore] = Field(default_factory=list)
+    source_failures: list[SourceFailureEvent] = Field(default_factory=list)
+    exclusions: list[UUID] = Field(default_factory=list)
+    packed_items: list[PackedItem] = Field(default_factory=list)
+    budget: RenderedMessageBudget
+
+    @model_validator(mode="after")
+    def enforce_budget(self) -> RetrievalResult:
+        if self.budget.total_input_tokens_estimate < self.budget.content_tokens:
+            raise ValueError("total_input_tokens_estimate must be >= content_tokens")
+        return self
+
+
 class ExclusionRecord(BaseModel):
     memory_id: UUID
     reason: str
@@ -806,6 +879,8 @@ __all__ = [
     "ALL_SOURCES",
     "Candidate",
     "CandidateSource",
+    "ComponentScore",
+    "EvidencePolicy",
     "ExclusionRecord",
     "FIXED_HYBRID_WEIGHTS",
     "FIXED_VECTOR_WEIGHTS",
@@ -814,10 +889,15 @@ __all__ = [
     "POLICY_NAME",
     "QEMRRetrievalResult",
     "QEMR_WEIGHT_PROFILES",
+    "RenderedMessageBudget",
     "RetrievalHarness",
+    "RetrievalRequest",
+    "RetrievalResult",
     "RetrievalService",
     "RetrievalStrategy",
     "ScoredMemory",
+    "SourceFailureEvent",
     "SourceScore",
+    "TemporalConstraint",
     "resolve_weights",
 ]

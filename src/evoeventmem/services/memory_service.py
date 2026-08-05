@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, ValidationError
-from pydantic_core import to_jsonable_python
 
 from evoeventmem.core.ports import MemoryRepository
 from evoeventmem.domain.models import (
@@ -18,8 +15,9 @@ from evoeventmem.domain.models import (
     MemoryRecord,
     MemorySearchHit,
     MemoryStatus,
-    normalize_memory_content,
 )
+from evoeventmem.services import memory_rules
+from evoeventmem.services.memory_rules import memory_idempotency_key
 
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 _STORAGE_FAILURE_REASON = "memory storage transaction failed"
@@ -142,18 +140,20 @@ class MemoryService:
         self._write_decisions: list[MemoryWriteDecision] = []
 
     def write(self, memory: MemoryRecord) -> MemoryRecord:
-        normalized = normalize_memory_content(memory.content)
+        normalized = memory.normalized_content
         with self._repository.transaction() as transaction:
             existing_by_id = transaction.get(memory.memory_id)
             if existing_by_id is not None:
-                if _legacy_write_identity(existing_by_id) != _legacy_write_identity(memory):
+                if memory_rules.legacy_write_identity(
+                    existing_by_id
+                ) != memory_rules.legacy_write_identity(memory):
                     raise MemoryIdentityCollisionError
                 return existing_by_id
 
             for existing in transaction.list_for_user(memory.user_id):
                 if existing.tenant_id != memory.tenant_id:
                     continue
-                if normalize_memory_content(existing.content) == normalized:
+                if existing.normalized_content == normalized:
                     return existing
             return transaction.add(memory)
 
@@ -346,24 +346,15 @@ class MemoryService:
         memory = self._repository.get(memory_id)
         if memory is None or not self._in_scope(memory, user_id, tenant_id):
             return None
-        metadata = dict(memory.metadata)
-        events = metadata.get("feedback_events")
-        existing_events = [event for event in events if isinstance(event, dict)] if isinstance(
-            events, list
-        ) else []
-        existing_events.append(
-            MemoryFeedbackEvent(
+        recorded_at = datetime.now(UTC)
+        updated = memory.model_copy(
+            update=memory_rules.apply_feedback(
+                memory,
                 outcome=outcome,
                 rating=rating,
-                recorded_at=datetime.now(UTC),
+                recorded_at=recorded_at,
                 request_id=request_id,
-            ).model_dump(mode="json")
-        )
-        updated = memory.model_copy(
-            update={
-                "metadata": {**metadata, "feedback_events": existing_events},
-                "updated_at": datetime.now(UTC),
-            }
+            )
         )
         return self._repository.update(updated)
 
@@ -378,16 +369,13 @@ class MemoryService:
         memory = self._repository.get(memory_id)
         if memory is None or not self._in_scope(memory, user_id, tenant_id):
             return None
-        metadata = dict(memory.metadata)
-        metadata["forgotten_at"] = datetime.now(UTC).isoformat()
-        if request_id is not None:
-            metadata["forget_request_id"] = request_id
+        forgotten_at = datetime.now(UTC)
         updated = memory.model_copy(
-            update={
-                "status": MemoryStatus.DELETED,
-                "metadata": metadata,
-                "updated_at": datetime.now(UTC),
-            }
+            update=memory_rules.apply_forget(
+                memory,
+                forgotten_at=forgotten_at,
+                request_id=request_id,
+            )
         )
         return self._repository.update(updated)
 
@@ -428,9 +416,7 @@ class MemoryService:
         user_id: str | None,
         tenant_id: str | None,
     ) -> bool:
-        return (user_id is None or memory.user_id == user_id) and (
-            tenant_id is None or memory.tenant_id == tenant_id
-        )
+        return memory_rules.in_scope(memory, user_id=user_id, tenant_id=tenant_id)
 
     def _prepare_write_candidate(
         self,
@@ -451,7 +437,7 @@ class MemoryService:
                 candidate_snapshot=_candidate_snapshot(candidate),
             )
 
-        idempotency_key = _idempotency_key(
+        idempotency_key = memory_rules.idempotency_key(
             validated.memory,
             validated.extractor_version,
         )
@@ -479,17 +465,9 @@ class MemoryService:
         for existing in repository.list_for_user(memory.user_id):
             if existing.tenant_id != memory.tenant_id:
                 continue
-            if _memory_idempotency_key(existing) == idempotency_key:
+            if memory_idempotency_key(existing) == idempotency_key:
                 return existing
         return None
-
-
-def _legacy_write_identity(memory: MemoryRecord) -> tuple[str | None, str, str]:
-    return (
-        memory.tenant_id,
-        memory.user_id,
-        normalize_memory_content(memory.content),
-    )
 
 
 def _memory_id_collision_indexes(
@@ -497,23 +475,19 @@ def _memory_id_collision_indexes(
     prepared_candidates: Sequence[_PreparedWrite],
 ) -> set[int]:
     collision_indexes: set[int] = set()
-    batch_identities: dict[UUID, list[tuple[int, tuple[str | None, str, str]]]] = {}
+    batch_identities: dict[UUID, list[tuple[int, tuple[str | None, str, str | None]]]] = {}
 
     for index, prepared in enumerate(prepared_candidates):
-        identity = (
-            prepared.memory.tenant_id,
-            prepared.memory.user_id,
-            prepared.idempotency_key,
+        identity = memory_rules.collision_identity(
+            prepared.memory, prepared.idempotency_key
         )
         batch_identities.setdefault(prepared.memory.memory_id, []).append((index, identity))
 
         existing = repository.get(prepared.memory.memory_id)
         if existing is None:
             continue
-        existing_identity = (
-            existing.tenant_id,
-            existing.user_id,
-            _memory_idempotency_key(existing),
+        existing_identity = memory_rules.collision_identity(
+            existing, memory_idempotency_key(existing)
         )
         if existing_identity != identity:
             collision_indexes.add(index)
@@ -557,75 +531,6 @@ def _memory_id_collision_decisions(
     return decisions
 
 
-def _canonical_json_value(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return _canonical_json_value(value.model_dump(mode="python"))
-    if isinstance(value, Mapping):
-        return {
-            str(key): _canonical_json_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, set | frozenset):
-        return sorted(
-            (_canonical_json_value(item) for item in value),
-            key=_canonical_sort_key,
-        )
-    if isinstance(value, list | tuple):
-        return [_canonical_json_value(item) for item in value]
-    return to_jsonable_python(value)
-
-
-def _canonical_sort_key(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def _candidate_identity(memory: MemoryRecord) -> dict[str, Any]:
-    temporal = memory.model_dump(
-        mode="json",
-        include={"event_time", "valid_from", "valid_to"},
-    )
-    return {
-        "memory_kind": memory.memory_kind.value,
-        "normalized_content": normalize_memory_content(memory.content),
-        "event_time": temporal["event_time"],
-        "valid_from": temporal["valid_from"],
-        "valid_to": temporal["valid_to"],
-        "entities": sorted(
-            (
-                {
-                    "entity_id": entity.entity_id,
-                    "name": normalize_memory_content(entity.name),
-                    "kind": entity.kind,
-                    "role": entity.role,
-                }
-                for entity in memory.entities
-            ),
-            key=_canonical_sort_key,
-        ),
-        "roles": sorted(
-            (
-                [role_key, role_value]
-                for role_key, role_value in memory.roles.items()
-            ),
-            key=_canonical_sort_key,
-        ),
-        "relations": sorted(
-            (
-                relation.model_dump(mode="json")
-                for relation in memory.relations
-            ),
-            key=_canonical_sort_key,
-        ),
-        "fact_metadata": {
-            field: {
-                "present": field in memory.metadata,
-                "value": _canonical_json_value(memory.metadata.get(field)),
-            }
-            for field in ("fact_slot", "fact_value", "multi_valued")
-        },
-    }
-
-
 def _duplicate_decision(
     request: MemoryWriteRequest,
     prepared: _PreparedWrite,
@@ -642,31 +547,6 @@ def _duplicate_decision(
         raw_observations=prepared.raw_observations,
         candidate_snapshot=_candidate_snapshot(prepared.candidate),
     )
-
-
-def _idempotency_key(memory: MemoryRecord, extractor_version: str) -> str:
-    evidence_payload = sorted(
-        (
-            {
-                "source_type": ref.source_type,
-                "source_id": ref.source_id,
-                "locator": ref.locator,
-                "quote": ref.quote,
-                "metadata": _canonical_json_value(ref.metadata),
-            }
-            for ref in memory.evidence_refs
-        ),
-        key=_canonical_sort_key,
-    )
-    payload = {
-        "extractor_version": extractor_version,
-        "evidence_refs": evidence_payload,
-        "candidate_identity": _candidate_identity(memory),
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"memory-write.v1:{digest}"
 
 
 def _with_write_metadata(
@@ -692,18 +572,6 @@ def _with_write_metadata(
         "raw_observations": raw_observation_payload,
     }
     return memory.model_copy(update={"metadata": metadata})
-
-
-def _memory_idempotency_key(memory: MemoryRecord) -> str | None:
-    key = memory.metadata.get("write_idempotency_key")
-    if isinstance(key, str):
-        return key
-    pipeline = memory.metadata.get("write_pipeline")
-    if isinstance(pipeline, dict):
-        pipeline_key = pipeline.get("idempotency_key")
-        if isinstance(pipeline_key, str):
-            return pipeline_key
-    return None
 
 
 def _candidate_snapshot(candidate: MemoryWriteCandidate) -> dict[str, Any]:

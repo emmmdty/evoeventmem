@@ -4,16 +4,16 @@ dataset_path = "data/raw/locomo/locomo10.json"
 methods = ["no_memory", "full_context", "session_summary", "vector_rag", "event_no_etec", "etec", "full"]
 provider = "openai_compatible"
 embedding_provider = "openai_compatible"
-chat_model_id = "deepseek-v4-flash"
+chat_model_id = "minimax-m3"
 embedding_model_id = "bge-m3"
 max_input_tokens = 4096
 max_candidates_per_source = 128
 max_items_per_source = 8
 
 [live_provider]
-base_url = "https://api.deepseek.com"
+base_url = "https://ark.cn-beijing.volces.com/api/plan/v3"
 api_key_env = "OPENAI_API_KEY"
-chat_model = "deepseek-v4-flash"
+chat_model = "minimax-m3"
 # bge-m3 served on gpu-5090 (ssh -L 11435:127.0.0.1:11435 gpu-5090); qwen3-embedding-0.6b on 11436
 embedding_base_url = "http://127.0.0.1:11435/v1"
 embedding_api_key_env = "EMBEDDING_API_KEY"

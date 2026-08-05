@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
@@ -8,6 +9,9 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from evoeventmem.core.ports import ChatMessage, ChatResponse, EmbeddingResponse
+
+MAX_RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -91,11 +95,25 @@ def _post_json(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
-            decoded = json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"OpenAI-compatible provider request failed: {exc}") from exc
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRY_ATTEMPTS):
+        if attempt:
+            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        try:
+            with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
+                decoded = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise RuntimeError(f"OpenAI-compatible provider request failed: {exc}") from exc
+            last_error = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last_error = exc
+    else:
+        raise RuntimeError(
+            f"OpenAI-compatible provider request failed after {MAX_RETRY_ATTEMPTS} "
+            f"attempts: {last_error}"
+        ) from last_error
     if not isinstance(decoded, dict):
         raise RuntimeError("OpenAI-compatible provider returned a non-object JSON response")
     return cast(dict[str, Any], decoded)

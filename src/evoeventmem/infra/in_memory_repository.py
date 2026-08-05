@@ -26,6 +26,15 @@ class InMemoryMemoryRepository:
             memory = self._items.get(memory_id)
             return memory.model_copy(deep=True) if memory is not None else None
 
+    def update(self, memory: MemoryRecord) -> MemoryRecord:
+        with self._lock:
+            existing = self._items.get(memory.memory_id)
+            if existing is None:
+                raise KeyError(f"no memory with id {memory.memory_id}")
+            stored_memory = memory.model_copy(deep=True)
+            self._items[stored_memory.memory_id] = stored_memory
+            return stored_memory.model_copy(deep=True)
+
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
         with self._lock:
             return [

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID, uuid4
@@ -16,6 +17,7 @@ from evoeventmem.domain.models import (
     EvidenceRef,
     MemoryRecord,
     MemorySearchHit,
+    MemoryStatus,
     normalize_memory_content,
 )
 
@@ -111,6 +113,18 @@ class MemoryWriteResult(BaseModel):
     accepted_memories: list[MemoryRecord]
     decisions: list[MemoryWriteDecision]
     metrics: MemoryWriteMetrics
+
+
+class MemoryFeedbackEvent(BaseModel):
+    outcome: str = Field(min_length=1)
+    rating: float | None = Field(default=None, ge=0.0, le=1.0)
+    recorded_at: datetime
+    request_id: str | None = None
+
+
+class MemoryExplainResult(BaseModel):
+    memory: MemoryRecord
+    related: list[MemoryRecord]
 
 
 class _PreparedWrite(BaseModel):
@@ -296,6 +310,87 @@ class MemoryService:
             return list(self._write_decisions)
         return [decision for decision in self._write_decisions if decision.request_id == request_id]
 
+    def explain(
+        self,
+        memory_id: UUID,
+        *,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+    ) -> MemoryExplainResult | None:
+        memory = self._repository.get(memory_id)
+        if memory is None or not self._in_scope(memory, user_id, tenant_id):
+            return None
+        linked_ids = set(memory.supersedes)
+        linked_ids.update(memory.derived_from)
+        if memory.superseded_by is not None:
+            linked_ids.add(memory.superseded_by)
+        related = [
+            item
+            for item in self._repository.list_for_user(memory.user_id)
+            if item.tenant_id == memory.tenant_id
+            and item.status is not MemoryStatus.DELETED
+            and item.memory_id in linked_ids
+        ]
+        return MemoryExplainResult(memory=memory, related=related)
+
+    def feedback(
+        self,
+        memory_id: UUID,
+        *,
+        outcome: str,
+        rating: float | None = None,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        request_id: str | None = None,
+    ) -> MemoryRecord | None:
+        memory = self._repository.get(memory_id)
+        if memory is None or not self._in_scope(memory, user_id, tenant_id):
+            return None
+        metadata = dict(memory.metadata)
+        events = metadata.get("feedback_events")
+        existing_events = [event for event in events if isinstance(event, dict)] if isinstance(
+            events, list
+        ) else []
+        existing_events.append(
+            MemoryFeedbackEvent(
+                outcome=outcome,
+                rating=rating,
+                recorded_at=datetime.now(UTC),
+                request_id=request_id,
+            ).model_dump(mode="json")
+        )
+        updated = memory.model_copy(
+            update={
+                "metadata": {**metadata, "feedback_events": existing_events},
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        return self._repository.update(updated)
+
+    def forget(
+        self,
+        memory_id: UUID,
+        *,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        request_id: str | None = None,
+    ) -> MemoryRecord | None:
+        memory = self._repository.get(memory_id)
+        if memory is None or not self._in_scope(memory, user_id, tenant_id):
+            return None
+        metadata = dict(memory.metadata)
+        metadata["forgotten_at"] = datetime.now(UTC).isoformat()
+        if request_id is not None:
+            metadata["forget_request_id"] = request_id
+        updated = memory.model_copy(
+            update={
+                "status": MemoryStatus.DELETED,
+                "metadata": metadata,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        return self._repository.update(updated)
+
     def search(
         self,
         user_id: str,
@@ -309,6 +404,8 @@ class MemoryService:
         query_tokens = _tokens(query)
         hits: list[MemorySearchHit] = []
         for memory in self._repository.list_for_user(user_id):
+            if memory.status is MemoryStatus.DELETED:
+                continue
             if memory.tenant_id != tenant_id:
                 continue
             entity_text = " ".join(entity.name for entity in memory.entities)
@@ -324,6 +421,16 @@ class MemoryService:
                     )
                 )
         return sorted(hits, key=lambda hit: (-hit.score, str(hit.memory.memory_id)))[:limit]
+
+    def _in_scope(
+        self,
+        memory: MemoryRecord,
+        user_id: str | None,
+        tenant_id: str | None,
+    ) -> bool:
+        return (user_id is None or memory.user_id == user_id) and (
+            tenant_id is None or memory.tenant_id == tenant_id
+        )
 
     def _prepare_write_candidate(
         self,

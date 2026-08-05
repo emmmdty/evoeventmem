@@ -60,6 +60,10 @@ python_version = "3.11"
 strict = true
 packages = ["evoeventmem"]
 
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["evoeventmem"]
 branch = true

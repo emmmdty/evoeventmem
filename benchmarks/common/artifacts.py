@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from evoeventmem.domain.models import MemoryRecord
+
 ARTIFACT_SCHEMA_VERSION = 1
 CONTRACT_SCHEMA_VERSION = 1
 FINALIZATION_FORMAT = 1
@@ -282,6 +284,7 @@ class ExtractionSnapshot(BaseModel):
     extractor: ProviderIdentity
     raw_turn_count: int = Field(ge=0)
     event_count: int = Field(ge=0)
+    events: list[MemoryRecord] = Field(default_factory=list)
     rejections: list[ExtractionRejection] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -307,6 +310,7 @@ def _snapshot_canonical(snapshot: ExtractionSnapshot) -> dict[str, Any]:
         "extractor": snapshot.extractor.model_dump(),
         "raw_turn_count": snapshot.raw_turn_count,
         "event_count": snapshot.event_count,
+        "events": [event.model_dump(mode="json") for event in snapshot.events],
         "rejections": [r.model_dump() for r in snapshot.rejections],
     }
 

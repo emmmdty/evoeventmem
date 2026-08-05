@@ -115,11 +115,38 @@ class ExtractionInput(BaseModel):
     turns: list[ExtractionTurn] = Field(default_factory=list)
     event_summaries: list[ExtractionEventSummary] = Field(default_factory=list)
     observations: list[ExtractionObservation] = Field(default_factory=list)
+    require_turn_evidence: bool = False
 
     @field_validator("observations", mode="before")
     @classmethod
     def coerce_observations(cls, value: object) -> object:
         return _coerce_observation_sequence(value)
+
+    def clear_target_fields(self) -> ExtractionInput:
+        """Return a copy with all answer/target-adjacent fields removed.
+
+        Used by benchmark event-memory methods to guarantee no gold QA answer
+        or evidence leaks into extraction input. Official event summaries are
+        retained only when the caller explicitly keeps them (structural target
+        abuse is prevented by the benchmark runner, not here).
+        """
+        return self.model_copy(
+            update={
+                "turns": [
+                    turn.model_copy(
+                        update={
+                            "metadata": {
+                                key: value
+                                for key, value in turn.metadata.items()
+                                if "answer" not in key.lower()
+                            }
+                        }
+                    )
+                    for turn in self.turns
+                ],
+                "observations": [],
+            }
+        )
 
     @classmethod
     def from_normalized_record(cls, record: Any, *, user_id: str) -> ExtractionInput:
@@ -597,7 +624,14 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "Every evidence reference must use one of the provided turn_id values.",
             "Provide source_session_id whenever duplicate turn_id values exist.",
             "Every quote must exactly match content[start_char:end_char].",
-        ],
+        ] + (
+            [
+                "Every event MUST reference at least one raw turn; summary-only "
+                "events are rejected."
+            ]
+            if request.require_turn_evidence
+            else []
+        ),
         "sample_id": request.sample_id,
         "turns": [
             {
@@ -717,6 +751,21 @@ def _validate_evidence(
         )
     if errors:
         raise EvidenceValidationError(errors)
+    if request.require_turn_evidence and not refs:
+        raise EvidenceValidationError(
+            [
+                EvidenceReferenceError(
+                    code="invalid_span",
+                    event_index=event_index,
+                    source_turn_id="",
+                    source_session_id=None,
+                    message=(
+                        f"event {event_index} has no raw-turn evidence; "
+                        "summary-only events are rejected"
+                    ),
+                )
+            ]
+        )
     return refs
 
 

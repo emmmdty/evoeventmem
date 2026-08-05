@@ -3,8 +3,15 @@ run_id_prefix = "m13-longmemeval-smoke"
 dataset_path = "tests/fixtures/longmemeval/oracle_tiny.json"
 methods = ["no_memory", "full_context", "vector_rag", "event_no_etec", "etec", "full"]
 provider = "deterministic_fake"
-chat_model_id = "deterministic-local-fake"
-embedding_model_id = "deterministic-local-embedding"
 max_input_tokens = 256
 max_candidates_per_source = 32
 max_items_per_source = 4
+
+[reader]
+model_id = "deterministic-local-fake-reader"
+
+[extractor]
+model_id = "deterministic-local-fake-extractor"
+
+[embedding]
+model_id = "deterministic-local-embedding"

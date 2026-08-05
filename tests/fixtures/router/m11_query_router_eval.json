@@ -1,0 +1,267 @@
+{
+  "schema_version": "query-router.evaluation.v1",
+  "source": "benchmark-style queries independent of the 21-case development fixture",
+  "cases": [
+    {
+      "case_id": "eval_no_memory_greeting",
+      "query": "Good morning!",
+      "expected_intent": "no-memory",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Formulaic greeting with no memory demand."
+    },
+    {
+      "case_id": "eval_no_memory_ack",
+      "query": "Sounds good, appreciate it.",
+      "expected_intent": "no-memory",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Social acknowledgement."
+    },
+    {
+      "case_id": "eval_no_memory_negative_temporal",
+      "query": "Thanks - when can we ship it?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Starts with a social prefix but carries a real temporal question; must not be NO_MEMORY."
+    },
+    {
+      "case_id": "eval_semantic_color",
+      "query": "What is Priya's favorite cuisine?",
+      "expected_intent": "semantic",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Attribute lookup."
+    },
+    {
+      "case_id": "eval_semantic_hometown",
+      "query": "Where does David currently live?",
+      "expected_intent": "semantic",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": true,
+      "note": "Contains a weak temporal cue but is a live fact lookup."
+    },
+    {
+      "case_id": "eval_semantic_car_color",
+      "query": "What color is David's car?",
+      "expected_intent": "semantic",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": true,
+      "note": "Attribute phrasing that must not be routed by temporal cues."
+    },
+    {
+      "case_id": "eval_semantic_negative_temporal",
+      "query": "Which year did the company rebrand?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Looks like an attribute lookup but asks for a date; no explicit year value so operator is none."
+    },
+    {
+      "case_id": "eval_temporal_none_move",
+      "query": "When did David move?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": true,
+      "note": "Temporal answer intent but no recency constraint; must not favor the latest memory."
+    },
+    {
+      "case_id": "eval_temporal_none_hire_year",
+      "query": "In what year was Priya hired?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Asks for a year but supplies no explicit bound."
+    },
+    {
+      "case_id": "eval_temporal_at",
+      "query": "What happened in 2021?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "at",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Explicit single-year anchor."
+    },
+    {
+      "case_id": "eval_temporal_before",
+      "query": "What happened before the 2023 launch?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "before",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Upper-bound interval."
+    },
+    {
+      "case_id": "eval_temporal_after",
+      "query": "What happened after 2022?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "after",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Lower-bound interval."
+    },
+    {
+      "case_id": "eval_temporal_between",
+      "query": "What happened between 2021 and 2022?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "between",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Two-sided interval."
+    },
+    {
+      "case_id": "eval_temporal_earliest",
+      "query": "When was the first product released?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "earliest",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Earliest within the relevant pool."
+    },
+    {
+      "case_id": "eval_temporal_latest",
+      "query": "When was David's most recent promotion?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "latest",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Latest within the relevant pool."
+    },
+    {
+      "case_id": "eval_temporal_sequence",
+      "query": "In what order were the milestones reached?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "sequence",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Ordering of events."
+    },
+    {
+      "case_id": "eval_temporal_duration",
+      "query": "How long did the outage last?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "duration",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Elapsed-time question."
+    },
+    {
+      "case_id": "eval_graph_colleague",
+      "query": "Who are Priya's collaborators?",
+      "expected_intent": "graph",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Relation/connection query."
+    },
+    {
+      "case_id": "eval_graph_manager",
+      "query": "To whom does David report?",
+      "expected_intent": "graph",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": true,
+      "note": "Relation phrasing that looks like a fact lookup."
+    },
+    {
+      "case_id": "eval_graph_negative_temporal",
+      "query": "When did they become colleagues?",
+      "expected_intent": "temporal",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Has a relation cue but the demand is temporal."
+    },
+    {
+      "case_id": "eval_episodic_trip",
+      "query": "Did I mention the conference trip?",
+      "expected_intent": "episodic",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Recalls a past episode."
+    },
+    {
+      "case_id": "eval_episodic_remember",
+      "query": "Can you recall the topics we covered?",
+      "expected_intent": "episodic",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Explicit recall cue."
+    },
+    {
+      "case_id": "eval_episodic_negative_temporal",
+      "query": "Tell me what we said during the call.",
+      "expected_intent": "episodic",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Contains a weak temporal cue but is episodic recall."
+    },
+    {
+      "case_id": "eval_procedural_guide",
+      "query": "How do I reset my password?",
+      "expected_intent": "procedural",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "How-to instruction."
+    },
+    {
+      "case_id": "eval_procedural_workflow",
+      "query": "Walk me through deploying the service.",
+      "expected_intent": "procedural",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Workflow guidance."
+    },
+    {
+      "case_id": "eval_procedural_negative_temporal",
+      "query": "How do I fix the error I saw yesterday?",
+      "expected_intent": "procedural",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Contains a weak temporal cue but is a how-to question."
+    },
+    {
+      "case_id": "eval_hybrid_opinion",
+      "query": "What do you think about the new policy?",
+      "expected_intent": "hybrid",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "Underspecified open question."
+    },
+    {
+      "case_id": "eval_hybrid_summary",
+      "query": "Could you give me an overview?",
+      "expected_intent": "hybrid",
+      "expected_temporal_operator": "none",
+      "ambiguity": false,
+      "adversarial": false,
+      "note": "No memory cue; falls back to hybrid."
+    },
+    {
+      "case_id": "eval_hybrid_negative_temporal",
+      "query": "What happened at the meeting?",
+      "expected_intent": "episodic",
+      "expected_temporal_operator": "none",
+      "ambiguity": true,
+      "adversarial": true,
+      "note": "Could be episodic or hybrid; rule must be deterministic."
+    }
+  ]
+}

@@ -113,10 +113,19 @@ class QueryRouter:
         r"how are you|how are you doing|nice to meet you|good morning|"
         r"good afternoon|good evening|goodbye|bye|see you|see you later|"
         r"great|awesome|ok|okay|sure|got it|no problem|you're welcome|"
-        r"yes|no|sounds good|makes sense|what's up)\W*$",
+        r"yes|no|sounds good|makes sense|appreciate it|what's up)\W*$",
         re.IGNORECASE,
     )
-    _CHIT_CHAT_PREFIX_RE = re.compile(r"^(thanks|thank you)\b", re.IGNORECASE)
+    _CHIT_CHAT_PREFIX_RE = re.compile(
+        r"^(thanks|thank you|appreciate|sounds good|no worries|you're welcome)\b",
+        re.IGNORECASE,
+    )
+    _ACK_RE = re.compile(
+        r"^(sounds good|no problem|no worries|appreciate it|thanks a lot|"
+        r"thank you( so much)?|got it|you're welcome|makes sense|awesome|great)"
+        r"([,.]?\s*(appreciate it|thanks|thank you|no problem|no worries|got it))*\.?$",
+        re.IGNORECASE,
+    )
     _PROCEDURE_RE = re.compile(
         r"how (do i|to|would i|can i)|steps? to|step by step|procedure|"
         r"instructions?|workflow|process for|best way to|guide me|walk me through",
@@ -130,7 +139,9 @@ class QueryRouter:
         r"\b20\d{2}\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s?(am|pm)\b|"
         r"\b(last|next|this) (week|month|year)\b|"
         r"\d+\s?(days?|weeks?|months?|years?)\s?ago|"
-        r"how long (did|does|has)|when (did|was|were|will|do)|at what time|what time",
+        r"how long (did|does|has)|when (did|was|were|will|do|can|should)|"
+        r"wh?at time|which year|what year|in what year|in what order|what order|"
+        r"at what time",
         re.IGNORECASE,
     )
     _TEMPORAL_WEAK_RE = re.compile(
@@ -143,19 +154,22 @@ class QueryRouter:
     )
     _EPISODIC_RE = re.compile(
         r"did i (tell|mention)|i (told|mentioned) you|you (told|mentioned|said)|"
-        r"we (discussed|talked|spoke) about|in our conversation|during our (chat|meeting|call)|"
+        r"we (discussed|talked|spoke) about|in our conversation|"
+        r"during (our|the|that) (chat|meeting|call|conversation)|"
         r"do you (remember|recall)|you remember|what happened (during|at|when)|"
         r"experience|episode|the trip|my trip|that time",
         re.IGNORECASE,
     )
     _RELATION_RE = re.compile(
         r"relat(ed|ionship|ion)|know each other|connection|connected|"
-        r"colleague|colleagues|friend|friends|associated with|works with|"
-        r"interacts with|team up|partner|manager of|report(s|ed) to",
+        r"colleague|colleagues|collaborator|collaborators|friend|friends|"
+        r"associated with|works with|work with|interacts with|team up|partner|"
+        r"manager of|report(s|ing)? to|report to|whom .* (report|answer to)",
         re.IGNORECASE,
     )
     _FACT_RE = re.compile(
-        r"what is|what's|what are|what was|who is|who's|who was|which|"
+        r"what (is|are|was|color|colour|kind of|type of)|what's|"
+        r"who (is|are|was|'s)|"
         r"where (is|does|do)|how old|what kind of|what type of|"
         r"favorite|prefers?|preference|likes?|dislikes?|lives in|works as|"
         r"based in|interested in|age|birthday|hometown|name of|do you know|"
@@ -273,7 +287,7 @@ class QueryRouter:
                 policy_name=self.POLICY_NAME,
             )
         features = self.extract_features(normalized)
-        intent, score, rule_hits, reason = self._apply_rules(features)
+        intent, score, rule_hits, reason = self._apply_rules(features, normalized)
         confidence = min(1.0, 0.1 + score)
         if (
             intent is not QueryIntent.HYBRID
@@ -332,6 +346,7 @@ class QueryRouter:
     def _apply_rules(
         self,
         features: QueryFeatures,
+        query: str,
     ) -> tuple[QueryIntent, float, list[str], str]:
         if features.is_formulaic_chit_chat:
             return (
@@ -339,6 +354,13 @@ class QueryRouter:
                 1.0,
                 ["formulaic_chit_chat_rule"],
                 "Query is a formulaic social phrase with no memory demand.",
+            )
+        if features.is_chit_chat and self._ACK_RE.match(query):
+            return (
+                QueryIntent.NO_MEMORY,
+                0.9,
+                ["acknowledgement_rule"],
+                "Query is a social acknowledgement with no memory demand.",
             )
         scores = self._score_intents(features)
         rule_hits = self._matched_cue_hits(features)

@@ -175,6 +175,7 @@ class LiveProviderConfig(BaseModel):
     embedding_model: str | None = Field(default=None, min_length=1)
     embedding_base_url: str | None = Field(default=None, min_length=1)
     embedding_api_key_env: str | None = Field(default=None, min_length=1)
+    disable_thinking: bool = False
     timeout_s: float = Field(default=60.0, gt=0)
 
 
@@ -325,6 +326,7 @@ class LocomoSummary(BaseModel):
     chat_model_id: str = Field(min_length=1)
     embedding_model_id: str = Field(min_length=1)
     embedding_provider: str = Field(min_length=1)
+    reader_thinking: str = Field(min_length=1)
     extraction_prompt_version: str = Field(min_length=1)
     retrieval_policy_name: str = Field(min_length=1)
     router_policy_name: str = Field(min_length=1)
@@ -778,6 +780,14 @@ def _needs_etec(methods: Sequence[Method]) -> bool:
     return any(method in _METHOD_APPLIES_ETEC for method in methods)
 
 
+def _reader_thinking(config: LocomoConfig) -> str:
+    if config.provider == "deterministic_fake":
+        return "n/a"
+    if config.live_provider is not None and config.live_provider.disable_thinking:
+        return "disabled"
+    return "enabled"
+
+
 def _build_prompt(question: NormalizedQuestion, items: Sequence[PackedItem]) -> str:
     lines = [f"Context: {item.memory.content}" for item in items]
     lines.append(f"Question: {question.question}")
@@ -939,6 +949,7 @@ def _write_summary(
         chat_model_id=chat_model.model_id,
         embedding_model_id=embedding_model.model_id,
         embedding_provider=config.embedding_provider,
+        reader_thinking=_reader_thinking(config),
         extraction_prompt_version=EXTRACTION_PROMPT_VERSION,
         retrieval_policy_name=RETRIEVAL_POLICY_NAME,
         router_policy_name=ROUTER_POLICY_NAME,
@@ -1216,6 +1227,7 @@ def _make_models(config: LocomoConfig, run_dir: Path) -> tuple[ChatModel, Embedd
         api_key=api_key,
         model=live.chat_model,
         timeout_s=live.timeout_s,
+        thinking="disabled" if live.disable_thinking else None,
     )
     chat_model: ChatModel = CachedChatModel(OpenAICompatibleChatClient(live_config), cache)
     if config.embedding_provider == "deterministic_fake":

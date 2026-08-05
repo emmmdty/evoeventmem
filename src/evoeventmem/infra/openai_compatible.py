@@ -16,6 +16,7 @@ class OpenAICompatibleConfig:
     api_key: str
     model: str
     timeout_s: float = 30.0
+    thinking: str | None = None
 
     def __post_init__(self) -> None:
         if not self.base_url.strip():
@@ -26,6 +27,8 @@ class OpenAICompatibleConfig:
             raise ValueError("model is required for live OpenAI-compatible providers")
         if self.timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
+        if self.thinking not in (None, "enabled", "disabled"):
+            raise ValueError("thinking must be 'enabled', 'disabled', or None")
 
 
 class OpenAICompatibleChatClient:
@@ -34,12 +37,14 @@ class OpenAICompatibleChatClient:
         self.model_id = config.model
 
     def generate(self, messages: Sequence[ChatMessage]) -> ChatResponse:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": [
                 {"role": message.role, "content": message.content} for message in messages
             ],
         }
+        if self._config.thinking is not None:
+            payload["thinking"] = {"type": self._config.thinking}
         response = _post_json(self._config, "chat/completions", payload)
         choice = response["choices"][0]
         text = str(choice["message"]["content"])

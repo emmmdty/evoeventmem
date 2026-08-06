@@ -520,6 +520,9 @@ class AsyncPostgresMemoryRepository:
                     memory=_memory_from_row(row),
                     score=cosine,
                     reason="pgvector cosine",
+                    source="pgvector",
+                    fallback=False,
+                    score_detail={"cosine_similarity": cosine},
                 )
             )
         return hits

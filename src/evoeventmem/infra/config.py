@@ -42,7 +42,6 @@ class Settings:
     embedding_timeout_s: float = 30.0
     schema_version: str = "memory.v1"
     embedding_policy: str = "vector"
-    token_overlap_policy: bool = False
 
     @property
     def embedding_api_key(self) -> str | None:
@@ -93,7 +92,6 @@ class Settings:
             embedding_timeout_s=_env_float(env, "EEM_EMBEDDING_TIMEOUT_S", 30.0),
             schema_version=env.get("EEM_SCHEMA_VERSION", "memory.v1").strip(),
             embedding_policy=embedding_policy,
-            token_overlap_policy=_env_bool(env, "EEM_TOKEN_OVERLAP_POLICY", False),
         )
 
 

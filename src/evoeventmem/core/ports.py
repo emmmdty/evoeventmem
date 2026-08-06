@@ -206,9 +206,17 @@ class PingResult(BaseModel):
 
 
 class SearchHit(BaseModel):
+    """A vector search result with explicit source, score decomposition, and
+    fallback state. The extra fields are additive (D5) so consumers of the D1
+    freeze keep working unchanged."""
+
     memory: MemoryRecord
     score: float = Field(ge=0.0)
     reason: str
+    source: str = "cosine"
+    fallback: bool = False
+    fallback_reason: str | None = None
+    score_detail: dict[str, float] | None = None
 
 
 class AsyncMemoryRepository(Protocol):

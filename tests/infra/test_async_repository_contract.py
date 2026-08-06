@@ -263,6 +263,32 @@ def test_async_repository_isolation_between_tenants() -> None:
     _run(scenario())
 
 
+def test_async_repository_search_hit_exposes_source_and_fallback_state() -> None:
+    async def scenario() -> None:
+        repository = AsyncInMemoryRepository(dimension=4, model_id="test-model")
+        scope = _scope()
+        await repository.add(
+            scope,
+            _record(content="npmmirror registry story"),
+            _vector(1.0, 0.0, 0.0, 0.0),
+        )
+        search = SearchVector(
+            query=_vector(1.0, 0.0, 0.0, 0.0),
+            scope=scope,
+            limit=SearchLimit(state=MemoryQuery.ACTIVE_ONLY, max_results=10),
+        )
+        hits = await repository.search_vector(search)
+        assert hits
+        hit = hits[0]
+        assert hit.source == "cosine"
+        assert hit.fallback is False
+        assert hit.fallback_reason is None
+        assert hit.score_detail is not None
+        assert hit.score_detail["cosine_similarity"] == pytest.approx(hit.score)
+
+    _run(scenario())
+
+
 def test_async_repository_searches_scoped_candidates() -> None:
     async def scenario() -> None:
         repository = AsyncInMemoryRepository(dimension=4, model_id="test-model")

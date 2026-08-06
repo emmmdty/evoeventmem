@@ -14,6 +14,7 @@ def _load_sql(name: str) -> str:
 MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_core_schema", _load_sql("0001_core.sql")),
     ("0002_pgvector", _load_sql("0002_pgvector.sql")),
+    ("0003_pgvector_hnsw", _load_sql("0003_pgvector_hnsw.sql")),
 )
 
 _MIGRATION_TABLE = """

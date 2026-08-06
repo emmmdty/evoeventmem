@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -167,6 +168,43 @@ class EvidencePolicy(StrEnum):
     PROVENANCE_ONLY = "provenance_only"
 
 
+class WeightProfile(StrEnum):
+    INTENT = "intent"
+    FIXED_VECTOR = "fixed_vector"
+    FIXED_HYBRID = "fixed_hybrid"
+
+
+class RoutingMode(StrEnum):
+    RULE = "rule"
+    FORCED = "forced"
+
+
+class RetrievalControls(BaseModel):
+    """One public control surface for retrieval method ablations.
+
+    B executes ablations through these switches and never reimplements
+    retrieval internals. Each pair of settings must change at least one
+    selection, exclusion, ranking, or packing decision on a controlled
+    fixture while all other inputs stay equal.
+    """
+
+    strategy: RetrievalStrategy = RetrievalStrategy.QEMR
+    routing_mode: RoutingMode = RoutingMode.RULE
+    forced_intent: QueryIntent | None = None
+    weight_profile: WeightProfile = WeightProfile.INTENT
+    evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED
+    enable_temporal_source: bool = True
+    enable_graph_source: bool = True
+    budget_tokens: int | None = Field(default=None, ge=1)
+    reference_time: datetime | None = None
+
+    @model_validator(mode="after")
+    def forced_intent_requires_forced_mode(self) -> RetrievalControls:
+        if self.forced_intent is not None and self.routing_mode is not RoutingMode.FORCED:
+            raise ValueError("forced_intent requires routing_mode=forced")
+        return self
+
+
 class ComponentScore(BaseModel):
     source: CandidateSource
     raw_score: float = Field(ge=0.0)
@@ -249,11 +287,14 @@ class QEMRRetrievalResult(BaseModel):
     intent: QueryIntent
     strategy: RetrievalStrategy
     policy_name: str = POLICY_NAME
+    evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED
     budget_tokens: int = Field(ge=1)
     selected_context: list[PackedItem] = Field(default_factory=list)
     total_tokens: int = Field(ge=0)
     candidates: list[ScoredMemory] = Field(default_factory=list)
     exclusions: list[ExclusionRecord] = Field(default_factory=list)
+    source_failures: list[SourceFailureEvent] = Field(default_factory=list)
+    controls: RetrievalControls | None = None
     routing: QueryRoutingDecision | None = None
 
     @model_validator(mode="after")
@@ -319,11 +360,25 @@ class RetrievalHarness:
         strategy: RetrievalStrategy = RetrievalStrategy.QEMR,
         budget_tokens: int | None = None,
         reference_time: datetime | None = None,
+        controls: RetrievalControls | None = None,
     ) -> QEMRRetrievalResult:
+        if controls is not None:
+            strategy = controls.strategy
+            if controls.budget_tokens is not None:
+                budget_tokens = controls.budget_tokens
+            if controls.reference_time is not None:
+                reference_time = controls.reference_time
         budget = self._default_budget_tokens if budget_tokens is None else budget_tokens
         if budget < 1:
             raise ValueError("budget_tokens must be at least 1")
-        routing = self._router.route(query)
+        routing = self._router.route(query, reference_time=reference_time)
+        if controls is not None and controls.forced_intent is not None:
+            routing = routing.model_copy(
+                update={
+                    "intent": controls.forced_intent,
+                    "reason": "intent forced by retrieval controls",
+                }
+            )
         memories = [
             memory
             for memory in self._repository.list_for_user(user_id)
@@ -338,17 +393,34 @@ class RetrievalHarness:
                 strategy,
                 budget,
                 memories,
+                evidence_policy=(
+                    controls.evidence_policy
+                    if controls is not None
+                    else EvidencePolicy.CONSTRAINED
+                ),
+                controls=controls,
             )
         weights = resolve_weights(strategy, routing.intent)
+        if controls is not None and controls.weight_profile is not WeightProfile.INTENT:
+            if controls.weight_profile is WeightProfile.FIXED_HYBRID:
+                weights = dict(FIXED_HYBRID_WEIGHTS)
+            else:
+                weights = dict(FIXED_VECTOR_WEIGHTS)
         reference = _query_reference_datetime(
             query,
             reference_time if reference_time is not None else self._clock(),
         )
-        candidates, capped_memory_ids = self._cap_candidates(
-            self._collect_candidates(query, routing, memories, reference)
+        candidates, source_failures = self._collect_candidates(
+            query,
+            routing,
+            memories,
+            reference,
+            controls,
         )
+        candidates, capped_memory_ids = self._cap_candidates(candidates)
         temporal_exclusions: list[ExclusionRecord] = []
-        if strategy is not RetrievalStrategy.FIXED_VECTOR:
+        temporal_enabled = controls is None or controls.enable_temporal_source
+        if strategy is not RetrievalStrategy.FIXED_VECTOR and temporal_enabled:
             candidates, temporal_exclusions = self._apply_temporal_constraint(
                 candidates,
                 routing,
@@ -363,7 +435,10 @@ class RetrievalHarness:
         eligible, exclusions = self._classify_memories(scored, routing.intent)
         exclusions = [*temporal_exclusions, *exclusions]
         exclusions.extend(self._capped_memory_exclusions(scored, capped_memory_ids))
-        selected, packing_exclusions = self._pack(eligible, budget)
+        evidence_policy = (
+            controls.evidence_policy if controls is not None else EvidencePolicy.CONSTRAINED
+        )
+        selected, packing_exclusions = self._pack(eligible, budget, evidence_policy)
         exclusions.extend(packing_exclusions)
         selected_context = self._build_packed_items(selected, routing.intent)
         return QEMRRetrievalResult(
@@ -373,11 +448,14 @@ class RetrievalHarness:
             intent=routing.intent,
             strategy=strategy,
             policy_name=self.POLICY_NAME,
+            evidence_policy=evidence_policy,
             budget_tokens=budget,
             selected_context=selected_context,
             total_tokens=sum(item.token_count for item in selected_context),
             candidates=scored,
             exclusions=exclusions,
+            source_failures=source_failures,
+            controls=controls,
             routing=routing,
         )
 
@@ -390,6 +468,8 @@ class RetrievalHarness:
         strategy: RetrievalStrategy,
         budget: int,
         memories: Sequence[MemoryRecord],
+        evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED,
+        controls: RetrievalControls | None = None,
     ) -> QEMRRetrievalResult:
         return QEMRRetrievalResult(
             query=query,
@@ -397,6 +477,8 @@ class RetrievalHarness:
             tenant_id=tenant_id,
             intent=routing.intent,
             strategy=strategy,
+            evidence_policy=evidence_policy,
+            controls=controls,
             policy_name=self.POLICY_NAME,
             budget_tokens=budget,
             selected_context=[],
@@ -419,18 +501,51 @@ class RetrievalHarness:
         routing: QueryRoutingDecision,
         memories: Sequence[MemoryRecord],
         reference: datetime,
-    ) -> list[Candidate]:
+        controls: RetrievalControls | None,
+    ) -> tuple[list[Candidate], list[SourceFailureEvent]]:
+        """Collect candidates per source with observable failure handling.
+
+        Every source is isolated: an exception records a source failure event
+        (stable reason code, degraded policy, duration) and the remaining
+        sources continue. A disabled source is skipped, not failed. Failures
+        are never silent and never change the reported strategy.
+        """
         candidates: list[Candidate] = []
-        sources = (
-            self._dense_candidates,
-            self._temporal_candidates,
-            self._graph_candidates,
-            self._episodic_candidates,
-            self._procedural_candidates,
-        )
-        for source in sources:
-            candidates.extend(source(query, routing, memories, reference))
-        return candidates
+        failures: list[SourceFailureEvent] = []
+        source_type = Callable[
+            [str, QueryRoutingDecision, Sequence[MemoryRecord], datetime],
+            list[Candidate],
+        ]
+        sources: list[tuple[CandidateSource, source_type]] = [
+            (CandidateSource.DENSE, self._dense_candidates),
+            (CandidateSource.TEMPORAL, self._temporal_candidates),
+            (CandidateSource.GRAPH, self._graph_candidates),
+            (CandidateSource.EPISODIC, self._episodic_candidates),
+            (CandidateSource.PROCEDURAL, self._procedural_candidates),
+        ]
+        for source, source_fn in sources:
+            if controls is not None:
+                if source is CandidateSource.TEMPORAL and not controls.enable_temporal_source:
+                    continue
+                if source is CandidateSource.GRAPH and not controls.enable_graph_source:
+                    continue
+            started = time.perf_counter()
+            try:
+                candidates.extend(source_fn(query, routing, memories, reference))
+            except Exception:
+                failures.append(
+                    SourceFailureEvent(
+                        source=source,
+                        reason_code=f"{source.value}_source_error",
+                        degraded_policy=(
+                            controls.evidence_policy
+                            if controls is not None
+                            else EvidencePolicy.CONSTRAINED
+                        ),
+                        duration_ms=max(0.0, (time.perf_counter() - started) * 1000.0),
+                    )
+                )
+        return candidates, failures
 
     def _cap_candidates(
         self,
@@ -554,6 +669,10 @@ class RetrievalHarness:
         """
         constraint = routing.temporal_constraint
         operator = constraint.operator
+        if not any(
+            candidate.source is CandidateSource.TEMPORAL for candidate in candidates
+        ):
+            return list(candidates), []
         relevant_ids = {
             candidate.memory.memory_id
             for candidate in candidates
@@ -969,6 +1088,7 @@ class RetrievalHarness:
         self,
         eligible: Sequence[ScoredMemory],
         budget: int,
+        evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED,
     ) -> tuple[list[ScoredMemory], list[ExclusionRecord]]:
         remaining = budget
         covered_evidence: set[tuple[str, str, str | None]] = set()
@@ -976,6 +1096,7 @@ class RetrievalHarness:
         selected: list[ScoredMemory] = []
         exclusions: list[ExclusionRecord] = []
         considered_fits: set[UUID] = set()
+        coverage_active = evidence_policy is EvidencePolicy.CONSTRAINED
         pool = sorted(
             list(eligible),
             key=lambda item: (-item.final_score, str(item.memory.memory_id)),
@@ -993,7 +1114,12 @@ class RetrievalHarness:
             best = max(
                 fits,
                 key=lambda item: (
-                    item.final_score + self._coverage_bonus(item, covered_evidence),
+                    item.final_score
+                    + (
+                        self._coverage_bonus(item, covered_evidence)
+                        if coverage_active
+                        else 0.0
+                    ),
                     str(item.memory.memory_id),
                 ),
             )
@@ -1070,6 +1196,7 @@ class RetrievalService:
         strategy: RetrievalStrategy = RetrievalStrategy.QEMR,
         budget_tokens: int | None = None,
         reference_time: datetime | None = None,
+        controls: RetrievalControls | None = None,
     ) -> QEMRRetrievalResult:
         result = self._harness.retrieve(
             query,
@@ -1078,6 +1205,7 @@ class RetrievalService:
             strategy=strategy,
             budget_tokens=budget_tokens,
             reference_time=reference_time,
+            controls=controls,
         )
         self._results.append(result)
         return result
@@ -1228,14 +1356,17 @@ __all__ = [
     "QEMRRetrievalResult",
     "QEMR_WEIGHT_PROFILES",
     "RenderedMessageBudget",
+    "RetrievalControls",
     "RetrievalHarness",
     "RetrievalRequest",
     "RetrievalResult",
     "RetrievalService",
     "RetrievalStrategy",
+    "RoutingMode",
     "ScoredMemory",
     "SourceFailureEvent",
     "SourceScore",
     "TemporalConstraint",
+    "WeightProfile",
     "resolve_weights",
 ]

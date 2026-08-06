@@ -19,13 +19,17 @@ from evoeventmem.retrieval import (
     FIXED_VECTOR_WEIGHTS,
     QEMR_WEIGHT_PROFILES,
     RRF_K,
+    EvidencePolicy,
     QEMRRetrievalResult,
+    RetrievalControls,
     RetrievalHarness,
     RetrievalService,
     RetrievalStrategy,
+    RoutingMode,
+    WeightProfile,
     resolve_weights,
 )
-from evoeventmem.router import QueryIntent, TemporalOperator
+from evoeventmem.router import QueryIntent, QueryRoutingDecision, TemporalOperator
 
 
 class _FixedEmbeddingModel:
@@ -77,14 +81,15 @@ def _harness(
     default_budget_tokens: int = 200,
     max_items_per_source: int = 4,
     max_candidates_per_source: int | None = None,
+    embedding: _FixedEmbeddingModel | None = None,
 ) -> RetrievalHarness:
     repository = InMemoryMemoryRepository()
     for memory in memories:
         repository.add(memory)
-    embedding = _FixedEmbeddingModel(vectors or {})
+    embedding_model = embedding or _FixedEmbeddingModel(vectors or {})
     return RetrievalHarness(
         repository,
-        embedding,
+        embedding_model,
         default_budget_tokens=default_budget_tokens,
         max_items_per_source=max_items_per_source,
         max_candidates_per_source=max_candidates_per_source,
@@ -863,3 +868,333 @@ def test_sequence_and_duration_constraints_remain_observable() -> None:
     assert duration.routing.temporal_constraint.rule_hits == ["duration_rule"]
     assert duration.routing.temporal_constraint.matched_spans
     assert duration.selected_context
+
+
+class _ExplodingEmbedding(_FixedEmbeddingModel):
+    """Embedding stub whose dense source always fails."""
+
+    def embed_texts(self, texts: list[str]) -> list[EmbeddingResponse]:
+        raise RuntimeError("embedding service unavailable")
+
+
+class _FlakyGraphHarness(RetrievalHarness):
+    """Harness whose graph source always fails."""
+
+    def _graph_candidates(
+        self,
+        query: str,
+        routing: QueryRoutingDecision,
+        memories: list[MemoryRecord],
+        reference: datetime,
+    ) -> list:
+        raise RuntimeError("graph store unavailable")
+
+
+def test_dense_source_failure_records_observable_event() -> None:
+    memory = _memory(
+        content="Caroline's favorite color is teal.",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    harness = _harness([memory], embedding=_ExplodingEmbedding({}))
+    result = harness.retrieve(
+        "What is Caroline's favorite color?",
+        user_id="u1",
+        controls=RetrievalControls(evidence_policy=EvidencePolicy.PROVENANCE_ONLY),
+    )
+    assert result.selected_context, "remaining sources must still be retrieved"
+    assert result.strategy is RetrievalStrategy.QEMR
+    dense_failure = next(f for f in result.source_failures if f.source.value == "dense")
+    assert dense_failure.reason_code == "dense_source_error"
+    assert dense_failure.degraded_policy is EvidencePolicy.PROVENANCE_ONLY
+    assert dense_failure.duration_ms >= 0.0
+
+
+def test_graph_source_failure_records_observable_event() -> None:
+    memory = _memory(
+        content="alpha beta",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    repository = InMemoryMemoryRepository()
+    repository.add(memory)
+    embedding = _FixedEmbeddingModel(
+        {
+            "What is Caroline's favorite color?": (1.0, 0.0),
+            memory.content: (0.9, 0.435889894354067),
+        }
+    )
+    harness = _FlakyGraphHarness(repository, embedding)
+    result = harness.retrieve("What is Caroline's favorite color?", user_id="u1")
+    assert result.selected_context
+    assert result.strategy is RetrievalStrategy.QEMR
+    graph_failure = next(f for f in result.source_failures if f.source.value == "graph")
+    assert graph_failure.reason_code == "graph_source_error"
+    assert graph_failure.duration_ms >= 0.0
+
+
+def test_controls_evidence_policy_changes_packing_decision() -> None:
+    covered_first = _memory(
+        content="alpha beta",
+        evidence_id="shared-evidence",
+        memory_id=UUID("50000000-0000-0000-0000-000000000031"),
+    )
+    covered_second = _memory(
+        content="gamma delta",
+        evidence_id="shared-evidence",
+        memory_id=UUID("50000000-0000-0000-0000-000000000032"),
+    )
+    novel = _memory(
+        content="epsilon zeta",
+        evidence_id="novel-evidence",
+        memory_id=UUID("50000000-0000-0000-0000-000000000033"),
+    )
+    vectors = {
+        "What is Caroline's favorite color?": (1.0, 0.0),
+        covered_first.content: (1.0, 0.0),
+        covered_second.content: (0.9, 0.435889894354067),
+        novel.content: (0.89, 0.45596052437906664),
+    }
+    harness = _harness(
+        [covered_first, covered_second, novel],
+        vectors=vectors,
+        default_budget_tokens=4,
+    )
+    query = "What is Caroline's favorite color?"
+    constrained = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=4),
+    )
+    provenance_only = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(
+            evidence_policy=EvidencePolicy.PROVENANCE_ONLY,
+            budget_tokens=4,
+        ),
+    )
+    constrained_ids = [item.memory.memory_id for item in constrained.selected_context]
+    provenance_ids = [item.memory.memory_id for item in provenance_only.selected_context]
+    assert constrained_ids == [covered_first.memory_id, novel.memory_id]
+    assert provenance_ids == [covered_first.memory_id, covered_second.memory_id]
+    assert all(item.evidence_refs for item in provenance_only.selected_context)
+
+
+def test_controls_disable_temporal_changes_selection() -> None:
+    in_2024 = _memory(
+        content="Project launch.",
+        valid_from=datetime(2024, 6, 1, tzinfo=UTC),
+        memory_id=UUID("50000000-0000-0000-0000-000000000041"),
+    )
+    in_2019 = _memory(
+        content="Office opened.",
+        valid_from=datetime(2019, 3, 1, tzinfo=UTC),
+        memory_id=UUID("50000000-0000-0000-0000-000000000042"),
+    )
+    vectors = {
+        "What happened in 2024?": (1.0, 0.0),
+        in_2024.content: (0.9, 0.435889894354067),
+        in_2019.content: (0.95, 0.3122498999199199),
+    }
+    harness = _harness([in_2024, in_2019], vectors=vectors)
+    query = "What happened in 2024?"
+    enabled = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(enable_temporal_source=True),
+    )
+    disabled = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(enable_temporal_source=False),
+    )
+    enabled_ids = [item.memory.memory_id for item in enabled.selected_context]
+    disabled_ids = [item.memory.memory_id for item in disabled.selected_context]
+    assert enabled_ids == [in_2024.memory_id]
+    assert in_2019.memory_id in disabled_ids
+    assert any(
+        exclusion.reason == "temporal_interval_excluded"
+        and exclusion.memory_id == in_2019.memory_id
+        for exclusion in enabled.exclusions
+    )
+
+
+def test_controls_disable_graph_changes_ranking() -> None:
+    entity_memory = _memory(
+        content="alpha beta",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("50000000-0000-0000-0000-000000000051"),
+    )
+    plain_memory = _memory(
+        content="gamma delta",
+        memory_id=UUID("50000000-0000-0000-0000-000000000052"),
+    )
+    vectors = {
+        "Who works with Caroline?": (1.0, 0.0),
+        entity_memory.content: (0.7, 0.714142842854285),
+        plain_memory.content: (1.0, 0.0),
+    }
+    harness = _harness([entity_memory, plain_memory], vectors=vectors)
+    query = "Who works with Caroline?"
+    enabled = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(enable_graph_source=True),
+    )
+    disabled = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(enable_graph_source=False),
+    )
+    assert [item.memory.memory_id for item in enabled.selected_context][0] == (
+        entity_memory.memory_id
+    )
+    assert [item.memory.memory_id for item in disabled.selected_context][0] == (
+        plain_memory.memory_id
+    )
+
+
+def test_controls_forced_intent_changes_routing_decision() -> None:
+    memory = _memory(
+        content="Caroline's favorite color is teal.",
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    harness = _harness([memory])
+    query = "What is Caroline's favorite color?"
+    rule = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(routing_mode=RoutingMode.RULE),
+    )
+    forced = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(
+            routing_mode=RoutingMode.FORCED,
+            forced_intent=QueryIntent.NO_MEMORY,
+        ),
+    )
+    assert rule.routing is not None
+    assert rule.routing.intent is QueryIntent.SEMANTIC
+    assert rule.selected_context
+    assert forced.routing is not None
+    assert forced.routing.intent is QueryIntent.NO_MEMORY
+    assert forced.selected_context == []
+
+
+def test_controls_strategy_changes_decisions() -> None:
+    procedure = _memory(
+        content="To create a memory, call the write endpoint with evidence.",
+        kind=MemoryKind.PROCEDURE,
+    )
+    fact = _memory(
+        content="Caroline's favorite color is teal.",
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    vectors = {
+        "How do I create a memory in evoeventmem?": (1.0, 0.0),
+        procedure.content: (0.0, 1.0),
+        fact.content: (0.9, 0.435889894354067),
+    }
+    harness = _harness([procedure, fact], vectors=vectors)
+    query = "How do I create a memory in evoeventmem?"
+    qemr = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(strategy=RetrievalStrategy.QEMR),
+    )
+    vector = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(strategy=RetrievalStrategy.FIXED_VECTOR),
+    )
+    assert qemr.strategy is RetrievalStrategy.QEMR
+    assert vector.strategy is RetrievalStrategy.FIXED_VECTOR
+    assert qemr.selected_context[0].memory.memory_id == procedure.memory_id
+    assert vector.selected_context[0].memory.memory_id == fact.memory_id
+
+
+def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> None:
+    dense_leader = _memory(
+        content="alpha beta",
+        memory_id=UUID("50000000-0000-0000-0000-000000000061"),
+    )
+    graph_plus_dense = _memory(
+        content="gamma delta",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("50000000-0000-0000-0000-000000000062"),
+    )
+    temporal_plus_episodic = _memory(
+        content="eta theta",
+        kind=MemoryKind.EPISODE,
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        memory_id=UUID("50000000-0000-0000-0000-000000000063"),
+    )
+    vectors = {
+        "Where does Caroline live?": (1.0, 0.0),
+        dense_leader.content: (0.9, 0.435889894354067),
+        graph_plus_dense.content: (0.5, 0.8660254037844386),
+        temporal_plus_episodic.content: (0.0, 1.0),
+    }
+    harness = _harness(
+        [dense_leader, graph_plus_dense, temporal_plus_episodic],
+        vectors=vectors,
+        default_budget_tokens=4,
+    )
+    query = "Where does Caroline live?"
+    intent_profile = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(
+            strategy=RetrievalStrategy.QEMR,
+            weight_profile=WeightProfile.INTENT,
+            budget_tokens=4,
+        ),
+    )
+    hybrid_profile = harness.retrieve(
+        query,
+        user_id="u1",
+        controls=RetrievalControls(
+            strategy=RetrievalStrategy.QEMR,
+            weight_profile=WeightProfile.FIXED_HYBRID,
+            budget_tokens=4,
+        ),
+    )
+    assert intent_profile.strategy is RetrievalStrategy.QEMR
+    assert hybrid_profile.strategy is RetrievalStrategy.QEMR
+    intent_ids = [item.memory.memory_id for item in intent_profile.selected_context]
+    hybrid_ids = [item.memory.memory_id for item in hybrid_profile.selected_context]
+    assert intent_ids == [graph_plus_dense.memory_id, dense_leader.memory_id]
+    assert hybrid_ids == [temporal_plus_episodic.memory_id, graph_plus_dense.memory_id]
+
+
+def test_controls_budget_pair_changes_packed_decision() -> None:
+    first = _memory(
+        content="alpha beta",
+        evidence_id="evidence-1",
+        memory_id=UUID("50000000-0000-0000-0000-000000000071"),
+    )
+    second = _memory(
+        content="gamma delta",
+        evidence_id="evidence-2",
+        memory_id=UUID("50000000-0000-0000-0000-000000000072"),
+    )
+    vectors = {
+        "query": (1.0, 0.0),
+        first.content: (1.0, 0.0),
+        second.content: (0.9, 0.435889894354067),
+    }
+    harness = _harness([first, second], vectors=vectors, default_budget_tokens=200)
+    tight = harness.retrieve(
+        "query",
+        user_id="u1",
+        controls=RetrievalControls(budget_tokens=2),
+    )
+    roomy = harness.retrieve(
+        "query",
+        user_id="u1",
+        controls=RetrievalControls(budget_tokens=200),
+    )
+    assert [item.memory.memory_id for item in tight.selected_context] == [first.memory_id]
+    assert len(roomy.selected_context) == 2

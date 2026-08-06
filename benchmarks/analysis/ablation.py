@@ -172,7 +172,10 @@ def check_factor_isolation(loaded: LoadedAblationRun) -> list[str]:
                 f"known factors are {KNOWN_FACTORS}"
             )
             continue
-        if arm.manifest.budget.input_tokens != base.manifest.budget.input_tokens and factor != "budget":
+        budget_changed = (
+            arm.manifest.budget.input_tokens != base.manifest.budget.input_tokens
+        )
+        if budget_changed and factor != "budget":
             issues.append(
                 f"factor_leak: non-budget arm {arm_name} changes budget "
                 f"(input_tokens {base.manifest.budget.input_tokens} -> "

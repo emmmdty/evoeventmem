@@ -26,6 +26,7 @@ base_url = "https://api.deepseek.com"
 api_key_env = "OPENAI_API_KEY"
 timeout_s = 60
 thinking = "disabled"
+max_tokens = 8192
 
 [embedding]
 provider = "openai_compatible"

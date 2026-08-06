@@ -19,9 +19,14 @@ from evoeventmem.domain.models import MemoryRecord, MemoryStatus
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
 from evoeventmem.retrieval import (
+    RRF_K,
+    EvidencePolicy,
     QEMRRetrievalResult,
+    RetrievalControls,
     RetrievalHarness,
     RetrievalStrategy,
+    RoutingMode,
+    WeightProfile,
 )
 from evoeventmem.router import QueryIntent
 
@@ -29,6 +34,7 @@ ANNOTATIONS = Path("tests/fixtures/retrieval/m12_retrieval_smoke.json")
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m12_retrieval_smoke")
 STRATEGIES = list(RetrievalStrategy)
 RECENCY_REFERENCE = datetime(2026, 8, 1, tzinfo=UTC)
+WRRF_STRATEGIES = frozenset({RetrievalStrategy.FIXED_HYBRID, RetrievalStrategy.QEMR})
 
 
 class RetrievalSmokeSummary(BaseModel):
@@ -47,6 +53,11 @@ class RetrievalSmokeSummary(BaseModel):
     provenance_coverage: float = Field(ge=0.0, le=1.0)
     decomposition_coverage: float = Field(ge=0.0, le=1.0)
     superseded_compliance: float = Field(ge=0.0, le=1.0)
+    relevance_first_compliance: float = Field(ge=0.0, le=1.0)
+    wrrf_component_coverage: float = Field(ge=0.0, le=1.0)
+    fallback_event_coverage: float = Field(ge=0.0, le=1.0)
+    controlled_switch_compliance: float = Field(ge=0.0, le=1.0)
+    budget_breakdown_compliance: float = Field(ge=0.0, le=1.0)
     results_path: str
 
 
@@ -76,13 +87,24 @@ def run_retrieval_smoke(annotation_path: Path, output_dir: Path) -> RetrievalSmo
     decomposition_checks = 0
     decomposition_passes = 0
     superseded_compliant = 0
+    relevance_checks = 0
+    relevance_passes = 0
+    wrrf_checks = 0
+    wrrf_passes = 0
+    fallback_checks = 0
+    fallback_passes = 0
+    budget_breakdown_checks = 0
+    budget_breakdown_passes = 0
 
     for case in cases:
         for strategy in STRATEGIES:
             repository = InMemoryMemoryRepository()
             for item in case["memories"]:
                 repository.add(MemoryRecord.model_validate(item))
-            harness = RetrievalHarness(
+            harness_cls: type[RetrievalHarness] = RetrievalHarness
+            if case.get("fail_dense_source"):
+                harness_cls = _FlakyDenseHarness
+            harness = harness_cls(
                 repository,
                 embedding_model,
                 clock=lambda: RECENCY_REFERENCE,
@@ -108,9 +130,30 @@ def run_retrieval_smoke(annotation_path: Path, output_dir: Path) -> RetrievalSmo
                 decomposition_checks += 1
                 if item.component_scores and item.final_score >= 0.0:
                     decomposition_passes += 1
+            if case.get("expected_top_memory_id") and strategy in WRRF_STRATEGIES:
+                relevance_checks += 1
+                if (
+                    result.selected_context
+                    and result.selected_context[0].memory.memory_id
+                    == _uuid(case["expected_top_memory_id"])
+                ):
+                    relevance_passes += 1
+            for candidate in result.candidates:
+                for score in candidate.source_scores:
+                    wrrf_checks += 1
+                    if _wrrf_component_ok(strategy, score):
+                        wrrf_passes += 1
+            if case.get("fail_dense_source"):
+                fallback_checks += 1
+                if _dense_failure_ok(result):
+                    fallback_passes += 1
+            budget_breakdown_checks += 1
+            if _budget_breakdown_ok(result):
+                budget_breakdown_passes += 1
             results.append(_sample_record(case, strategy, result, budget_ok, superseded_ok))
 
     sample_count = len(cases) * len(STRATEGIES)
+    switch_pairs, switch_deltas = _controlled_switch_deltas(cases, embedding_model)
     results_path = output_dir / "results.jsonl"
     summary_path = output_dir / "summary.json"
     write_jsonl_write_once(results_path, results)
@@ -132,6 +175,23 @@ def run_retrieval_smoke(annotation_path: Path, output_dir: Path) -> RetrievalSmo
             decomposition_passes / decomposition_checks if decomposition_checks else 0.0
         ),
         superseded_compliance=superseded_compliant / sample_count,
+        relevance_first_compliance=(
+            relevance_passes / relevance_checks if relevance_checks else 0.0
+        ),
+        wrrf_component_coverage=(
+            wrrf_passes / wrrf_checks if wrrf_checks else 0.0
+        ),
+        fallback_event_coverage=(
+            fallback_passes / fallback_checks if fallback_checks else 0.0
+        ),
+        controlled_switch_compliance=(
+            switch_deltas / switch_pairs if switch_pairs else 0.0
+        ),
+        budget_breakdown_compliance=(
+            budget_breakdown_passes / budget_breakdown_checks
+            if budget_breakdown_checks
+            else 0.0
+        ),
         results_path=str(results_path),
     )
     write_json_write_once(summary_path, summary)
@@ -154,6 +214,13 @@ def _sample_record(
         "strategy": strategy.value,
         "budget_tokens": result.budget_tokens,
         "total_tokens": result.total_tokens,
+        "budget": {
+            "content_tokens": result.budget.content_tokens,
+            "prompt_overhead_tokens": result.budget.prompt_overhead_tokens,
+            "total_input_tokens_estimate": result.budget.total_input_tokens_estimate,
+        },
+        "estimator_name": result.estimator_name,
+        "estimator_version": result.estimator_version,
         "budget_compliant": budget_ok,
         "superseded_compliant": superseded_ok,
         "selected_memory_ids": [str(item.memory.memory_id) for item in result.selected_context],
@@ -185,6 +252,10 @@ def _sample_record(
                         "source": score.source.value,
                         "normalized_score": score.normalized_score,
                         "weighted_score": score.weighted_score,
+                        "raw_score": score.raw_score,
+                        "rank": score.rank,
+                        "weight": score.weight,
+                        "fusion_contribution": score.fusion_contribution,
                     }
                     for score in item.source_scores
                 ],
@@ -192,11 +263,172 @@ def _sample_record(
             }
             for item in result.candidates
         ],
+        "source_failures": [
+            {
+                "source": event.source.value,
+                "reason_code": event.reason_code,
+                "degraded_policy": event.degraded_policy.value,
+                "duration_ms": event.duration_ms,
+            }
+            for event in result.source_failures
+        ],
         "exclusions": [
             {"memory_id": str(exclusion.memory_id), "reason": exclusion.reason}
             for exclusion in result.exclusions
         ],
     }
+
+
+class _FlakyDenseHarness(RetrievalHarness):
+    """Smoke harness whose dense source deterministically fails."""
+
+    def _dense_candidates(
+        self,
+        query: str,
+        routing: Any,
+        memories: list[MemoryRecord],
+        reference: datetime,
+    ) -> list:
+        raise RuntimeError("deterministic dense source failure")
+
+
+def _wrrf_component_ok(
+    strategy: RetrievalStrategy,
+    score: Any,
+) -> bool:
+    if score.raw_score is None or score.weight is None or score.fusion_contribution is None:
+        return False
+    if strategy not in WRRF_STRATEGIES:
+        return True
+    if score.rank is None:
+        return score.raw_score <= 0.0 and score.fusion_contribution == 0.0
+    expected = score.weight / (RRF_K + score.rank)
+    return score.rank >= 1 and abs(score.fusion_contribution - expected) <= 1e-9
+
+
+def _uuid(value: str) -> Any:
+    from uuid import UUID
+
+    return UUID(value)
+
+
+def _dense_failure_ok(result: QEMRRetrievalResult) -> bool:
+    return any(
+        event.source.value == "dense"
+        and event.reason_code == "dense_source_error"
+        and event.degraded_policy is EvidencePolicy.CONSTRAINED
+        and event.duration_ms >= 0.0
+        for event in result.source_failures
+    )
+
+
+def _budget_breakdown_ok(result: QEMRRetrievalResult) -> bool:
+    return (
+        bool(result.estimator_name)
+        and bool(result.estimator_version)
+        and result.budget.total_input_tokens_estimate
+        == result.budget.content_tokens + result.budget.prompt_overhead_tokens
+        and result.budget.total_input_tokens_estimate <= result.budget_tokens
+        and sum(item.token_count for item in result.selected_context) == result.total_tokens
+    )
+
+
+def _decision_signature(result: QEMRRetrievalResult) -> tuple[object, object, object]:
+    selected = tuple(item.memory.memory_id for item in result.selected_context)
+    excluded = tuple(
+        sorted(
+            (exclusion.memory_id, exclusion.reason) for exclusion in result.exclusions
+        )
+    )
+    ranked = tuple(
+        (candidate.memory.memory_id, candidate.final_score)
+        for candidate in sorted(result.candidates, key=lambda item: str(item.memory.memory_id))
+    )
+    return selected, excluded, ranked
+
+
+def _controlled_switch_deltas(
+    cases: list[dict[str, Any]],
+    embedding_model: Any,
+) -> tuple[int, int]:
+    """Run one synthetic control pair per declared switch on the fixture.
+
+    Every pair changes exactly one control while all other inputs stay equal;
+    compliance requires at least one selection, exclusion, ranking, or packing
+    decision to differ between the two runs.
+    """
+    cases_by_id = {case["case_id"]: case for case in cases}
+    pairs: list[tuple[str, RetrievalControls, RetrievalControls]] = [
+        (
+            "controlled_evidence_policy",
+            RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=67),
+            RetrievalControls(
+                evidence_policy=EvidencePolicy.PROVENANCE_ONLY,
+                budget_tokens=67,
+            ),
+        ),
+        (
+            "controlled_temporal_source",
+            RetrievalControls(enable_temporal_source=True),
+            RetrievalControls(enable_temporal_source=False),
+        ),
+        (
+            "controlled_graph_source",
+            RetrievalControls(enable_graph_source=True),
+            RetrievalControls(enable_graph_source=False),
+        ),
+        (
+            "controlled_forced_routing",
+            RetrievalControls(routing_mode=RoutingMode.RULE),
+            RetrievalControls(
+                routing_mode=RoutingMode.FORCED,
+                forced_intent=QueryIntent.NO_MEMORY,
+            ),
+        ),
+        (
+            "controlled_strategy",
+            RetrievalControls(strategy=RetrievalStrategy.QEMR),
+            RetrievalControls(strategy=RetrievalStrategy.FIXED_VECTOR),
+        ),
+        (
+            "controlled_weight_profile",
+            RetrievalControls(
+                strategy=RetrievalStrategy.QEMR,
+                weight_profile=WeightProfile.INTENT,
+                budget_tokens=200,
+            ),
+            RetrievalControls(
+                strategy=RetrievalStrategy.QEMR,
+                weight_profile=WeightProfile.FIXED_HYBRID,
+                budget_tokens=200,
+            ),
+        ),
+        (
+            "controlled_budget",
+            RetrievalControls(budget_tokens=44),
+            RetrievalControls(budget_tokens=200),
+        ),
+    ]
+    pairs_checked = 0
+    pairs_passing = 0
+    for case_id, controls_a, controls_b in pairs:
+        case = cases_by_id.get(case_id)
+        if case is None:
+            raise ValueError(f"controlled switch pair requires case {case_id}")
+        repository = InMemoryMemoryRepository()
+        for item in case["memories"]:
+            repository.add(MemoryRecord.model_validate(item))
+        harness = RetrievalHarness(
+            repository,
+            embedding_model,
+            clock=lambda: RECENCY_REFERENCE,
+        )
+        result_a = harness.retrieve(case["query"], user_id="u1", controls=controls_a)
+        result_b = harness.retrieve(case["query"], user_id="u1", controls=controls_b)
+        pairs_checked += 1
+        if _decision_signature(result_a) != _decision_signature(result_b):
+            pairs_passing += 1
+    return pairs_checked, pairs_passing
 
 
 def _validated_cases(value: object) -> list[dict[str, Any]]:

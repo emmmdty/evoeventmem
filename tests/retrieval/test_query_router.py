@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from evoeventmem.router import (
     QueryRouter,
     QueryRouterService,
     QueryRoutingDecision,
+    TemporalConstraint,
+    TemporalOperator,
 )
 
 FIXTURE_PATH = Path("tests/fixtures/router/m11_query_router_fixture.json")
@@ -278,3 +281,104 @@ def _binary_f1(
     if denominator == 0:
         return 0.0
     return (2 * true_positive) / denominator
+
+
+TEMPORAL_OPERATORS = [op.value for op in TemporalOperator]
+
+
+@pytest.mark.parametrize("operator", TEMPORAL_OPERATORS)
+def test_temporal_operator_enum_is_complete(operator: str) -> None:
+    assert TemporalOperator(operator).value == operator
+
+
+def test_unconstrained_when_has_no_latest_constraint() -> None:
+    decision = QueryRouter().route("When did Caroline move?")
+    assert decision.intent is QueryIntent.TEMPORAL
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+
+
+def test_decision_exposes_temporal_constraint_and_reason() -> None:
+    decision = QueryRouter().route("When did Caroline move?")
+    assert isinstance(decision.temporal_constraint, TemporalConstraint)
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+    assert decision.temporal_constraint.lower_bound_utc is None
+    assert decision.temporal_constraint.upper_bound_utc is None
+    assert decision.reason
+    assert decision.rule_hits
+
+
+def test_at_operator_parses_utc_date_bound() -> None:
+    decision = QueryRouter().route("When did Caroline move in 2021?")
+    assert decision.intent is QueryIntent.TEMPORAL
+    assert decision.temporal_constraint.operator is TemporalOperator.AT
+    assert decision.temporal_constraint.lower_bound_utc is not None
+    assert decision.temporal_constraint.lower_bound_utc.tzinfo is not None
+
+
+def test_before_operator_parses_utc_bound() -> None:
+    decision = QueryRouter().route("What happened before 2022?")
+    assert decision.temporal_constraint.operator is TemporalOperator.BEFORE
+    assert decision.temporal_constraint.upper_bound_utc is not None
+    assert decision.temporal_constraint.upper_bound_utc.tzinfo is not None
+
+
+def test_after_operator_parses_utc_bound() -> None:
+    decision = QueryRouter().route("What happened after 2020?")
+    assert decision.temporal_constraint.operator is TemporalOperator.AFTER
+    assert decision.temporal_constraint.lower_bound_utc is not None
+    assert decision.temporal_constraint.lower_bound_utc.tzinfo is not None
+
+
+def test_between_operator_parses_lower_and_upper_utc_bounds() -> None:
+    decision = QueryRouter().route("What happened between 2020 and 2022?")
+    assert decision.temporal_constraint.operator is TemporalOperator.BETWEEN
+    assert decision.temporal_constraint.lower_bound_utc is not None
+    assert decision.temporal_constraint.upper_bound_utc is not None
+    assert decision.temporal_constraint.lower_bound_utc.tzinfo is not None
+    assert decision.temporal_constraint.upper_bound_utc.tzinfo is not None
+
+
+def test_earliest_operator_applies_within_relevant_pool() -> None:
+    decision = QueryRouter().route("When was the first time Caroline visited Lisbon?")
+    assert decision.temporal_constraint.operator is TemporalOperator.EARLIEST
+
+
+def test_latest_operator_applies_within_relevant_pool() -> None:
+    decision = QueryRouter().route("When did Caroline last move?")
+    assert decision.temporal_constraint.operator is TemporalOperator.LATEST
+
+
+def test_sequence_operator_is_observable() -> None:
+    decision = QueryRouter().route("What order did the meetings happen in?")
+    assert decision.temporal_constraint.operator is TemporalOperator.SEQUENCE
+
+
+def test_duration_operator_is_observable() -> None:
+    decision = QueryRouter().route("How long did the trip last?")
+    assert decision.temporal_constraint.operator is TemporalOperator.DURATION
+
+
+def test_relative_date_requires_utc_reference_time() -> None:
+    decision = QueryRouter(reference_time=datetime(2024, 6, 1, tzinfo=UTC)).route(
+        "What happened last month?"
+    )
+    assert decision.intent is QueryIntent.TEMPORAL
+    assert decision.temporal_constraint.operator is not TemporalOperator.NONE
+    assert decision.temporal_constraint.lower_bound_utc is not None or (
+        decision.temporal_constraint.upper_bound_utc is not None
+    )
+
+
+def test_non_temporal_query_has_none_temporal_constraint() -> None:
+    decision = QueryRouter().route("What is Caroline's favorite color?")
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+
+
+def test_temporal_decision_records_matched_spans_and_rule_hits() -> None:
+    decision = QueryRouter().route("What happened after 2020?")
+    assert decision.temporal_constraint.matched_spans
+    assert decision.temporal_constraint.reason
+    assert any(
+        "after" in span.lower() or "2020" in span
+        for span in decision.temporal_constraint.matched_spans
+    )

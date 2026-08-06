@@ -164,6 +164,7 @@ def _normalize_longmemeval_session(
                 else {},
             )
             for index, turn in enumerate(turns)
+            if (_require_mapping(turn).get("content") or "").strip()
         ],
     )
 

@@ -220,7 +220,14 @@ def extract_event_snapshot(
 
     result = extractor.extract(request)
     events: list[MemoryRecord] = []
-    rejections: list[ExtractionRejection] = []
+    rejections: list[ExtractionRejection] = [
+        ExtractionRejection(
+            raw_turn_id=error.source_turn_id or request.sample_id or "",
+            reason=error.code,
+            span=None,
+        )
+        for error in getattr(result, "rejections", [])
+    ]
     for candidate in result.candidates:
         turn_refs = [
             ref for ref in candidate.memory.evidence_refs if ref.source_type == "turn"

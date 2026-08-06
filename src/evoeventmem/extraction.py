@@ -198,6 +198,7 @@ class ExtractedEventCandidate(BaseModel):
 class ExtractionResult(BaseModel):
     prompt_version: str
     candidates: list[ExtractedEventCandidate]
+    rejections: list[EvidenceReferenceError] = Field(default_factory=list)
     raw_output: str | None = None
     model_id: str | None = None
     cache_key: str | None = None
@@ -266,6 +267,16 @@ def _strip_json_fences(text: str) -> str:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     return stripped
+
+
+def _repair_json_text(text: str) -> str:
+    """Repair common LLM JSON defects after stripping fences.
+
+    Currently fixes illegal leading-zero numbers such as ``"start_char": 04``,
+    which some models emit systematically. The repair rewrites ``: 0X`` to the
+    legal decimal form ``: X`` inside the JSON body.
+    """
+    return re.sub(r"(:\s*)0+([0-9]+)\b", r"\g<1>\g<2>", text)
 
 
 def _evidence_scope(request: ExtractionInput, *parts: str) -> str:
@@ -579,12 +590,22 @@ class LLMEventExtractor:
             payload = _LLMExtractionPayload.model_validate_json(
                 _strip_json_fences(response.text)
             )
-        except ValidationError as exc:
-            raise ValueError("LLM extractor returned invalid event JSON") from exc
+        except ValidationError:
+            try:
+                payload = _LLMExtractionPayload.model_validate_json(
+                    _repair_json_text(_strip_json_fences(response.text))
+                )
+            except ValidationError as exc:
+                raise ValueError("LLM extractor returned invalid event JSON") from exc
 
         candidates: list[ExtractedEventCandidate] = []
+        rejections: list[EvidenceReferenceError] = []
         for event_index, draft in enumerate(payload.events):
-            evidence_refs = _validate_evidence(request, event_index, draft.evidence)
+            try:
+                evidence_refs = _validate_evidence(request, event_index, draft.evidence)
+            except EvidenceValidationError as exc:
+                rejections.extend(exc.errors)
+                continue
             session_id = _session_id_for_evidence(evidence_refs)
             speaker = draft.speaker
             candidates.append(
@@ -605,6 +626,7 @@ class LLMEventExtractor:
         return ExtractionResult(
             prompt_version=self.PROMPT_VERSION,
             candidates=_deduplicate_candidates(candidates),
+            rejections=rejections,
             raw_output=response.text,
             model_id=response.model_id,
             cache_key=response.cache_key,
@@ -639,6 +661,11 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "Every evidence reference must use one of the provided turn_id values.",
             "Provide source_session_id whenever duplicate turn_id values exist.",
             "Every quote must exactly match content[start_char:end_char].",
+            "In every string value, use single quotes for quoted speech and never "
+            "write an unescaped double quote inside a string.",
+            "Write start_char and end_char as plain integers without leading zeros.",
+            "Write event_time as a complete ISO-8601 timestamp with zero-padded "
+            "seconds and offset, e.g. 2023-05-20T15:58:00+00:00.",
         ] + (
             [
                 "Every event MUST reference at least one raw turn; summary-only "

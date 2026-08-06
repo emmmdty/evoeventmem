@@ -104,10 +104,11 @@ def test_llm_extractor_rejects_hallucinated_evidence_with_structured_error() -> 
         }
     )
 
-    with pytest.raises(EvidenceValidationError) as exc_info:
-        LLMEventExtractor(model).extract(request)
+    result = LLMEventExtractor(model).extract(request)
 
-    error = exc_info.value.errors[0]
+    assert result.candidates == []
+    assert len(result.rejections) == 1
+    error = result.rejections[0]
     assert error.code == "unknown_turn_id"
     assert error.source_turn_id == "D1:99"
     assert error.event_index == 0
@@ -151,10 +152,11 @@ def test_llm_extractor_rejects_ambiguous_local_turn_id_without_session() -> None
         }
     )
 
-    with pytest.raises(EvidenceValidationError) as exc_info:
-        LLMEventExtractor(model).extract(request)
+    result = LLMEventExtractor(model).extract(request)
 
-    error = exc_info.value.errors[0]
+    assert result.candidates == []
+    assert len(result.rejections) == 1
+    error = result.rejections[0]
     assert error.code == "ambiguous_turn_id"
     assert error.source_turn_id == "turn-1"
     assert error.source_session_id is None
@@ -648,6 +650,7 @@ def test_llm_extractor_require_turn_evidence_rejects_unresolvable_evidence() -> 
         }
     )
 
-    with pytest.raises(EvidenceValidationError) as exc_info:
-        LLMEventExtractor(model).extract(request)
-    assert exc_info.value.errors[0].code == "unknown_turn_id"
+    result = LLMEventExtractor(model).extract(request)
+    assert result.candidates == []
+    assert len(result.rejections) == 1
+    assert result.rejections[0].code == "unknown_turn_id"

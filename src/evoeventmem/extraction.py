@@ -248,12 +248,41 @@ class _EventDraft(BaseModel):
         if value in (None, ""):
             return None
         if isinstance(value, str):
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            repaired = _repair_iso_timestamp(value)
+            try:
+                return datetime.fromisoformat(repaired.replace("Z", "+00:00"))
+            except ValueError:
+                return None
         return value
 
 
 class _LLMExtractionPayload(BaseModel):
     events: list[_EventDraft] = Field(default_factory=list)
+
+
+def _repair_iso_timestamp(value: str) -> str | None:
+    """Repair truncated ISO-8601 timestamps emitted by LLMs.
+
+    Handles truncated seconds or offsets such as ``2023-05-20T02:21:0+00:0``
+    by zero-padding the trailing numeric components. Returns None when the
+    string cannot be interpreted as a timestamp.
+    """
+    import re as _re
+
+    match = _re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):(\d)(\+|-)(\d{2}):(\d)\Z", value
+    )
+    if match:
+        return (
+            f"{match.group(1)}:{match.group(2)}0"
+            f"{match.group(3)}{match.group(4)}:0{match.group(5)}"
+        )
+    match = _re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):(\d)([+-]\d{2}:\d{2})\Z", value
+    )
+    if match:
+        return f"{match.group(1)}:{match.group(2)}0{match.group(3)}"
+    return value
 
 
 def _strip_json_fences(text: str) -> str:

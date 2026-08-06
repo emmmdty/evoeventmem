@@ -8,9 +8,9 @@ max_candidates_per_source = 128
 max_items_per_source = 8
 structural_match_f1_threshold = 0.5
 
-# NOTE: the embedding endpoint is unresolved (gpu-4090 vs gpu-5090 conflict).
-# The plan/spec references gpu-4090; the legacy config comments gpu-5090.
-# Confirm the endpoint before any live main run; do not guess.
+# NOTE: the embedding endpoint was resolved by the user on 2026-08-06:
+# gpu-5090 is authoritative (qwen3-embedding-0.6b on 127.0.0.1:11436 via
+# `ssh -L 11436:127.0.0.1:11436 gpu-5090`).
 [reader]
 provider = "openai_compatible"
 model_id = "deepseek-v4-flash"

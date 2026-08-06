@@ -620,6 +620,7 @@ def build_controlled_run(
     *,
     family_name: str = "controlled-ablations",
     dataset_path_rel: str = "data/synthetic/controlled.json",
+    zero_delta: bool = False,
 ) -> dict:
     """Build a smoke-class controlled ablation family (B-schema-valid)."""
     run_dir = Path(run_dir)
@@ -676,7 +677,7 @@ def build_controlled_run(
     for arm_name in arm_names:
         arm_dir = run_dir / arm_name
         factor = FACTOR_BY_ARM[arm_name]
-        if arm_name == "base":
+        if arm_name == "base" or zero_delta:
             arm_rows = dict(base_rows)
         else:
             arm_rows = _factor_rows(plan, base_rows, factor, arm_name)
@@ -727,7 +728,6 @@ def _factor_rows(
         payload = dict(base_rows[question["question_id"]])
         if factor == "evidence_policy":
             payload["evidence_policy"] = "provenance_only"
-            payload["reason"] = "evidence-policy-ablation"
         elif factor == "temporal_source":
             if index % 2 == 0:
                 payload["exclusions"] = [
@@ -735,7 +735,6 @@ def _factor_rows(
                     {"memory_id": "m-temporal", "reason": "temporal_source_removed"},
                 ]
                 payload["exclusion_count"] += 1
-            payload["reason"] = "temporal-source-ablation"
         elif factor == "graph_source":
             if index % 2 == 0:
                 payload["exclusions"] = [
@@ -743,10 +742,8 @@ def _factor_rows(
                     {"memory_id": "m-graph", "reason": "graph_source_removed"},
                 ]
                 payload["exclusion_count"] += 1
-            payload["reason"] = "graph-source-ablation"
         elif factor == "routing":
             payload["intent"] = "temporal" if index % 2 == 0 else payload["intent"]
-            payload["reason"] = "routing-ablation"
         elif factor == "weights":
             payload["packed_items"] = [
                 {
@@ -755,7 +752,6 @@ def _factor_rows(
                 }
                 for item in payload["packed_items"]
             ]
-            payload["reason"] = "weights-ablation"
         elif factor == "budget":
             payload["budget_tokens"] = 384 if arm_name == "budget_384" else 512
             payload["packing_bound"] = index % 3 == 0
@@ -764,7 +760,6 @@ def _factor_rows(
                 if index % 3 == 0
                 else payload["exclusions"]
             )
-            payload["reason"] = "budget-ablation"
         rows[question["question_id"]] = payload
     return rows
 
@@ -810,7 +805,10 @@ def _write_ablation_arm(
         metadata={"ablation_id": family_manifest.run_id, "factor": factor, "arm": arm_name},
     )
     _write_json(arm_dir / "manifest.json", manifest.model_dump(mode="json"))
-    _write_jsonl(arm_dir / "retrieval.jsonl", list(rows.values()))
+    _write_jsonl(
+        arm_dir / "retrieval.jsonl",
+        [{**payload, "arm": arm_name} for payload in rows.values()],
+    )
     evidence_rows = [
         EvidenceRecord(
             question_id=question_id,
@@ -1025,6 +1023,29 @@ def retamper_arm(arm_dir: Path, updates: dict) -> None:
     payload.update(updates)
     manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     _finalize_synthetic(Path(arm_dir), AblationRunManifest.model_validate(payload))
+
+
+def retamper_arm_rows(arm_dir: Path, mutate) -> None:
+    """Rewrite an arm's retrieval.jsonl and re-seal the arm."""
+    from benchmarks.common.artifacts import AblationRunManifest
+
+    arm_dir = Path(arm_dir)
+    path = arm_dir / "retrieval.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    mutate(rows)
+    path.unlink(missing_ok=True)
+    write_jsonl_write_once(path, rows)
+    payload = json.loads((arm_dir / "manifest.json").read_text(encoding="utf-8"))
+    _finalize_synthetic(arm_dir, AblationRunManifest.model_validate(payload))
+
+
+def retamper_family_manifest(family_dir: Path, updates: dict) -> None:
+    """Edit a family manifest and re-seal the family."""
+    manifest_path = Path(family_dir) / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.update(updates)
+    manifest_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    _finalize_synthetic(Path(family_dir), RunManifest.model_validate(payload))
 
 
 @pytest.fixture

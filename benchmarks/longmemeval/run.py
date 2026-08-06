@@ -1,24 +1,34 @@
-"""M13 LongMemEval Small experiment runner.
+"""M13 LongMemEval Small experiment runner (fair raw and event inputs).
 
 Runs six fair, resumable methods on LongMemEval records:
 
 - ``no_memory``: question-only prompt (M04 builder).
 - ``full_context``: raw sessions truncated to the shared token budget (M04 builder).
-- ``vector_rag``: event memories without ETEC, retrieved with ``FIXED_VECTOR``.
-- ``event_no_etec``: event memories without ETEC, retrieved with ``QEMR``.
-- ``etec``: ETEC-consolidated memories, retrieved with ``FIXED_VECTOR``.
-- ``full``: ETEC-consolidated memories, retrieved with ``QEMR``.
+- ``vector_rag``: normalized raw-turn chunks only, retrieved with ``FIXED_VECTOR``.
+- ``event_no_etec``: shared extraction snapshot without ETEC, retrieved with ``QEMR``.
+- ``etec``: shared extraction snapshot with ETEC, retrieved with ``FIXED_VECTOR``.
+- ``full``: shared extraction snapshot with ETEC, retrieved with ``QEMR``.
 
-All memory methods share one :class:`RetrievalHarness` with the same token
-budget, max items per source, and max candidates per source (M12 handoff).
-Every question passes its ``asked_at`` timestamp as ``reference_time``.
+Fairness contracts (Gate B):
 
-Resume: per-sample results are written once (atomic link) to
-``<run_dir>/samples/<sample_id>.json``; re-runs skip completed samples.
-Retry a sample by deleting its file and re-running with ``--resume-dir``.
-The combined per-method ``predictions.jsonl`` / ``samples.jsonl`` /
-``retrieval.jsonl`` files and ``summary.json`` are derived artifacts and are
-regenerated from the immutable per-sample files at the end of every run.
+- ``vector_rag`` indexes ``build_raw_turn_corpus`` chunks only; it never
+  receives the extraction snapshot. Event methods share exactly ONE
+  ``extract_event_snapshot`` per conversation with a deterministic snapshot ID.
+- Reader, extractor, and embedding are independent resolved providers from
+  ``benchmarks.common.providers``; the runner contains no provider or
+  memory-construction duplication.
+- Every memory method consumes ``QEMRRetrievalResult.reader_messages`` directly
+  (A-owned rendering) under the same complete reader-input token budget
+  (``max_input_tokens``) and the same estimator.
+- Every packed item carries exact raw-turn spans with raw turn IDs.
+- Construction cost (extraction/write) is reported separately from per-query
+  cost (search/read).
+
+Manifest and resume: a resolved ``RunManifest`` (with expected sample/question
+IDs and provider identities) is written once; resume refuses manifest drift;
+per-sample files are immutable (write-once); smoke runs finalize with a
+write-once ``FINALIZED.json``. ``--run-dir`` addresses a stable directory;
+``--run-dir``/``--resume-dir``/``--output-root`` are mutually exclusive.
 
 Usage::
 
@@ -33,7 +43,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import subprocess
 import tomllib
@@ -49,12 +58,35 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from benchmarks.common.artifacts import (
+    ArtifactClass,
+    BudgetSpec,
+    ConsolidationAction,
+    ConsolidationRecord,
     EvidencePrediction,
+    EvidenceRecord,
+    GitState,
+    PolicyVersions,
     PredictionRecord,
+    RunManifest,
     SampleEvaluation,
+    TokenizerIdentity,
+    check_resume,
     current_git_commit,
+    finalize_run,
+    load_finalized,
+    required_hash,
     write_json_write_once,
     write_jsonl_write_once,
+    write_manifest,
+    write_per_sample,
+)
+from benchmarks.common.memory_inputs import (
+    build_extractor,
+    build_raw_turn_corpus,
+    extract_event_snapshot,
+    materialize_event_store,
+    materialize_raw_turn_store,
+    provider_identity,
 )
 from benchmarks.common.metrics import compute_answer_metrics, compute_evidence_metrics
 from benchmarks.common.normalization import (
@@ -63,18 +95,15 @@ from benchmarks.common.normalization import (
     NormalizedSession,
     iter_longmemeval_records,
 )
-from benchmarks.context_baselines import FullContextBuilder, NoMemoryContextBuilder
-from evoeventmem.consolidation import ETECConsolidator
-from evoeventmem.core.ports import ChatMessage, ChatModel, EmbeddingModel
-from evoeventmem.extraction import ExtractionInput, RuleEventExtractor
-from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
-from evoeventmem.infra.openai_compatible import (
-    OpenAICompatibleChatClient,
-    OpenAICompatibleConfig,
-    OpenAICompatibleEmbeddingClient,
+from benchmarks.common.providers import (
+    ModelBundle,
+    ProviderConfig,
+    build_model_bundle,
+    cache_for_run,
+    resolve_provider_config,
 )
-from evoeventmem.models.cache import CachedChatModel, CachedEmbeddingModel, FileModelCache
-from evoeventmem.models.fakes import DeterministicFakeChatModel, DeterministicFakeEmbeddingModel
+from benchmarks.context_baselines import FullContextBuilder, NoMemoryContextBuilder
+from evoeventmem.core.ports import ChatMessage
 from evoeventmem.retrieval import (
     POLICY_NAME as RETRIEVAL_POLICY_NAME,
 )
@@ -85,15 +114,11 @@ from evoeventmem.retrieval import (
     RetrievalStrategy,
 )
 from evoeventmem.router import POLICY_NAME as ROUTER_POLICY_NAME
-from evoeventmem.services.memory_service import (
-    MemoryService,
-    MemoryWriteCandidate,
-    MemoryWriteRequest,
-)
+from evoeventmem.tokenization import DEFAULT_TOKEN_ESTIMATOR
 
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m13_longmemeval")
-EXTRACTION_PROMPT_VERSION = RuleEventExtractor.PROMPT_VERSION
-CONSOLIDATION_POLICY_NAME = ETECConsolidator.POLICY_NAME
+EXTRACTION_PROMPT_VERSION = "shared-snapshot.v1"
+CONSOLIDATION_POLICY_NAME = "etec.v1"
 
 OFFICIAL_ABILITIES = (
     "information-extraction",
@@ -112,6 +137,9 @@ CATEGORY_BY_QUESTION_TYPE = {
     "abstention": "abstention",
 }
 
+VECTOR_INPUT_KIND = "raw_turn"
+EVENT_INPUT_KIND = "event_snapshot"
+
 
 class Method(StrEnum):
     NO_MEMORY = "no_memory"
@@ -129,15 +157,10 @@ _METHOD_STRATEGY: dict[Method, RetrievalStrategy] = {
     Method.FULL: RetrievalStrategy.QEMR,
 }
 _METHOD_APPLIES_ETEC = frozenset({Method.ETEC, Method.FULL})
+_MEMORY_METHODS = frozenset(
+    {Method.VECTOR_RAG, Method.EVENT_NO_ETEC, Method.ETEC, Method.FULL}
+)
 _CONTEXT_METHODS = frozenset({Method.NO_MEMORY, Method.FULL_CONTEXT})
-
-
-class LiveProviderConfig(BaseModel):
-    base_url: str = Field(min_length=1)
-    api_key_env: str = Field(min_length=1)
-    chat_model: str = Field(min_length=1)
-    embedding_model: str = Field(min_length=1)
-    timeout_s: float = Field(default=60.0, gt=0)
 
 
 class LongMemEvalConfig(BaseModel):
@@ -146,19 +169,18 @@ class LongMemEvalConfig(BaseModel):
     dataset_path: Path
     methods: list[Method] = Field(default_factory=lambda: list(Method))
     provider: Literal["deterministic_fake", "openai_compatible"] = "deterministic_fake"
-    chat_model_id: str = Field(default="deterministic-local-fake", min_length=1)
-    embedding_model_id: str = Field(default="deterministic-local-embedding", min_length=1)
     max_input_tokens: int = Field(gt=0)
     max_candidates_per_source: int = Field(ge=1)
     max_items_per_source: int = Field(ge=1)
     sample_limit: int | None = Field(default=None, ge=1)
-    live_provider: LiveProviderConfig | None = None
+    providers: ProviderConfig
 
-    @model_validator(mode="after")
-    def require_live_provider(self) -> LongMemEvalConfig:
-        if self.provider == "openai_compatible" and self.live_provider is None:
-            raise ValueError("openai_compatible provider requires explicit live_provider config")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def assemble_providers(cls, payload: object) -> object:
+        if isinstance(payload, dict) and "providers" not in payload:
+            return {**payload, "providers": resolve_provider_config(payload)}
+        return payload
 
 
 class MethodSampleRecord(BaseModel):
@@ -182,6 +204,14 @@ class MethodSampleRecord(BaseModel):
     context: dict[str, Any] | None = None
 
 
+class ConstructionCosts(BaseModel):
+    extraction_ms: float = Field(ge=0.0)
+    extraction_calls: int = Field(ge=0)
+    vector_index_ms: float | None = None
+    write_raw_ms: float | None = None
+    write_etec_ms: float | None = None
+
+
 class SampleResult(BaseModel):
     schema_version: Literal["longmemeval.sample.v1"] = "longmemeval.sample.v1"
     dataset: str
@@ -191,6 +221,7 @@ class SampleResult(BaseModel):
     category: str | None
     session_count: int = Field(ge=1)
     turn_count: int = Field(ge=1)
+    construction: ConstructionCosts = Field(default_factory=ConstructionCosts)
     ingestion: dict[str, Any] = Field(default_factory=dict)
     methods: dict[str, MethodSampleRecord] = Field(default_factory=dict)
 
@@ -239,10 +270,14 @@ class LongMemEvalSummary(BaseModel):
     git_commit: str = Field(min_length=1)
     git_dirty: bool
     config_hash: str = Field(min_length=1)
+    manifest_hash: str = Field(min_length=1)
     dataset_hash: str = Field(min_length=1)
     dataset_path: str
-    chat_model_id: str = Field(min_length=1)
-    embedding_model_id: str = Field(min_length=1)
+    reader_model: str = Field(min_length=1)
+    extractor_model: str = Field(min_length=1)
+    embedding_model: str = Field(min_length=1)
+    tokenizer_name: str = Field(min_length=1)
+    tokenizer_version: str = Field(min_length=1)
     extraction_prompt_version: str = Field(min_length=1)
     retrieval_policy_name: str = Field(min_length=1)
     router_policy_name: str = Field(min_length=1)
@@ -250,6 +285,8 @@ class LongMemEvalSummary(BaseModel):
     max_input_tokens: int = Field(gt=0)
     max_candidates_per_source: int = Field(ge=1)
     max_items_per_source: int = Field(ge=1)
+    vector_input_kind: str = VECTOR_INPUT_KIND
+    extraction_snapshot_ids: list[str] = Field(default_factory=list)
     sample_validation: SampleValidation
     methods: dict[str, MethodSummary] = Field(default_factory=dict)
 
@@ -262,7 +299,8 @@ def load_config(path: Path) -> LongMemEvalConfig:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the M13 LongMemEval experiment.")
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument("--run-dir", type=Path, default=None)
     parser.add_argument("--resume-dir", type=Path, default=None)
     parser.add_argument("--sample-ids", nargs="*", default=None)
     parser.add_argument("--validate-config", action="store_true")
@@ -273,14 +311,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(_config_report(config, args.config), indent=2, sort_keys=True))
         return 0
 
-    run_dir = (
-        args.resume_dir
-        if args.resume_dir is not None
-        else _new_run_dir(args.output_root, config.run_id_prefix)
-    )
+    run_dir = _resolve_run_dir(args)
     summary = run_experiment(config, run_dir, sample_ids=args.sample_ids)
     print(json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True))
     return 0
+
+
+def _resolve_run_dir(args: argparse.Namespace) -> Path:
+    provided = [
+        option
+        for option, value in (
+            ("--run-dir", args.run_dir),
+            ("--resume-dir", args.resume_dir),
+            ("--output-root", args.output_root),
+        )
+        if value is not None
+    ]
+    if len(provided) > 1:
+        raise ValueError(
+            "--run-dir, --resume-dir, and --output-root are mutually exclusive; "
+            f"provided: {provided}"
+        )
+    if args.run_dir is not None:
+        return args.run_dir
+    if args.resume_dir is not None:
+        return args.resume_dir
+    output_root = args.output_root or DEFAULT_OUTPUT_ROOT
+    return _new_run_dir(output_root, load_config(args.config).run_id_prefix)
 
 
 def run_experiment(
@@ -288,32 +345,54 @@ def run_experiment(
     run_dir: Path,
     *,
     sample_ids: Sequence[str] | None = None,
+    extractor: Any | None = None,
 ) -> LongMemEvalSummary:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    config_payload = config.model_dump(mode="json")
-    config_path = run_dir / "config.json"
-    if config_path.exists():
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-        if existing != config_payload:
-            raise ValueError(f"run dir {run_dir} was created with a different config")
-    else:
-        write_json_write_once(config_path, config_payload)
+    """Run (or resume) an experiment and finalize it once complete.
 
-    chat_model, embedding_model = _make_models(config, run_dir)
+    A first run and an identical resume address the same directory. Completed
+    samples are immutable; a finalized run is validated and returned without
+    mutation; manifest drift refuses the run.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
     records = _apply_sample_ids(_load_records(config), sample_ids)
     expected_sample_ids = [record.sample_id for record in records]
+    expected_question_ids = [record.questions[0].question_id for record in records]
+    manifest = _build_manifest(
+        config,
+        run_dir,
+        expected_sample_ids=expected_sample_ids,
+        expected_question_ids=expected_question_ids,
+    )
 
+    if _is_finalized(run_dir):
+        check_resume(run_dir, manifest)
+        load_finalized(run_dir)
+        return _load_stored_summary(run_dir)
+
+    if (run_dir / "manifest.json").exists():
+        check_resume(run_dir, manifest)
+    else:
+        write_manifest(run_dir, manifest)
+
+    bundle = build_model_bundle(config.providers, cache_for_run(run_dir))
+    extractor_impl = extractor if extractor is not None else build_extractor(bundle)
     for record in records:
-        _process_sample(record, config, chat_model, embedding_model, run_dir)
+        _process_sample(record, config, bundle, extractor_impl, run_dir)
 
-    return _write_summary(config, run_dir, expected_sample_ids, chat_model, embedding_model)
+    summary = _write_summary(config, run_dir, manifest, expected_sample_ids, bundle)
+    completion_counts = {
+        "samples": len(records),
+        "extraction_snapshots": len(summary.extraction_snapshot_ids),
+    }
+    finalize_run(run_dir, manifest, completion_counts=completion_counts)
+    return summary
 
 
 def _process_sample(
     record: NormalizedRecord,
     config: LongMemEvalConfig,
-    chat_model: ChatModel,
-    embedding_model: EmbeddingModel,
+    bundle: ModelBundle,
+    extractor: Any,
     run_dir: Path,
 ) -> SampleResult:
     sample_path = _sample_path(run_dir, record.sample_id)
@@ -324,35 +403,73 @@ def _process_sample(
     user_id = record.sample_id
     question = record.questions[0]
     ordered_record = _order_record(record)
-    raw_store, raw_ingestion = _build_memory_store(
-        ordered_record, embedding_model, user_id=user_id, apply_etec=False
+    extractor_identity = provider_identity(
+        bundle.resolved.extractor, version=EXTRACTION_PROMPT_VERSION
     )
-    etec_store: InMemoryMemoryRepository | None = None
-    etec_ingestion: dict[str, Any] = {}
-    if _needs_etec(config.methods):
-        etec_store, etec_ingestion = _build_memory_store(
-            ordered_record, embedding_model, user_id=user_id, apply_etec=True
+
+    started = perf_counter()
+    corpus = build_raw_turn_corpus(ordered_record)
+    snapshot = extract_event_snapshot(
+        ordered_record,
+        extractor,
+        user_id=user_id,
+        extractor_identity=extractor_identity,
+    )
+    extraction_ms = (perf_counter() - started) * 1000
+
+    started = perf_counter()
+    raw_store, raw_ingestion = materialize_event_store(
+        snapshot, apply_etec=False, user_id=user_id
+    )
+    write_raw_ms = (perf_counter() - started) * 1000
+    started = perf_counter()
+    etec_store, etec_ingestion = materialize_event_store(
+        snapshot,
+        apply_etec=True,
+        embedding_model=bundle.embedding,
+        user_id=user_id,
+    )
+    write_etec_ms = (perf_counter() - started) * 1000
+    started = perf_counter()
+    vector_store, vector_ingestion = materialize_raw_turn_store(corpus, user_id=user_id)
+    vector_index_ms = (perf_counter() - started) * 1000
+
+    snapshot_path = _snapshot_path(run_dir, record.sample_id)
+    if not snapshot_path.exists():
+        write_per_sample(
+            run_dir,
+            f"samples/{snapshot_path.name}",
+            snapshot,
         )
 
     methods: dict[str, MethodSampleRecord] = {}
     for method in config.methods:
         if method in _CONTEXT_METHODS:
             record_method = _run_context_method(
-                method, question, ordered_record.sessions, config, chat_model
+                method, question, ordered_record.sessions, config, bundle
             )
         else:
-            store = etec_store if method in _METHOD_APPLIES_ETEC else raw_store
-            ingestion = etec_ingestion if method in _METHOD_APPLIES_ETEC else raw_ingestion
-            write_latency_ms = float(ingestion.get("write_latency_ms", 0.0))
             record_method = _run_memory_method(
                 method,
                 question,
-                store,
+                _store_for(method, vector_store, raw_store, etec_store),
                 config,
-                chat_model,
-                embedding_model,
+                bundle,
                 user_id=user_id,
-                write_latency_ms=write_latency_ms,
+                input_kind=(
+                    VECTOR_INPUT_KIND
+                    if method is Method.VECTOR_RAG
+                    else EVENT_INPUT_KIND
+                ),
+                snapshot_id=(
+                    None if method is Method.VECTOR_RAG else snapshot.snapshot_id
+                ),
+                write_latency_ms=_write_latency_for(
+                    method,
+                    vector_index_ms,
+                    write_raw_ms,
+                    write_etec_ms,
+                ),
             )
         methods[method.value] = record_method
 
@@ -364,9 +481,27 @@ def _process_sample(
         category=_category_for(question.category),
         session_count=len(ordered_record.sessions),
         turn_count=sum(len(session.turns) for session in ordered_record.sessions),
+        construction=ConstructionCosts(
+            extraction_ms=extraction_ms,
+            extraction_calls=1,
+            vector_index_ms=vector_index_ms,
+            write_raw_ms=write_raw_ms,
+            write_etec_ms=write_etec_ms,
+        ),
         ingestion={
+            "raw_turn": vector_ingestion,
+            "event": {
+                "input_kind": EVENT_INPUT_KIND,
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_file": f"samples/{snapshot_path.name}",
+                "snapshot_hash": required_hash(snapshot_path),
+                "raw_turn_count": snapshot.raw_turn_count,
+                "event_count": snapshot.event_count,
+                "rejection_count": len(snapshot.rejections),
+                "extractor_model": snapshot.extractor.model_id,
+            },
             "raw": raw_ingestion,
-            "etec": etec_ingestion if etec_store is not None else None,
+            "etec": etec_ingestion,
         },
         methods=methods,
     )
@@ -379,7 +514,7 @@ def _run_context_method(
     question: NormalizedQuestion,
     sessions: Sequence[NormalizedSession],
     config: LongMemEvalConfig,
-    chat_model: ChatModel,
+    bundle: ModelBundle,
 ) -> MethodSampleRecord:
     builder = (
         NoMemoryContextBuilder(config.max_input_tokens)
@@ -390,7 +525,7 @@ def _run_context_method(
     context = builder.build(question, sessions)
     search_latency_ms = (perf_counter() - started) * 1000
     started = perf_counter()
-    response = chat_model.generate([ChatMessage(role="user", content=context.prompt)])
+    response = bundle.reader.generate([ChatMessage(role="user", content=context.prompt)])
     question_latency_ms = (perf_counter() - started) * 1000
     return _evaluate(
         method=method,
@@ -415,54 +550,32 @@ def _run_context_method(
 def _run_memory_method(
     method: Method,
     question: NormalizedQuestion,
-    store: InMemoryMemoryRepository,
+    store: Any,
     config: LongMemEvalConfig,
-    chat_model: ChatModel,
-    embedding_model: EmbeddingModel,
+    bundle: ModelBundle,
     *,
     user_id: str,
+    input_kind: str,
+    snapshot_id: str | None,
     write_latency_ms: float,
 ) -> MethodSampleRecord:
     harness = RetrievalHarness(
         store,
-        embedding_model,
+        bundle.embedding,
         max_items_per_source=config.max_items_per_source,
         max_candidates_per_source=config.max_candidates_per_source,
     )
-    question_tokens = _count_tokens(f"Question: {question.question}")
-    if question_tokens >= config.max_input_tokens:
-        fallback = NoMemoryContextBuilder(config.max_input_tokens).build(question, [])
-        started = perf_counter()
-        response = chat_model.generate([ChatMessage(role="user", content=fallback.prompt)])
-        question_latency_ms = (perf_counter() - started) * 1000
-        return _evaluate(
-            method=method,
-            question=question,
-            prediction=response.text,
-            evidence=[],
-            question_latency_ms=question_latency_ms,
-            search_latency_ms=0.0,
-            write_latency_ms=write_latency_ms,
-            input_tokens=fallback.input_tokens,
-            output_tokens=response.output_tokens,
-            llm_calls=1,
-            model_cache_key=response.cache_key,
-            retrieval=None,
-            context={"fallback": "question_exceeds_budget"},
-        )
-    budget_tokens = config.max_input_tokens - question_tokens
     started = perf_counter()
     result = harness.retrieve(
         question.question,
         user_id=user_id,
         strategy=_METHOD_STRATEGY[method],
-        budget_tokens=budget_tokens,
+        budget_tokens=config.max_input_tokens,
         reference_time=question.asked_at,
     )
     search_latency_ms = (perf_counter() - started) * 1000
-    prompt = _build_prompt(question, result.selected_context)
     started = perf_counter()
-    response = chat_model.generate([ChatMessage(role="user", content=prompt)])
+    response = bundle.reader.generate(result.reader_messages)
     question_latency_ms = (perf_counter() - started) * 1000
     predicted_evidence = _evidence_from_packed_items(result.selected_context)
     return _evaluate(
@@ -473,12 +586,18 @@ def _run_memory_method(
         question_latency_ms=question_latency_ms,
         search_latency_ms=search_latency_ms,
         write_latency_ms=write_latency_ms,
-        input_tokens=_count_tokens(prompt),
+        input_tokens=result.budget.total_input_tokens_estimate,
         output_tokens=response.output_tokens,
         llm_calls=1,
         model_cache_key=response.cache_key,
         retrieval=_retrieval_payload(result),
-        context=None,
+        context={
+            "input_kind": input_kind,
+            **( {} if snapshot_id is None else {"snapshot_id": snapshot_id} ),
+            "reader_source": "qemr_reader_messages",
+            "estimator_name": result.estimator_name,
+            "estimator_version": result.estimator_version,
+        },
     )
 
 
@@ -521,68 +640,30 @@ def _evaluate(
     )
 
 
-def _build_memory_store(
-    record: NormalizedRecord,
-    embedding_model: EmbeddingModel,
-    *,
-    user_id: str,
-    apply_etec: bool,
-) -> tuple[InMemoryMemoryRepository, dict[str, Any]]:
-    request = ExtractionInput.from_normalized_record(record, user_id=user_id)
-    started = perf_counter()
-    extraction = RuleEventExtractor().extract(request)
-    extraction_latency_ms = (perf_counter() - started) * 1000
-    candidates = sorted(
-        extraction.candidates,
-        key=lambda candidate: (
-            candidate.memory.event_time or datetime.min.replace(tzinfo=UTC),
-            candidate.memory.content,
-        ),
-    )
-    repository = InMemoryMemoryRepository()
-    if apply_etec:
-        consolidator = ETECConsolidator(embedding_model)
-        started = perf_counter()
-        actions: Counter[str] = Counter()
-        for candidate in candidates:
-            applied = consolidator.apply(repository, candidate.memory)
-            actions[applied.decision.action.value] += 1
-        write_latency_ms = (perf_counter() - started) * 1000
-        return repository, {
-            "apply_etec": True,
-            "extraction_latency_ms": extraction_latency_ms,
-            "write_latency_ms": write_latency_ms,
-            "candidate_count": len(candidates),
-            "memory_count": len(repository.list_for_user(user_id)),
-            "actions": dict(actions),
-        }
-
-    write_request = MemoryWriteRequest(
-        candidates=[
-            MemoryWriteCandidate.from_extracted_event(candidate) for candidate in candidates
-        ]
-    )
-    started = perf_counter()
-    write_result = MemoryService(repository).write_extracted_events(write_request)
-    write_latency_ms = (perf_counter() - started) * 1000
-    return repository, {
-        "apply_etec": False,
-        "extraction_latency_ms": extraction_latency_ms,
-        "write_latency_ms": write_latency_ms,
-        "candidate_count": len(candidates),
-        "memory_count": len(repository.list_for_user(user_id)),
-        "write_metrics": write_result.metrics.model_dump(mode="json"),
-    }
+def _store_for(
+    method: Method,
+    vector_store: Any,
+    raw_store: Any,
+    etec_store: Any,
+) -> Any:
+    if method is Method.VECTOR_RAG:
+        return vector_store
+    if method in _METHOD_APPLIES_ETEC:
+        return etec_store
+    return raw_store
 
 
-def _needs_etec(methods: Sequence[Method]) -> bool:
-    return any(method in _METHOD_APPLIES_ETEC for method in methods)
-
-
-def _build_prompt(question: NormalizedQuestion, items: Sequence[PackedItem]) -> str:
-    lines = [f"Context: {item.memory.content}" for item in items]
-    lines.append(f"Question: {question.question}")
-    return "\n".join(lines)
+def _write_latency_for(
+    method: Method,
+    vector_index_ms: float,
+    write_raw_ms: float,
+    write_etec_ms: float,
+) -> float:
+    if method is Method.VECTOR_RAG:
+        return vector_index_ms
+    if method in _METHOD_APPLIES_ETEC:
+        return write_etec_ms
+    return write_raw_ms
 
 
 def _evidence_from_packed_items(items: Sequence[PackedItem]) -> list[EvidencePrediction]:
@@ -616,8 +697,21 @@ def _retrieval_payload(result: QEMRRetrievalResult) -> dict[str, Any]:
         "confidence": result.routing.confidence if result.routing is not None else None,
         "budget_tokens": result.budget_tokens,
         "total_tokens": result.total_tokens,
+        "content_tokens": result.budget.content_tokens,
+        "prompt_overhead_tokens": result.budget.prompt_overhead_tokens,
+        "total_input_tokens_estimate": result.budget.total_input_tokens_estimate,
+        "packing_bound": _packing_bound(result),
         "candidate_count": len(result.candidates),
         "exclusion_count": len(result.exclusions),
+        "source_failures": [
+            {
+                "source": failure.source.value,
+                "reason_code": failure.reason_code,
+                "degraded_policy": failure.degraded_policy.value,
+                "duration_ms": failure.duration_ms,
+            }
+            for failure in result.source_failures
+        ],
         "packed_items": [
             {
                 "memory_id": str(item.memory.memory_id),
@@ -632,7 +726,9 @@ def _retrieval_payload(result: QEMRRetrievalResult) -> dict[str, Any]:
                         "source_type": ref.source_type,
                         "source_id": ref.source_id,
                         "locator": ref.locator,
+                        "quote": ref.quote,
                         "session_id": ref.metadata.get("session_id"),
+                        "raw_turn_id": ref.metadata.get("raw_turn_id"),
                     }
                     for ref in item.evidence_refs
                 ],
@@ -642,27 +738,92 @@ def _retrieval_payload(result: QEMRRetrievalResult) -> dict[str, Any]:
     }
 
 
+def _packing_bound(result: QEMRRetrievalResult) -> bool:
+    return any(
+        exclusion.reason == "budget_exceeded" for exclusion in result.exclusions
+    )
+
+
+def _build_manifest(
+    config: LongMemEvalConfig,
+    run_dir: Path,
+    *,
+    expected_sample_ids: Sequence[str],
+    expected_question_ids: Sequence[str],
+) -> RunManifest:
+    return RunManifest(
+        run_id=run_dir.name,
+        artifact_class=_artifact_class(config),
+        dataset="longmemeval",
+        dataset_path=str(config.dataset_path),
+        dataset_hash=_dataset_hash(config.dataset_path),
+        scope=_scope(config),
+        methods=[method.value for method in config.methods],
+        reader=provider_identity(config.providers.reader),
+        extractor=provider_identity(
+            config.providers.extractor, version=EXTRACTION_PROMPT_VERSION
+        ),
+        embedding=provider_identity(config.providers.embedding),
+        tokenizer=TokenizerIdentity(
+            name=DEFAULT_TOKEN_ESTIMATOR.name,
+            version=DEFAULT_TOKEN_ESTIMATOR.version,
+        ),
+        policies=PolicyVersions(
+            extraction=EXTRACTION_PROMPT_VERSION,
+            router=ROUTER_POLICY_NAME,
+            retrieval=RETRIEVAL_POLICY_NAME,
+            consolidation=CONSOLIDATION_POLICY_NAME,
+        ),
+        budget=BudgetSpec(
+            input_tokens=config.max_input_tokens,
+            max_items_per_source=config.max_items_per_source,
+            max_candidates_per_source=config.max_candidates_per_source,
+        ),
+        git=GitState(
+            commit=current_git_commit(),
+            dirty=_git_is_dirty(),
+            dirty_diff_hash=_dirty_diff_hash() if _git_is_dirty() else None,
+        ),
+        config_hash=_hash_json(config.model_dump(mode="json")),
+        expected_sample_ids=list(expected_sample_ids),
+        expected_question_ids=list(expected_question_ids),
+        metadata={
+            "vector_input_kind": VECTOR_INPUT_KIND,
+            "reader_message_source": "qemr_reader_messages",
+        },
+    )
+
+
 def _write_summary(
     config: LongMemEvalConfig,
     run_dir: Path,
+    manifest: RunManifest,
     expected_sample_ids: Sequence[str],
-    chat_model: ChatModel,
-    embedding_model: EmbeddingModel,
+    bundle: ModelBundle,
 ) -> LongMemEvalSummary:
     samples = _load_sample_results(run_dir)
     validation = _validate_samples(list(expected_sample_ids), [s.sample_id for s in samples])
     methods: dict[str, MethodSummary] = {}
     for method in config.methods:
         methods[method.value] = _summarize_method(method, samples)
+    snapshot_ids = [
+        str(sample.ingestion.get("event", {}).get("snapshot_id"))
+        for sample in samples
+        if sample.ingestion.get("event", {}).get("snapshot_id")
+    ]
     summary = LongMemEvalSummary(
         run_id=run_dir.name,
         git_commit=current_git_commit(),
         git_dirty=_git_is_dirty(),
         config_hash=_hash_json(config.model_dump(mode="json")),
+        manifest_hash=manifest.manifest_hash(),
         dataset_hash=_dataset_hash(config.dataset_path),
         dataset_path=str(config.dataset_path),
-        chat_model_id=chat_model.model_id,
-        embedding_model_id=embedding_model.model_id,
+        reader_model=bundle.resolved.reader.model_id,
+        extractor_model=bundle.resolved.extractor.model_id,
+        embedding_model=bundle.resolved.embedding.model_id,
+        tokenizer_name=DEFAULT_TOKEN_ESTIMATOR.name,
+        tokenizer_version=DEFAULT_TOKEN_ESTIMATOR.version,
         extraction_prompt_version=EXTRACTION_PROMPT_VERSION,
         retrieval_policy_name=RETRIEVAL_POLICY_NAME,
         router_policy_name=ROUTER_POLICY_NAME,
@@ -670,14 +831,77 @@ def _write_summary(
         max_input_tokens=config.max_input_tokens,
         max_candidates_per_source=config.max_candidates_per_source,
         max_items_per_source=config.max_items_per_source,
+        vector_input_kind=VECTOR_INPUT_KIND,
+        extraction_snapshot_ids=sorted(snapshot_ids),
         sample_validation=validation,
         methods=methods,
     )
     _write_combined_artifacts(run_dir, config.methods, samples)
+    _write_run_root_artifacts(run_dir, samples)
     summary_path = run_dir / "summary.json"
     summary_path.unlink(missing_ok=True)
     write_json_write_once(summary_path, summary)
     return summary
+
+
+def _write_run_root_artifacts(run_dir: Path, samples: Sequence[SampleResult]) -> None:
+    snapshots = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for sample in samples
+        if (path := _snapshot_path(run_dir, sample.sample_id)).exists()
+    ]
+    _rewrite_json(run_dir / "extraction_snapshot.json", snapshots)
+
+    evidence_rows: list[EvidenceRecord] = []
+    retrieval_rows: list[dict[str, Any]] = []
+    consolidation_rows: list[ConsolidationRecord] = []
+    for sample in samples:
+        for method_name, record in sorted(sample.methods.items()):
+            if record.retrieval is None:
+                continue
+            retrieval_rows.append(
+                {
+                    "dataset": sample.dataset,
+                    "sample_id": sample.sample_id,
+                    "question_id": sample.question_id,
+                    "method": method_name,
+                    **record.retrieval,
+                }
+            )
+            for item in record.retrieval["packed_items"]:
+                for ref in item["evidence_refs"]:
+                    raw_turn_id = ref.get("raw_turn_id")
+                    if raw_turn_id is None:
+                        continue
+                    evidence_rows.append(
+                        EvidenceRecord(
+                            question_id=sample.question_id,
+                            raw_turn_id=str(raw_turn_id),
+                            span=str(ref.get("locator") or ""),
+                            exact=True,
+                        )
+                    )
+        etec_ingestion = sample.ingestion.get("etec") or {}
+        actions = etec_ingestion.get("actions") or {}
+        if actions:
+            dominant = max(actions, key=lambda action: (actions[action], action))
+            consolidation_rows.append(
+                ConsolidationRecord(
+                    sample_id=sample.sample_id,
+                    action=_map_consolidation_action(dominant),
+                    evidence=[],
+                )
+            )
+    _rewrite_jsonl(run_dir / "retrieval.jsonl", retrieval_rows)
+    _rewrite_jsonl(run_dir / "evidence.jsonl", evidence_rows)
+    _rewrite_jsonl(run_dir / "consolidation.jsonl", consolidation_rows)
+
+
+def _map_consolidation_action(raw_action: str) -> ConsolidationAction:
+    try:
+        return ConsolidationAction(raw_action.lower())
+    except ValueError:
+        return ConsolidationAction.KEEP
 
 
 def _load_sample_results(run_dir: Path) -> list[SampleResult]:
@@ -687,6 +911,8 @@ def _load_sample_results(run_dir: Path) -> list[SampleResult]:
         return samples
     for path in sorted(samples_dir.iterdir()):
         if not path.is_file() or path.suffix != ".json":
+            continue
+        if ".extraction_snapshot.json" in path.name:
             continue
         sample = SampleResult.model_validate(json.loads(path.read_text(encoding="utf-8")))
         samples.append(sample)
@@ -840,47 +1066,19 @@ def _validate_samples(
 
 
 def _config_report(config: LongMemEvalConfig, config_path: Path) -> dict[str, Any]:
-    report = config.model_dump(mode="json")
-    report["config_path"] = str(config_path)
-    report["config_hash"] = _hash_json(config.model_dump(mode="json"))
-    report["dataset_hash"] = _dataset_hash(config.dataset_path)
-    report["git_commit"] = current_git_commit()
-    report["extraction_prompt_version"] = EXTRACTION_PROMPT_VERSION
-    report["retrieval_policy_name"] = RETRIEVAL_POLICY_NAME
-    report["router_policy_name"] = ROUTER_POLICY_NAME
-    report["consolidation_policy_name"] = CONSOLIDATION_POLICY_NAME
-    if config.live_provider is not None:
-        report["live_provider"]["api_key_set"] = bool(
-            os.environ.get(config.live_provider.api_key_env)
-        )
+    report: dict[str, Any] = {
+        "config_path": str(config_path),
+        "config_hash": _hash_json(config.model_dump(mode="json")),
+        "dataset_hash": _dataset_hash(config.dataset_path),
+        "git_commit": current_git_commit(),
+        "extraction_prompt_version": EXTRACTION_PROMPT_VERSION,
+        "retrieval_policy_name": RETRIEVAL_POLICY_NAME,
+        "router_policy_name": ROUTER_POLICY_NAME,
+        "consolidation_policy_name": CONSOLIDATION_POLICY_NAME,
+        "vector_input_kind": VECTOR_INPUT_KIND,
+        "providers": config.providers.redacted(),
+    }
     return report
-
-
-def _make_models(config: LongMemEvalConfig, run_dir: Path) -> tuple[ChatModel, EmbeddingModel]:
-    cache = FileModelCache(run_dir / "model_cache")
-    if config.provider == "deterministic_fake":
-        return (
-            CachedChatModel(DeterministicFakeChatModel(config.chat_model_id), cache),
-            CachedEmbeddingModel(
-                DeterministicFakeEmbeddingModel(config.embedding_model_id), cache
-            ),
-        )
-    live = config.live_provider
-    if live is None:
-        raise ValueError("openai_compatible provider requires explicit live_provider config")
-    api_key = os.environ.get(live.api_key_env)
-    if not api_key:
-        raise RuntimeError(f"missing environment variable {live.api_key_env}")
-    live_config = OpenAICompatibleConfig(
-        base_url=live.base_url,
-        api_key=api_key,
-        model=live.chat_model,
-        timeout_s=live.timeout_s,
-    )
-    return (
-        CachedChatModel(OpenAICompatibleChatClient(live_config), cache),
-        CachedEmbeddingModel(OpenAICompatibleEmbeddingClient(live_config), cache),
-    )
 
 
 def _load_records(config: LongMemEvalConfig) -> list[NormalizedRecord]:
@@ -927,6 +1125,11 @@ def _sample_path(run_dir: Path, sample_id: str) -> Path:
     return run_dir / "samples" / f"{safe_id}.json"
 
 
+def _snapshot_path(run_dir: Path, sample_id: str) -> Path:
+    safe_id = _SAFE_ID_RE.sub("_", sample_id)
+    return run_dir / "samples" / f"{safe_id}.extraction_snapshot.json"
+
+
 def _category_for(question_type: str | None) -> str | None:
     if question_type is None:
         return None
@@ -936,6 +1139,11 @@ def _category_for(question_type: str | None) -> str | None:
 def _rewrite_jsonl(path: Path, records: Iterable[BaseModel | dict[str, Any]]) -> None:
     path.unlink(missing_ok=True)
     write_jsonl_write_once(path, records)
+
+
+def _rewrite_json(path: Path, payload: Any) -> None:
+    path.unlink(missing_ok=True)
+    write_json_write_once(path, payload)
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -954,10 +1162,6 @@ def _percentile(values: Sequence[float], percentile: float) -> float | None:
     if lower == upper:
         return float(ordered[int(position)])
     return float(ordered[lower] * (upper - position) + ordered[upper] * (position - lower))
-
-
-def _count_tokens(text: str) -> int:
-    return len(text.split())
 
 
 def _hash_json(payload: dict[str, Any]) -> str:
@@ -989,12 +1193,48 @@ def _git_is_dirty() -> bool:
     return bool(result.stdout.strip())
 
 
+def _dirty_diff_hash() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+    return _hash_json({"diff": result.stdout})
+
+
+def _is_finalized(run_dir: Path) -> bool:
+    return (run_dir / "finalized" / "FINALIZED.json").exists()
+
+
+def _load_stored_summary(run_dir: Path) -> LongMemEvalSummary:
+    summary_path = run_dir / "summary.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"finalized run has no stored summary: {summary_path}")
+    return LongMemEvalSummary.model_validate_json(summary_path.read_text())
+
+
 def _new_run_dir(output_root: Path, run_id_prefix: str) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = output_root / f"{run_id_prefix}-{timestamp}"
     run_dir.mkdir()
     return run_dir
+
+
+def _artifact_class(config: LongMemEvalConfig) -> ArtifactClass:
+    if config.provider == "deterministic_fake":
+        return ArtifactClass.SMOKE
+    return ArtifactClass.PUBLICATION
+
+
+def _scope(config: LongMemEvalConfig) -> str:
+    if config.sample_limit is not None:
+        return f"sample_limit={config.sample_limit}"
+    return "full"
 
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")

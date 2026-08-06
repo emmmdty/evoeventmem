@@ -29,12 +29,43 @@ def test_retrieval_smoke_runs_all_strategies_with_full_metric_coverage(tmp_path:
     assert summary.provenance_coverage == 1.0
     assert summary.decomposition_coverage == 1.0
     assert summary.superseded_compliance == 1.0
+    assert summary.relevance_first_compliance == 1.0
+    assert summary.wrrf_component_coverage == 1.0
+    assert summary.fallback_event_coverage == 1.0
+    assert summary.controlled_switch_compliance == 1.0
+    assert summary.budget_breakdown_compliance == 1.0
     assert {record["strategy"] for record in results} == {
         "fixed_vector",
         "fixed_hybrid",
         "qemr",
     }
     assert all(record["budget_compliant"] is True for record in results)
+
+
+def test_retrieval_smoke_gates_are_observable_in_results(tmp_path: Path) -> None:
+    summary = run_retrieval_smoke(ANNOTATIONS, tmp_path / "retrieval-smoke")
+
+    for record in _read_jsonl(Path(summary.results_path)):
+        assert record["budget"]["content_tokens"] >= 0
+        assert record["budget"]["prompt_overhead_tokens"] >= 0
+        if record["selected_memory_ids"]:
+            assert record["budget"]["prompt_overhead_tokens"] > 0
+        assert record["budget"]["total_input_tokens_estimate"] == (
+            record["budget"]["content_tokens"] + record["budget"]["prompt_overhead_tokens"]
+        )
+        assert record["estimator_name"]
+        assert record["estimator_version"]
+        for candidate in record["candidates"]:
+            for score in candidate["source_scores"]:
+                assert "raw_score" in score
+                assert "rank" in score
+                assert "weight" in score
+                assert "fusion_contribution" in score
+        for failure in record["source_failures"]:
+            assert failure["source"] == "dense"
+            assert failure["reason_code"] == "dense_source_error"
+            assert failure["degraded_policy"] in {"constrained", "provenance_only"}
+            assert failure["duration_ms"] >= 0.0
 
 
 def test_retrieval_smoke_records_score_decompositions_and_exclusions(tmp_path: Path) -> None:

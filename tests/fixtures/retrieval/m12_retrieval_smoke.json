@@ -366,6 +366,355 @@
           "valid_from": "2024-01-01T00:00:00Z"
         }
       ]
+    },
+    {
+      "case_id": "unrelated_recency_when",
+      "query": "When did Caroline move?",
+      "expected_intent": "temporal",
+      "budget_tokens": 200,
+      "expected_top_memory_id": "78000000-0000-0000-0000-000000000001",
+      "memories": [
+        {
+          "memory_id": "78000000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline moved to Lisbon in March 2021.",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78000000-0000-0000-0000-000000000001"
+            }
+          ],
+          "valid_from": "2021-03-01T00:00:00Z"
+        },
+        {
+          "memory_id": "78000000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "The team launched project Zephyr.",
+          "entities": [
+            {
+              "name": "Zephyr",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78000000-0000-0000-0000-000000000002"
+            }
+          ],
+          "valid_from": "2024-12-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_evidence_policy",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "budget_tokens": 67,
+      "memories": [
+        {
+          "memory_id": "78100000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "alpha beta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "shared-evidence"
+            }
+          ]
+        },
+        {
+          "memory_id": "78100000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "gamma delta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "shared-evidence"
+            }
+          ]
+        },
+        {
+          "memory_id": "78100000-0000-0000-0000-000000000003",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "epsilon zeta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "novel-evidence"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_temporal_source",
+      "query": "What happened in 2024?",
+      "expected_intent": "temporal",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78200000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Project launch.",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78200000-0000-0000-0000-000000000001"
+            }
+          ],
+          "valid_from": "2024-06-01T00:00:00Z"
+        },
+        {
+          "memory_id": "78200000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Office opened.",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78200000-0000-0000-0000-000000000002"
+            }
+          ],
+          "valid_from": "2019-03-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_graph_source",
+      "query": "Who works with Caroline?",
+      "expected_intent": "graph",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78300000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "alpha beta",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78300000-0000-0000-0000-000000000001"
+            }
+          ]
+        },
+        {
+          "memory_id": "78300000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "gamma delta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78300000-0000-0000-0000-000000000002"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_forced_routing",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78400000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78400000-0000-0000-0000-000000000001"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_strategy",
+      "query": "How do I create a memory in evoeventmem?",
+      "expected_intent": "procedural",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78500000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "procedure",
+          "content": "To create a memory, call the write endpoint with evidence.",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78500000-0000-0000-0000-000000000001"
+            }
+          ]
+        },
+        {
+          "memory_id": "78500000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78500000-0000-0000-0000-000000000002"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_weight_profile",
+      "query": "Where does Caroline live?",
+      "expected_intent": "semantic",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78600000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "alpha beta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78600000-0000-0000-0000-000000000001"
+            }
+          ]
+        },
+        {
+          "memory_id": "78600000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "gamma delta",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78600000-0000-0000-0000-000000000002"
+            }
+          ]
+        },
+        {
+          "memory_id": "78600000-0000-0000-0000-000000000003",
+          "user_id": "u1",
+          "memory_kind": "episode",
+          "content": "eta theta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78600000-0000-0000-0000-000000000003"
+            }
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "case_id": "controlled_budget",
+      "query": "query",
+      "expected_intent": "hybrid",
+      "budget_tokens": 200,
+      "memories": [
+        {
+          "memory_id": "78700000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "alpha beta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "evidence-1"
+            }
+          ]
+        },
+        {
+          "memory_id": "78700000-0000-0000-0000-000000000002",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "gamma delta",
+          "entities": [],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "evidence-2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "fallback_dense",
+      "query": "What is Caroline's favorite color?",
+      "expected_intent": "semantic",
+      "budget_tokens": 200,
+      "fail_dense_source": true,
+      "memories": [
+        {
+          "memory_id": "78800000-0000-0000-0000-000000000001",
+          "user_id": "u1",
+          "memory_kind": "fact",
+          "content": "Caroline's favorite color is teal.",
+          "entities": [
+            {
+              "name": "Caroline",
+              "role": "subject"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "source_type": "turn",
+              "source_id": "78800000-0000-0000-0000-000000000001"
+            }
+          ],
+          "valid_from": "2024-01-01T00:00:00Z"
+        }
+      ]
     }
   ]
 }

@@ -580,7 +580,11 @@ def _retrieval_payload(
         "packed_items": [
             {
                 "memory_id": f"m-{method}-{index}-{k}",
-                "content": f"memory content {k} for question {index}",
+                "content": (
+                    f"blue house words for question {index}"
+                    if index % 3 == 0
+                    else f"memory content {k} for question {index}"
+                ),
                 "final_score": round(0.9 - 0.1 * k + score_shift, 4),
                 "component_scores": {"dense": 0.8, "temporal": 0.6, "graph": 0.4},
                 "token_count": 20 + k,

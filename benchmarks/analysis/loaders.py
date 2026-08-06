@@ -301,6 +301,30 @@ def _validate_publication_support_files(run_dir: Path, manifest: RunManifest) ->
     _read_jsonl(run_dir / "retrieval.jsonl", code="missing_required_artifact")
 
 
+def _extraction_rejections(run_dir: Path) -> dict[str, list[str]]:
+    """Map conversation/sample ID to the extraction rejection reasons recorded
+    in the run's immutable extraction snapshot (normalized trace data)."""
+    snapshot_path = run_dir / "extraction_snapshot.json"
+    if not snapshot_path.is_file():
+        return {}
+    rejections: dict[str, list[str]] = {}
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    for item in payload:
+        try:
+            snapshot = ExtractionSnapshot.model_validate(item)
+        except ValidationError:
+            continue
+        rejections[snapshot.conversation_id] = [
+            rejection.reason for rejection in snapshot.rejections
+        ]
+    return rejections
+
+
 def _consolidation_actions(run_dir: Path) -> dict[str, list[ConsolidationAction]]:
     actions: dict[str, list[ConsolidationAction]] = {}
     path = run_dir / "consolidation.jsonl"
@@ -327,6 +351,7 @@ def _build_rows(
             "session_summary is a LoCoMo-only method and must never appear in a LongMemEval run",
         )
     sample_actions = _consolidation_actions(run_dir)
+    rejection_reasons = _extraction_rejections(run_dir)
     rows: list[AnalysisRow] = []
     for method in methods:
         method_dir = run_dir / method
@@ -382,8 +407,19 @@ def _build_rows(
                 total_input_tokens = (
                     int(estimate) if estimate is not None else int(sample.get("input_tokens") or 0)
                 )
-                packed_item_count = len(retrieval.get("packed_items") or [])
+                packed_items = retrieval.get("packed_items") or []
+                packed_item_count = len(packed_items)
                 packing_bound = bool(retrieval.get("packing_bound", False))
+                context_text = " ".join(
+                    str(item.get("content") or "") for item in packed_items
+                )
+                intent = retrieval.get("intent")
+                candidate_count = retrieval.get("candidate_count")
+                exclusion_reasons = [
+                    str(item.get("reason") or "")
+                    for item in retrieval.get("exclusions") or []
+                    if item.get("reason")
+                ]
                 try:
                     failures = [
                         SourceFailure.model_validate(failure)
@@ -401,6 +437,10 @@ def _build_rows(
                 packed_item_count = 0
                 packing_bound = False
                 failures = []
+                context_text = ""
+                intent = None
+                candidate_count = None
+                exclusion_reasons = []
             rows.append(
                 AnalysisRow(
                     dataset=manifest.dataset,
@@ -422,6 +462,13 @@ def _build_rows(
                     packing_bound=packing_bound,
                     source_failures=failures,
                     packed_item_count=packed_item_count,
+                    context_text=context_text,
+                    intent=intent,
+                    candidate_count=candidate_count,
+                    exclusion_reasons=exclusion_reasons,
+                    extraction_rejection_reasons=rejection_reasons.get(
+                        str(sample.get("sample_id") or ""), []
+                    ),
                     consolidation_actions=sample_actions.get(
                         str(sample.get("sample_id") or ""), []
                     ),

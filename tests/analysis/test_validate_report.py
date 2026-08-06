@@ -4,6 +4,7 @@ import json
 
 from benchmarks.analysis.validate_report import (
     hash_json,
+    validate_analysis_inputs,
     validate_runs,
 )
 from tests.analysis.conftest import build_question_artifacts, build_run
@@ -16,9 +17,7 @@ def _valid(report) -> bool:
 def test_valid_run_passes(synthetic_run) -> None:
     report = validate_runs(synthetic_run.parent)
     assert report.valid
-    assert all(
-        issue.severity != "error" for issue in report.run_issues
-    )
+    assert all(issue.severity != "error" for issue in report.run_issues)
     assert report.pair_issues == []
 
 
@@ -125,9 +124,101 @@ def test_incompatible_runs_report_errors(tmp_path) -> None:
     build_run(root / "b", max_input_tokens=1024)
     build_question_artifacts(root / "b")
     report = validate_runs(root)
-    error_messages = [
-        issue.message
-        for issue in report.pair_issues
-        if issue.severity == "error"
-    ]
+    error_messages = [issue.message for issue in report.pair_issues if issue.severity == "error"]
     assert error_messages, "expected at least one incompatible-pair error"
+
+
+# --------------------------------------------------------------------------- #
+# C2 dataset-neutral validation layer.
+# --------------------------------------------------------------------------- #
+
+
+def test_analysis_validator_accepts_both_datasets(analysis_fixture) -> None:
+    result = validate_analysis_inputs(
+        analysis_fixture["source_runs"],
+        controlled_run=analysis_fixture["controlled_run"],
+        ablation_runs=analysis_fixture["ablation_runs"],
+    )
+    assert result.valid
+    assert result.error_codes() == []
+
+
+def test_analysis_validator_rejects_zero_source_runs() -> None:
+    result = validate_analysis_inputs([])
+    assert not result.valid
+    assert any(issue.code == "zero_source_runs" for issue in result.issues)
+
+
+def test_analysis_validator_never_writes_below_source_run(analysis_fixture) -> None:
+    def snapshot() -> dict[str, tuple[int, int]]:
+        root = analysis_fixture["runs_root"]
+        return {
+            str(path): (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot()
+    result = validate_analysis_inputs(
+        analysis_fixture["source_runs"],
+        controlled_run=analysis_fixture["controlled_run"],
+        ablation_runs=analysis_fixture["ablation_runs"],
+    )
+    assert result.valid
+    assert snapshot() == before
+
+
+def test_analysis_validator_allows_different_model_stacks(analysis_fixture) -> None:
+    result = validate_analysis_inputs(analysis_fixture["source_runs"])
+    assert result.valid
+    assert not any(issue.code == "incompatible_within_dataset" for issue in result.issues)
+
+
+def test_analysis_validator_catches_within_dataset_incompatibility(tmp_path) -> None:
+    from tests.analysis.conftest import build_synthetic_run
+
+    first = build_synthetic_run(tmp_path / "a", dataset="locomo")
+    second = build_synthetic_run(
+        tmp_path / "b",
+        dataset="locomo",
+        reader_model_id="reader-model-z",
+        config_hash="sha256:config-b",
+    )
+    result = validate_analysis_inputs([first["run_dir"], second["run_dir"]])
+    assert not result.valid
+    assert any(
+        issue.code == "incompatible_within_dataset" and "reader" in issue.message
+        for issue in result.issues
+    )
+
+
+def test_analysis_validator_checks_ablation_links(analysis_fixture) -> None:
+    result = validate_analysis_inputs(
+        analysis_fixture["source_runs"],
+        controlled_run=analysis_fixture["controlled_run"],
+        ablation_runs=analysis_fixture["ablation_runs"],
+    )
+    assert result.valid
+    assert result.controlled is not None
+    for ablation in result.ablations:
+        assert len(ablation.arms) >= 7
+        for arm in ablation.arms.values():
+            assert (
+                arm.manifest.controlled_run_hash
+                == result.controlled.finalization.finalization_hash()
+            )
+
+
+def test_analysis_validator_returns_structured_issues(analysis_fixture) -> None:
+    run_dir = analysis_fixture["longmemeval"]["run_dir"]
+    summary = run_dir / "summary.json"
+    if not summary.exists():
+        (run_dir / "full" / "samples.jsonl").unlink()
+    result = validate_analysis_inputs([run_dir])
+    payload = result.as_dict()
+    assert payload["valid"] is False
+    assert payload["issues"]
+    for issue in payload["issues"]:
+        assert issue["code"]
+        assert issue["severity"] in ("error", "warning")
+        assert issue["message"]

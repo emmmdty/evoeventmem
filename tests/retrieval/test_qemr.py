@@ -18,6 +18,7 @@ from evoeventmem.retrieval import (
     FIXED_HYBRID_WEIGHTS,
     FIXED_VECTOR_WEIGHTS,
     QEMR_WEIGHT_PROFILES,
+    RRF_K,
     QEMRRetrievalResult,
     RetrievalHarness,
     RetrievalService,
@@ -339,8 +340,8 @@ def test_temporal_scores_are_small_capped_feature_for_unconstrained_when() -> No
     scores = {
         item.memory.memory_id: item.component_scores for item in result.selected_context
     }
-    assert scores[anchored.memory_id]["temporal"] == pytest.approx(0.2)
-    assert 0.0 < scores[far.memory_id]["temporal"] < 0.2
+    assert scores[anchored.memory_id]["temporal"] == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert 0.0 < scores[far.memory_id]["temporal"] < scores[anchored.memory_id]["temporal"]
 
 
 def test_result_model_rejects_budget_overflow() -> None:
@@ -380,7 +381,7 @@ def test_retrieval_service_persists_component_scores_and_exclusions() -> None:
     assert exported[1]["selected_context"] == []
 
 
-def test_weighted_average_final_score_discriminates_without_saturation() -> None:
+def test_wrrf_final_scores_discriminate_without_saturation() -> None:
     multi_facet = _memory(
         content="alpha beta",
         evidence_id="evidence-1",
@@ -401,12 +402,132 @@ def test_weighted_average_final_score_discriminates_without_saturation() -> None
     result = harness.retrieve("epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID)
 
     assert result.selected_context[0].memory.memory_id == multi_facet.memory_id
-    assert result.selected_context[0].final_score == pytest.approx(0.4)
-    assert result.selected_context[1].final_score == pytest.approx(0.16)
+    assert result.selected_context[0].final_score == pytest.approx(2.0 / (RRF_K + 1.0) / 5.0)
+    assert result.selected_context[1].final_score == pytest.approx(1.0 / (RRF_K + 2.0) / 5.0)
     assert all(0.0 <= item.final_score <= 1.0 for item in result.selected_context)
 
 
-def test_reference_time_controls_temporal_scores() -> None:
+def test_single_candidate_source_gets_no_artificial_authority() -> None:
+    dense_strong = _memory(
+        content="Caroline lives in Seattle.",
+        entities=[{"name": "Priya", "role": "subject"}],
+        memory_id=UUID("40000000-0000-0000-0000-000000000001"),
+    )
+    weak_solo = _memory(
+        content="Company annual report.",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        memory_id=UUID("40000000-0000-0000-0000-000000000002"),
+    )
+    vectors = {
+        "Where does Caroline live?": (1.0, 0.0),
+        dense_strong.content: (0.9, 0.435889894354067),
+        weak_solo.content: (0.2, 0.9797958971132712),
+    }
+    harness = _harness([dense_strong, weak_solo], vectors=vectors)
+    result = harness.retrieve("Where does Caroline live?", user_id="u1")
+    assert result.intent is QueryIntent.SEMANTIC
+    by_id = {item.memory.memory_id: item for item in result.candidates}
+    graph = next(
+        score
+        for score in by_id[weak_solo.memory_id].source_scores
+        if score.source.value == "graph"
+    )
+    assert graph.rank == 1
+    assert graph.fusion_contribution == pytest.approx(0.3 / (RRF_K + 1.0))
+    dense_best = next(
+        score
+        for score in by_id[dense_strong.memory_id].source_scores
+        if score.source.value == "dense"
+    )
+    assert dense_best.rank == 1
+    assert dense_best.fusion_contribution == pytest.approx(1.0 / (RRF_K + 1.0))
+    assert graph.fusion_contribution < dense_best.fusion_contribution
+
+
+def test_wrrf_persists_raw_rank_weight_and_contribution() -> None:
+    moved = _memory(
+        content="Caroline moved to Lisbon.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("40000000-0000-0000-0000-000000000011"),
+    )
+    ended = _memory(
+        content="Project Zephyr ended.",
+        valid_from=datetime(2024, 12, 1, tzinfo=UTC),
+        entities=[{"name": "Zephyr", "role": "subject"}],
+        memory_id=UUID("40000000-0000-0000-0000-000000000012"),
+    )
+    vectors = {
+        "When did Caroline move?": (1.0, 0.0),
+        moved.content: (0.95, 0.3122498999199199),
+        ended.content: (0.1, 0.99498743710662),
+    }
+    harness = _harness([moved, ended], vectors=vectors)
+    result = harness.retrieve("When did Caroline move?", user_id="u1")
+    by_id = {item.memory.memory_id: item for item in result.candidates}
+    assert by_id[moved.memory_id].source_scores
+    for score in by_id[moved.memory_id].source_scores:
+        assert score.raw_score > 0.0
+        assert score.rank >= 1
+        assert score.weight > 0.0
+        assert score.fusion_contribution == pytest.approx(
+            score.weight / (RRF_K + score.rank)
+        )
+    ended_dense = next(
+        score
+        for score in by_id[ended.memory_id].source_scores
+        if score.source.value == "dense"
+    )
+    assert ended_dense.rank == 2
+    assert ended_dense.fusion_contribution == pytest.approx(0.3 / (RRF_K + 2.0))
+    ended_temporal = next(
+        score
+        for score in by_id[ended.memory_id].source_scores
+        if score.source.value == "temporal"
+    )
+    assert ended_temporal.rank == 1
+    assert ended_temporal.fusion_contribution == pytest.approx(0.2 / (RRF_K + 1.0))
+
+
+def test_wrrf_tie_breaking_is_stable_and_deterministic() -> None:
+    lower_id = _memory(
+        content="alpha beta",
+        evidence_id="evidence-1",
+        memory_id=UUID("40000000-0000-0000-0000-000000000021"),
+    )
+    higher_id = _memory(
+        content="gamma delta",
+        evidence_id="evidence-2",
+        memory_id=UUID("40000000-0000-0000-0000-000000000022"),
+    )
+    vectors = {
+        "query": (1.0, 0.0),
+        lower_id.content: (0.5, 0.0),
+        higher_id.content: (0.5, 0.0),
+    }
+    harness = _harness([lower_id, higher_id], vectors=vectors)
+    first = harness.retrieve("query", user_id="u1")
+    second = harness.retrieve("query", user_id="u1")
+    for result in (first, second):
+        by_id = {item.memory.memory_id: item for item in result.candidates}
+        lower_dense = next(
+            score
+            for score in by_id[lower_id.memory_id].source_scores
+            if score.source.value == "dense"
+        )
+        higher_dense = next(
+            score
+            for score in by_id[higher_id.memory_id].source_scores
+            if score.source.value == "dense"
+        )
+        assert lower_dense.rank == 1
+        assert higher_dense.rank == 2
+        ranked_ids = [item.memory.memory_id for item in result.selected_context]
+        assert ranked_ids[0] == lower_id.memory_id
+
+
+def test_reference_time_controls_temporal_ranks() -> None:
     old = _memory(
         content="Caroline lived in Austin.",
         valid_from=datetime(2021, 3, 1, tzinfo=UTC),
@@ -420,18 +541,26 @@ def test_reference_time_controls_temporal_scores() -> None:
     harness = _harness([old, recent])
     query = "When did Caroline move to Seattle?"
 
-    near = harness.retrieve(query, user_id="u1", reference_time=datetime(2023, 6, 1, tzinfo=UTC))
-    far = harness.retrieve(query, user_id="u1", reference_time=datetime(2026, 8, 1, tzinfo=UTC))
-    near_old = _component(near, old.memory_id, "temporal")
-    far_old = _component(far, old.memory_id, "temporal")
-    near_recent = _component(near, recent.memory_id, "temporal")
-    far_recent = _component(far, recent.memory_id, "temporal")
+    near_old_ref = harness.retrieve(
+        query,
+        user_id="u1",
+        reference_time=datetime(2021, 6, 1, tzinfo=UTC),
+    )
+    far_old_ref = harness.retrieve(
+        query,
+        user_id="u1",
+        reference_time=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    near_old = _component(near_old_ref, old.memory_id, "temporal")
+    far_old = _component(far_old_ref, old.memory_id, "temporal")
+    near_recent = _component(near_old_ref, recent.memory_id, "temporal")
+    far_recent = _component(far_old_ref, recent.memory_id, "temporal")
 
-    assert near_recent == pytest.approx(0.2)
-    assert far_recent == pytest.approx(0.2)
-    assert 0.0 < near_old < near_recent
-    assert 0.0 < far_old < far_recent
-    assert far_old > near_old
+    assert near_old == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert near_recent == pytest.approx(0.2 / (RRF_K + 2.0))
+    assert far_old == pytest.approx(0.2 / (RRF_K + 2.0))
+    assert far_recent == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert near_old > far_old
 
     default = harness.retrieve(query, user_id="u1")
     assert default.total_tokens <= default.budget_tokens
@@ -673,6 +802,37 @@ def test_fixed_vector_results_remain_unchanged_with_temporal_sources_present() -
         item.component_scores.get("temporal", 0.0) == 0.0
         for item in result.selected_context
     ), "fixed vector must not apply temporal weights"
+
+
+def test_fixed_vector_path_keeps_per_source_max_normalization() -> None:
+    first = _memory(
+        content="Caroline lives in Seattle.",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        valid_from=datetime(2023, 5, 1, tzinfo=UTC),
+        memory_id=UUID("40000000-0000-0000-0000-000000000031"),
+    )
+    second = _memory(
+        content="Project Zephyr ended.",
+        entities=[{"name": "Zephyr", "role": "subject"}],
+        valid_from=datetime(2024, 12, 1, tzinfo=UTC),
+        memory_id=UUID("40000000-0000-0000-0000-000000000032"),
+    )
+    vectors = {
+        "What is Caroline's favorite color?": (1.0, 0.0),
+        first.content: (0.9, 0.435889894354067),
+        second.content: (0.45, 0.8930296298303741),
+    }
+    harness = _harness([first, second], vectors=vectors)
+    result = harness.retrieve(
+        "What is Caroline's favorite color?",
+        user_id="u1",
+        strategy=RetrievalStrategy.FIXED_VECTOR,
+    )
+    by_id = {item.memory.memory_id: item for item in result.selected_context}
+    assert by_id[first.memory_id].component_scores["dense"] == pytest.approx(1.0)
+    assert by_id[second.memory_id].component_scores["dense"] == pytest.approx(0.5)
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert ranked_ids[0] == first.memory_id
 
 
 def test_sequence_and_duration_constraints_remain_observable() -> None:

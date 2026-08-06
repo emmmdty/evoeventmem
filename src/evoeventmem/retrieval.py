@@ -27,7 +27,11 @@ from evoeventmem.router import (
     TemporalConstraint as RoutedTemporalConstraint,
 )
 
-POLICY_NAME = "qemr-weight-profiles.v1"
+POLICY_NAME = "qemr-weight-profiles.v2"
+
+# Fixed reciprocal-rank fusion constant: contribution = weight / (k + rank).
+# Declared before any benchmark run; never tuned on reported outcomes.
+RRF_K = 60.0
 
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
@@ -126,6 +130,10 @@ class SourceScore(BaseModel):
     source: CandidateSource
     normalized_score: float = Field(ge=0.0, le=1.0)
     weighted_score: float = Field(ge=0.0)
+    raw_score: float = Field(default=0.0, ge=0.0)
+    rank: int | None = Field(default=None, ge=1)
+    weight: float = Field(default=0.0, ge=0.0)
+    fusion_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str
 
 
@@ -347,8 +355,11 @@ class RetrievalHarness:
                 reference,
             )
         weights = self._effective_weights(weights, routing)
-        normalized = self._normalize(candidates)
-        scored = self._merge_candidates(normalized, weights, routing.intent)
+        if strategy is RetrievalStrategy.FIXED_VECTOR:
+            normalized = self._normalize(candidates)
+            scored = self._merge_candidates(normalized, weights, routing.intent)
+        else:
+            scored = self._merge_candidates(candidates, weights, routing.intent, wrrf=True)
         eligible, exclusions = self._classify_memories(scored, routing.intent)
         exclusions = [*temporal_exclusions, *exclusions]
         exclusions.extend(self._capped_memory_exclusions(scored, capped_memory_ids))
@@ -803,32 +814,64 @@ class RetrievalHarness:
         candidates: Sequence[Candidate],
         weights: dict[CandidateSource, float],
         intent: QueryIntent,
+        *,
+        wrrf: bool = False,
     ) -> list[ScoredMemory]:
+        """Merge per-source candidates into scored memories.
+
+        The hybrid/QEMR path uses deterministic weighted reciprocal-rank
+        fusion (``wrrf=True``): each candidate contributes
+        ``weight / (RRF_K + rank)`` where ``rank`` is its position within its
+        source by raw score (ties broken by memory id). Per-source max
+        normalization is retained only for the fixed-vector baseline so its
+        ordering is unchanged.
+
+        Zero-score candidates are kept per memory so classification can record
+        observable exclusions, but they contribute nothing to fusion.
+        """
         by_memory: dict[UUID, dict[CandidateSource, Candidate]] = {}
         for candidate in candidates:
             per_source = by_memory.setdefault(candidate.memory.memory_id, {})
             existing = per_source.get(candidate.source)
             if existing is None or _better_candidate(candidate, existing):
                 per_source[candidate.source] = candidate
+        ranks = self._source_ranks(candidates)
+        weight_total = sum(weight for weight in weights.values() if weight > 0.0)
         merged: list[ScoredMemory] = []
         for memory_id in sorted(by_memory, key=str):
             per_source = by_memory[memory_id]
             memory = next(iter(per_source.values())).memory
-            source_scores = [
-                SourceScore(
-                    source=candidate.source,
-                    normalized_score=candidate.normalized_score,
-                    weighted_score=weights[candidate.source] * candidate.normalized_score,
-                    reason=candidate.reason,
+            source_scores: list[SourceScore] = []
+            for source in ALL_SOURCES:
+                per_source_candidate = per_source.get(source)
+                if per_source_candidate is None:
+                    continue
+                candidate = per_source_candidate
+                rank = ranks[source].get(memory_id)
+                if wrrf:
+                    if rank is None:
+                        contribution = 0.0
+                        normalized = 0.0
+                    else:
+                        contribution = weights[source] / (RRF_K + rank)
+                        normalized = contribution
+                    weighted = contribution
+                else:
+                    normalized = candidate.normalized_score
+                    weighted = weights[source] * normalized
+                    contribution = weighted
+                source_scores.append(
+                    SourceScore(
+                        source=source,
+                        normalized_score=normalized,
+                        weighted_score=weighted,
+                        raw_score=candidate.raw_score,
+                        rank=rank,
+                        weight=weights[source],
+                        fusion_contribution=contribution,
+                        reason=candidate.reason,
+                    )
                 )
-                for candidate in (
-                    per_source[source]
-                    for source in ALL_SOURCES
-                    if source in per_source
-                )
-                if candidate.normalized_score > 0.0
-            ]
-            weight_total = sum(weight for weight in weights.values() if weight > 0.0)
             weighted_sum = sum(score.weighted_score for score in source_scores)
             final_score = weighted_sum / weight_total if weight_total > 0.0 else 0.0
             if memory.status is MemoryStatus.SUPERSEDED and intent in HISTORICAL_INTENTS:
@@ -847,6 +890,36 @@ class RetrievalHarness:
                 )
             )
         return merged
+
+    def _source_ranks(
+        self,
+        candidates: Sequence[Candidate],
+    ) -> dict[CandidateSource, dict[UUID, int]]:
+        """Per-source rank of every candidate with a positive raw score.
+
+        Ranks are 1-based by raw score descending with a stable memory-id
+        tie-break, so identical scores still produce a deterministic order.
+        Zero-raw candidates (e.g. temporal candidates outside the relevance
+        pool) receive no rank and therefore no fusion contribution.
+        """
+        ranks: dict[CandidateSource, dict[UUID, int]] = {}
+        for source in ALL_SOURCES:
+            source_candidates = sorted(
+                [
+                    candidate
+                    for candidate in candidates
+                    if candidate.source is source and candidate.raw_score > 0.0
+                ],
+                key=lambda candidate: (
+                    -candidate.raw_score,
+                    str(candidate.memory.memory_id),
+                ),
+            )
+            ranks[source] = {
+                candidate.memory.memory_id: position
+                for position, candidate in enumerate(source_candidates, start=1)
+            }
+        return ranks
 
     def _classify_memories(
         self,

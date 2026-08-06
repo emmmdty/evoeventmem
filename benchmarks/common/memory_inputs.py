@@ -100,12 +100,14 @@ def provider_identity(resolved: ResolvedModelConfig, *, version: str = "") -> Pr
 
 
 def _fake_event_memory(request: ExtractionInput, turn: Any) -> MemoryRecord:
+    from evoeventmem.domain.models import EntityRef
+
     return MemoryRecord(
         user_id=request.user_id,
         session_id=turn.session_id,
         memory_kind=MemoryKind.EVENT,
         content=turn.content,
-        entities=[],
+        entities=[EntityRef(name=turn.speaker, role="speaker")],
         evidence_refs=[_turn_evidence(request, turn)],
         event_time=turn.timestamp,
         metadata={

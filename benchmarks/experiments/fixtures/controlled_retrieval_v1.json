@@ -1,0 +1,180 @@
+[
+  {
+    "sample_id": "controlled-1",
+    "qa": [
+      {
+        "question": "When did Caroline attend the support group?",
+        "answer": "7 May 2023",
+        "evidence": [
+          "D1:1"
+        ],
+        "category": "2"
+      },
+      {
+        "question": "What color is the delivery van?",
+        "answer": "white",
+        "evidence": [
+          "D1:3"
+        ],
+        "category": "1"
+      },
+      {
+        "question": "Who coordinates the volunteer team?",
+        "answer": "Caroline",
+        "evidence": [
+          "D2:2"
+        ],
+        "category": "4"
+      },
+      {
+        "question": "What did Melanie say about the weather?",
+        "answer": "sunny",
+        "evidence": [
+          "D1:5"
+        ],
+        "category": "1"
+      },
+      {
+        "question": "When was the team meeting scheduled?",
+        "answer": "10 June 2023",
+        "evidence": [
+          "D3:1"
+        ],
+        "category": "2"
+      },
+      {
+        "question": "What is the door lock code?",
+        "answer": "N/A",
+        "evidence": [],
+        "category": "5"
+      }
+    ],
+    "conversation": {
+      "speaker_a": "Caroline",
+      "speaker_b": "Melanie",
+      "session_1_date_time": "1:56 pm on 8 May, 2023",
+      "session_1": [
+        {
+          "speaker": "Caroline",
+          "dia_id": "D1:1",
+          "text": "I went to an LGBTQ support group yesterday and met several new members there."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D1:2",
+          "text": "I'm glad you felt supported by the group and the facilitators."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D1:3",
+          "text": "PARAPHRASE: The delivery van is white and it was parked behind the office building."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D1:4",
+          "text": "The van belongs to the catering company that serves the afternoon lunch."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D1:5",
+          "text": "Melanie told me the weather will be sunny during the whole weekend."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D1:6",
+          "text": "PARAPHRASE: The weekend picnic baskets are packed and ready in the storage room."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D1:7",
+          "text": "The garden hose reel is behind the shed near the tall oak tree."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D1:8",
+          "text": "The kitchen pantry shelves were reorganized by the volunteer crew."
+        }
+      ],
+      "session_2_date_time": "9:30 am on 1 June, 2023",
+      "session_2": [
+        {
+          "speaker": "Caroline",
+          "dia_id": "D2:1",
+          "text": "The volunteer team grew quickly after the spring recruitment drive."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D2:2",
+          "text": "Caroline coordinates the volunteer team and prepares the weekly rota."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D2:3",
+          "text": "The rota spreadsheet lives on the shared drive of the community office."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D2:4",
+          "text": "New volunteers receive a printed handbook and a name badge on arrival."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D2:5",
+          "text": "The first aid kit box is stored above the reception desk near the exit."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D2:6",
+          "text": "The notice board posters are updated every Monday morning by staff."
+        }
+      ],
+      "session_3_date_time": "2:00 pm on 10 June, 2023",
+      "session_3": [
+        {
+          "speaker": "Melanie",
+          "dia_id": "D3:1",
+          "text": "The team meeting is scheduled for ten June at the community hall."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D3:2",
+          "text": "The agenda covers the summer events and the volunteer schedule changes."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D3:3",
+          "text": "The projector cables are kept in the cupboard next to the stage door."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D3:4",
+          "text": "The refreshment table will be arranged by the hospitality committee."
+        },
+        {
+          "speaker": "Melanie",
+          "dia_id": "D3:5",
+          "text": "The parking lot gate is locked every evening after the last class."
+        },
+        {
+          "speaker": "Caroline",
+          "dia_id": "D3:6",
+          "text": "The lost property basket sits beside the main entrance staircase."
+        }
+      ]
+    },
+    "event_summary": {
+      "events_session_1": {
+        "Caroline": [
+          "Caroline attended an LGBTQ support group on 7 May 2023."
+        ],
+        "date": "8 May, 2023"
+      }
+    },
+    "observation": {},
+    "session_summary": {
+      "session_1_summary": "Caroline attended a support group and described the new delivery van.",
+      "session_2_summary": "Caroline coordinates the volunteer team with Melanie.",
+      "session_3_summary": "The team meeting is scheduled for 10 June."
+    }
+  }
+]

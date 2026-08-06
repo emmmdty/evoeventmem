@@ -22,6 +22,7 @@ Exit status is 0 only when every run is valid and every pair is compatible.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
@@ -356,20 +357,84 @@ def write_validation_artifact(report: ValidationReport, runs_root: Path) -> Path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if len(argv or ()) != 1:
+    """C8 CLI: locate and verify exactly the content-addressed analysis artifact.
+
+    Derives the analysis ID from the same inputs as the report generator,
+    locates ``<artifact-root>/<analysis_id>/``, and verifies its
+    ``FINALIZED.json``. Missing or legacy sources, drifted artifacts, and
+    missing artifacts return nonzero with stable error codes. Never writes.
+    """
+    parser = argparse.ArgumentParser(
+        description="Validate the content-addressed M15 analysis report."
+    )
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--source-run", type=Path, action="append", required=True)
+    parser.add_argument("--controlled-run", type=Path, default=None)
+    parser.add_argument("--ablation-run", type=Path, action="append", default=[])
+    parser.add_argument("--artifact-root", type=Path, required=True)
+    args = parser.parse_args(argv)
+
+    # Local imports avoid a cycle: finalization imports validate_analysis_inputs
+    # from this module.
+    from benchmarks.analysis.finalization import (
+        AnalysisInputError,
+        derive_analysis_id,
+        error_exit_code,
+        load_analysis_finalization,
+        load_config,
+    )
+
+    if not Path(args.config).is_file():
         print(
-            "usage: uv run python -m benchmarks.analysis.validate_report <runs_dir>",
+            f"error[missing_config]: analysis config does not exist: {args.config}",
             file=sys.stderr,
         )
-        return 2
-    runs_root = Path(argv[0])
-    if not runs_root.is_dir():
-        print(f"runs root does not exist: {runs_root}", file=sys.stderr)
-        return 2
-    report = validate_runs(runs_root)
-    write_validation_artifact(report, runs_root)
-    print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
-    return 0 if report.valid else 1
+        return error_exit_code("missing_config", usage=True)
+    try:
+        config = load_config(args.config)
+        analysis_id = derive_analysis_id(
+            config,
+            args.source_run,
+            args.controlled_run,
+            args.ablation_run,
+        )
+    except AnalysisInputError as exc:
+        print(f"error[{exc.code}]: {exc}", file=sys.stderr)
+        return error_exit_code(exc.code)
+
+    artifact_dir = Path(args.artifact_root) / analysis_id
+    if not artifact_dir.is_dir():
+        print(
+            f"error[missing_analysis_finalization]: no artifact for analysis "
+            f"{analysis_id} under {args.artifact_root}",
+            file=sys.stderr,
+        )
+        return error_exit_code("missing_analysis_finalization")
+    try:
+        seal = load_analysis_finalization(artifact_dir)
+    except AnalysisInputError as exc:
+        print(f"error[{exc.code}]: {exc}", file=sys.stderr)
+        return error_exit_code(exc.code)
+    if seal.analysis_id != analysis_id:
+        print(
+            f"error[analysis_id_mismatch]: {artifact_dir} is sealed for "
+            f"{seal.analysis_id}, expected {analysis_id}",
+            file=sys.stderr,
+        )
+        return error_exit_code("analysis_id_mismatch")
+    print(
+        json.dumps(
+            {
+                "analysis_id": analysis_id,
+                "artifact_dir": str(artifact_dir),
+                "valid": True,
+                "output_files": len(seal.output_hashes),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 # --------------------------------------------------------------------------- #

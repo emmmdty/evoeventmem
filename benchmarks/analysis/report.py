@@ -18,7 +18,9 @@ method set or the category list; narrative templates express conditions only.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +38,7 @@ from benchmarks.analysis.finalization import (
     collect_finalization_hashes,
     derive_analysis_id,
     ensure_analysis_artifact,
+    error_exit_code,
     load_config,
 )
 from benchmarks.analysis.loaders import LoadedAblationRun, LoadedRun
@@ -633,3 +636,55 @@ def generate_report(
         writer=lambda analysis_dir: write_report_files(analysis_dir, data),
     )
     return analysis_id
+
+
+# --------------------------------------------------------------------------- #
+# C8 CLI contract.
+# --------------------------------------------------------------------------- #
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate the content-addressed M15 analysis report."
+    )
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--source-run", type=Path, action="append", required=True)
+    parser.add_argument("--controlled-run", type=Path, default=None)
+    parser.add_argument("--ablation-run", type=Path, action="append", default=[])
+    parser.add_argument("--output-root", type=Path, required=True)
+    args = parser.parse_args(argv)
+
+    if not Path(args.config).is_file():
+        print(
+            f"error[missing_config]: analysis config does not exist: {args.config}",
+            file=sys.stderr,
+        )
+        return error_exit_code("missing_config", usage=True)
+    try:
+        analysis_id = generate_report(
+            config_path=args.config,
+            source_runs=args.source_run,
+            controlled_run=args.controlled_run,
+            ablation_runs=args.ablation_run,
+            output_root=args.output_root,
+        )
+    except AnalysisInputError as exc:
+        print(f"error[{exc.code}]: {exc}", file=sys.stderr)
+        return error_exit_code(exc.code)
+    artifact_dir = Path(args.output_root) / analysis_id
+    print(
+        json.dumps(
+            {
+                "analysis_id": analysis_id,
+                "artifact_dir": str(artifact_dir),
+                "valid": True,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

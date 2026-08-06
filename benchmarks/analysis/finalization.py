@@ -34,6 +34,72 @@ ANALYSIS_FINALIZATION_FILENAME = "FINALIZED.json"
 ANALYSIS_FINALIZATION_FORMAT = 1
 CONFIG_SCHEMA_VERSION = "analysis.config.v1"
 
+# Stable machine-readable error codes known to the CLI layer. The exit code
+# for each code is derived deterministically from this sorted list, so CLI
+# error codes stay stable as long as the code names do not change.
+KNOWN_ERROR_CODES: tuple[str, ...] = (
+    "ablation_base_run_mismatch",
+    "ablation_controlled_hash_mismatch",
+    "analysis_id_mismatch",
+    "analysis_output_drift",
+    "dataset_drift",
+    "dirty_publication_run",
+    "duplicate_ids",
+    "duplicate_question_ids",
+    "empty_extraction_snapshot",
+    "finalization_hash_drift",
+    "incompatible_ablation_family",
+    "incompatible_methods",
+    "incompatible_within_dataset",
+    "invalid_ablation",
+    "invalid_analysis_artifact",
+    "invalid_analysis_finalization",
+    "invalid_config",
+    "invalid_consolidation_row",
+    "invalid_dataset",
+    "invalid_evidence_row",
+    "invalid_inputs",
+    "invalid_manifest",
+    "invalid_retrieval_row",
+    "invalid_snapshot",
+    "injected_session_summary",
+    "legacy_report_input",
+    "manifest_hash_mismatch",
+    "missing_ablation_base",
+    "missing_analysis_finalization",
+    "missing_arm_manifest",
+    "missing_config",
+    "missing_controlled_run",
+    "missing_dataset",
+    "missing_derived_artifact",
+    "missing_expected_ids",
+    "missing_finalization",
+    "missing_manifest",
+    "missing_model_cache",
+    "missing_question_ids",
+    "missing_required_artifact",
+    "missing_run_dir",
+    "missing_sample_ids",
+    "non_publication_class",
+    "subset_scope",
+    "unexpected_question_ids",
+    "unknown_schema",
+    "zero_source_runs",
+)
+
+
+def error_exit_code(error_code: str, *, usage: bool = False) -> int:
+    """Stable nonzero exit code for a CLI error code.
+
+    Usage errors always exit 2; every known error code maps to a fixed
+    position in the sorted table above; unknown codes exit 1.
+    """
+    if usage:
+        return 2
+    if error_code not in KNOWN_ERROR_CODES:
+        return 1
+    return 10 + KNOWN_ERROR_CODES.index(error_code) + 1
+
 
 class AnalysisInputError(RuntimeError):
     """Raised when the declared analysis inputs cannot produce an artifact."""

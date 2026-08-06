@@ -32,10 +32,17 @@ from benchmarks.common.artifacts import (
     canonical_json_hash,
 )
 from benchmarks.common.normalization import NormalizedRecord, NormalizedSession, NormalizedTurn
+from benchmarks.common.providers import ModelBundle, ProviderKind, ResolvedModelConfig
 from evoeventmem.consolidation import ETECConsolidator
 from evoeventmem.core.ports import EmbeddingModel, MemoryRepository
-from evoeventmem.domain.models import EvidenceRef, MemoryRecord
-from evoeventmem.extraction import ExtractionInput
+from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
+from evoeventmem.extraction import (
+    ExtractedEventCandidate,
+    ExtractionInput,
+    ExtractionResult,
+    LLMEventExtractor,
+    _turn_evidence,
+)
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.services.memory_service import (
     MemoryService,
@@ -44,6 +51,71 @@ from evoeventmem.services.memory_service import (
 )
 
 MEMORY_INPUTS_SCHEMA_VERSION = 1
+
+
+class FakeEventExtractor:
+    """Deterministic fake extractor used by smoke runs.
+
+    Emits exactly one event per eligible raw turn with a full-turn exact
+    evidence span carrying the original raw turn ID. Makes zero model calls
+    and zero network calls; identical input always yields identical events.
+    """
+
+    PROMPT_VERSION = "fake.v1"
+
+    def extract(self, request: ExtractionInput) -> ExtractionResult:
+        candidates: list[ExtractedEventCandidate] = []
+        for turn in request.turns:
+            if not turn.content.strip():
+                continue
+            candidates.append(
+                ExtractedEventCandidate(
+                    memory=_fake_event_memory(request, turn),
+                    prompt_version=self.PROMPT_VERSION,
+                )
+            )
+        return ExtractionResult(prompt_version=self.PROMPT_VERSION, candidates=candidates)
+
+
+def build_extractor(bundle: ModelBundle) -> Any:
+    """Return the extractor implementation for a resolved model bundle.
+
+    Deterministic fake bundles use the deterministic fake extractor (no model
+    calls). Live bundles use the LLM extractor over the independently
+    configured extractor chat model.
+    """
+    if bundle.resolved.provider is ProviderKind.DETERMINISTIC_FAKE:
+        return FakeEventExtractor()
+    return LLMEventExtractor(bundle.extractor)
+
+
+def provider_identity(resolved: ResolvedModelConfig, *, version: str = "") -> ProviderIdentity:
+    return ProviderIdentity(
+        kind=resolved.kind.value,
+        provider=resolved.provider or resolved.kind.value,
+        model_id=resolved.model_id,
+        version=version,
+        endpoint=resolved.base_url or "n/a",
+    )
+
+
+def _fake_event_memory(request: ExtractionInput, turn: Any) -> MemoryRecord:
+    from evoeventmem.domain.models import EntityRef
+
+    return MemoryRecord(
+        user_id=request.user_id,
+        session_id=turn.session_id,
+        memory_kind=MemoryKind.EVENT,
+        content=turn.content,
+        entities=[EntityRef(name=turn.speaker, role="speaker")],
+        evidence_refs=[_turn_evidence(request, turn)],
+        event_time=turn.timestamp,
+        metadata={
+            "extractor_prompt_version": FakeEventExtractor.PROMPT_VERSION,
+            "source_dataset": request.dataset,
+            "source_sample_id": request.sample_id,
+        },
+    )
 
 
 class RawTurnChunk(BaseModel):
@@ -199,6 +271,38 @@ def materialize_event_store(
     }
 
 
+def materialize_raw_turn_store(
+    corpus: RawTurnCorpus,
+    *,
+    user_id: str,
+) -> tuple[MemoryRepository, dict[str, Any]]:
+    """Build the ``vector_rag`` memory store from normalized raw turns only.
+
+    Every chunk becomes one durable memory whose evidence is the exact
+    full-turn span with the original raw turn ID. This store never receives
+    extracted events or the extraction snapshot.
+    """
+    repository = InMemoryMemoryRepository()
+    for chunk in corpus.chunks:
+        repository.add(
+            MemoryRecord(
+                user_id=user_id,
+                session_id=chunk.session_id,
+                memory_kind=MemoryKind.EVENT,
+                content=chunk.content,
+                entities=[],
+                evidence_refs=[chunk.evidence_ref],
+                event_time=chunk.timestamp,
+                metadata={"input_kind": "raw_turn"},
+            )
+        )
+    return repository, {
+        "input_kind": "raw_turn",
+        "chunk_count": corpus.chunk_count(),
+        "memory_count": len(repository.list_for_user(user_id)),
+    }
+
+
 class _Candidate:
     """Adapter so MemoryWriteCandidate.from_extracted_event accepts MemoryRecord."""
 
@@ -232,10 +336,14 @@ def _first_raw_turn_id(memory: MemoryRecord) -> str | None:
 
 
 __all__ = [
+    "FakeEventExtractor",
     "MEMORY_INPUTS_SCHEMA_VERSION",
     "RawTurnChunk",
     "RawTurnCorpus",
+    "build_extractor",
     "build_raw_turn_corpus",
     "extract_event_snapshot",
     "materialize_event_store",
+    "materialize_raw_turn_store",
+    "provider_identity",
 ]

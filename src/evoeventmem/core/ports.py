@@ -206,9 +206,18 @@ class PingResult(BaseModel):
 
 
 class SearchHit(BaseModel):
+    """A vector search result with explicit source, score decomposition, and
+    fallback state. The extra fields are additive (D5) so consumers of the D1
+    freeze keep working unchanged. Cosine similarity is bounded by [-1, 1], so
+    the score bound reflects that rather than the D1 freeze's ge=0.0."""
+
     memory: MemoryRecord
-    score: float = Field(ge=0.0)
+    score: float = Field(ge=-1.0)
     reason: str
+    source: str = "cosine"
+    fallback: bool = False
+    fallback_reason: str | None = None
+    score_detail: dict[str, float] | None = None
 
 
 class AsyncMemoryRepository(Protocol):
@@ -244,9 +253,14 @@ class AsyncMemoryRepository(Protocol):
 
 
 class AsyncEmbeddingModel(Protocol):
-    """Additive async embedding production port."""
+    """Additive async embedding production port.
 
-    model_id: str
+    ``model_id`` is declared as a read-only property so concrete adapters may
+    expose it as a property or a plain attribute.
+    """
+
+    @property
+    def model_id(self) -> str: ...
 
     def dimension(self) -> int: ...
 

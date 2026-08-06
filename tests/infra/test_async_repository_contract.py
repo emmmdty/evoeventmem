@@ -23,6 +23,10 @@ from evoeventmem.domain.models import (
     MemoryRecord,
 )
 from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
+from evoeventmem.infra.postgres_repository import (
+    AsyncPostgresMemoryRepository,
+    RepositoryUnavailableError,
+)
 
 
 def _run(coro: object) -> object:
@@ -259,6 +263,32 @@ def test_async_repository_isolation_between_tenants() -> None:
     _run(scenario())
 
 
+def test_async_repository_search_hit_exposes_source_and_fallback_state() -> None:
+    async def scenario() -> None:
+        repository = AsyncInMemoryRepository(dimension=4, model_id="test-model")
+        scope = _scope()
+        await repository.add(
+            scope,
+            _record(content="npmmirror registry story"),
+            _vector(1.0, 0.0, 0.0, 0.0),
+        )
+        search = SearchVector(
+            query=_vector(1.0, 0.0, 0.0, 0.0),
+            scope=scope,
+            limit=SearchLimit(state=MemoryQuery.ACTIVE_ONLY, max_results=10),
+        )
+        hits = await repository.search_vector(search)
+        assert hits
+        hit = hits[0]
+        assert hit.source == "cosine"
+        assert hit.fallback is False
+        assert hit.fallback_reason is None
+        assert hit.score_detail is not None
+        assert hit.score_detail["cosine_similarity"] == pytest.approx(hit.score)
+
+    _run(scenario())
+
+
 def test_async_repository_searches_scoped_candidates() -> None:
     async def scenario() -> None:
         repository = AsyncInMemoryRepository(dimension=4, model_id="test-model")
@@ -275,5 +305,99 @@ def test_async_repository_searches_scoped_candidates() -> None:
         )
         hits = await repository.search_vector(search)
         assert len(hits) == 1
+
+    _run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# D3: pooled async PostgreSQL repository (fail-not-skip under EEM_REQUIRE_POSTGRES)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.postgres
+def test_async_postgres_roundtrip_with_pool(
+    postgres_repository: AsyncPostgresMemoryRepository,
+) -> None:
+    async def scenario() -> None:
+        repository = postgres_repository
+        scope = _scope()
+        memory = _record()
+        stored = await repository.add(scope, memory, _vector(1.0, 0.0, 0.0, 0.0))
+        assert stored.memory_id == memory.memory_id
+        fetched = await repository.get(scope, stored.memory_id)
+        assert fetched is not None
+        assert fetched.content == memory.content
+
+    _run(scenario())
+
+
+@pytest.mark.postgres
+def test_async_postgres_scope_filters_every_lookup(
+    postgres_repository: AsyncPostgresMemoryRepository,
+) -> None:
+    async def scenario() -> None:
+        repository = postgres_repository
+        scope = _scope()
+        memory = _record()
+        await repository.add(scope, memory, _vector(1.0, 0.0, 0.0, 0.0))
+        wrong_user = await repository.get(_scope("tenant-1", "user-x"), memory.memory_id)
+        wrong_session = await repository.get(
+            scope.with_session("session-other"), memory.memory_id
+        )
+        assert wrong_user is None
+        assert wrong_session is None
+
+    _run(scenario())
+
+
+@pytest.mark.postgres
+def test_async_postgres_uses_asyncpg_pool(
+    postgres_repository: AsyncPostgresMemoryRepository,
+) -> None:
+    assert postgres_repository._pool is not None
+    assert not hasattr(postgres_repository, "_thread")
+    assert not hasattr(postgres_repository, "_conn")
+
+
+@pytest.mark.postgres
+def test_async_postgres_close_is_async_and_idempotent(
+    postgres_repository: AsyncPostgresMemoryRepository,
+) -> None:
+    async def scenario() -> None:
+        await postgres_repository.close()
+        await postgres_repository.close()
+        assert not postgres_repository.connected
+
+    _run(scenario())
+
+
+def test_async_postgres_unreachable_raises_repository_unavailable() -> None:
+    async def scenario() -> None:
+        repository = AsyncPostgresMemoryRepository(
+            "postgresql://user:secret@127.0.0.1:1/evoeventmem",
+            connect_timeout=1.0,
+            operation_timeout=5.0,
+            model_id="test-model",
+            dimension=4,
+        )
+        with pytest.raises(RepositoryUnavailableError):
+            await repository.connect(run_migrations=True)
+        assert not repository.connected
+        with pytest.raises(RepositoryUnavailableError):
+            await repository.get(_scope(), uuid4())
+
+    _run(scenario())
+
+
+@pytest.mark.postgres
+def test_async_postgres_ping_reports_ready(
+    postgres_repository: AsyncPostgresMemoryRepository,
+) -> None:
+    async def scenario() -> None:
+        ping = await postgres_repository.ping()
+        assert ping.ok is True
+        assert ping.schema_state is SchemaState.READY
+        assert ping.dimension == 4
+        assert ping.model_id == "test-model"
 
     _run(scenario())

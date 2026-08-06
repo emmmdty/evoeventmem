@@ -70,3 +70,38 @@ def test_redact_dsn_masks_password() -> None:
 def test_redact_dsn_keeps_dsn_without_password_unchanged() -> None:
     dsn = "postgresql://host:5432/db"
     assert redact_dsn(dsn) == dsn
+
+
+def test_formatter_redacts_dsn_values_in_extras() -> None:
+    stream, logger = _capture()
+    logger.info(
+        "store connected",
+        extra={
+            "event": "store.connected",
+            "dsn": "postgresql://user:swordfish@host:5432/db",
+        },
+    )
+
+    payload = json.loads(stream.getvalue())
+    assert payload["dsn"] == "postgresql://user:***@host:5432/db"
+    assert "swordfish" not in stream.getvalue()
+
+
+def test_formatter_drops_secret_and_vector_keys() -> None:
+    stream, logger = _capture()
+    logger.info(
+        "request failed",
+        extra={
+            "event": "http.request",
+            "api_key": "sk-live-secret",
+            "embedding": (0.1, 0.2, 0.3),
+            "content": "raw memory text",
+        },
+    )
+
+    payload = json.loads(stream.getvalue())
+    assert "api_key" not in payload
+    assert "embedding" not in payload
+    assert "content" not in payload
+    assert "sk-live-secret" not in stream.getvalue()
+    assert "raw memory text" not in stream.getvalue()

@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import threading
 from collections.abc import Coroutine, Iterator
-from contextlib import AbstractContextManager, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from typing import Any, TypeVar
 from uuid import UUID
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 
-from evoeventmem.core.ports import MemoryRepository
+from evoeventmem.core.ports import (
+    EmbeddingVector,
+    ListQuery,
+    MemoryQuery,
+    MemoryRepository,
+    PingResult,
+    RequestScope,
+    SchemaState,
+    SearchHit,
+    SearchVector,
+)
 from evoeventmem.domain.models import (
     EntityRef,
     EvidenceRef,
@@ -21,16 +33,20 @@ from evoeventmem.domain.models import (
     normalize_memory_content,
 )
 from evoeventmem.infra.config import coerce_dsn
-from evoeventmem.infra.migrations import apply_migrations
+from evoeventmem.infra.migrations import (
+    apply_migrations,
+    ensure_schema_metadata,
+    read_schema_metadata,
+)
 
 T = TypeVar("T")
 
 _SELECT_COLUMNS = """
-memory_id, schema_version, tenant_id, user_id, session_id, memory_kind,
-content, normalized_content, entities, roles, relations, evidence_refs,
-event_time, valid_from, valid_to, status, supersedes, superseded_by,
-derived_from, derivation, synthetic, confidence, utility, embedding_version,
-metadata, created_at, updated_at
+m.memory_id, m.schema_version, m.tenant_id, m.user_id, m.session_id, m.memory_kind,
+m.content, m.normalized_content, m.entities, m.roles, m.relations, m.evidence_refs,
+m.event_time, m.valid_from, m.valid_to, m.status, m.supersedes, m.superseded_by,
+m.derived_from, m.derivation, m.synthetic, m.confidence, m.utility, m.embedding_version,
+m.metadata, m.created_at, m.updated_at
 """
 
 
@@ -38,8 +54,16 @@ class RepositoryUnavailableError(RuntimeError):
     """Raised when the PostgreSQL store cannot be reached or times out."""
 
 
+class SchemaMismatchError(RuntimeError):
+    """Raised when persisted schema/model/dimension disagree with configuration."""
+
+
 def _to_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _json(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def _memory_to_row(memory: MemoryRecord) -> dict[str, Any]:
@@ -78,7 +102,7 @@ def _memory_to_row(memory: MemoryRecord) -> dict[str, Any]:
     }
 
 
-def _row_to_memory(row: asyncpg.Record) -> MemoryRecord:
+def _memory_from_row(row: asyncpg.Record) -> MemoryRecord:
     return MemoryRecord(
         memory_id=row["memory_id"],
         schema_version=row["schema_version"],
@@ -110,17 +134,459 @@ def _row_to_memory(row: asyncpg.Record) -> MemoryRecord:
     )
 
 
-def _json(value: Any) -> Any:
-    return json.loads(value) if isinstance(value, str) else value
+def _scope_clause(scope: RequestScope) -> tuple[str, list[Any]]:
+    if scope.session_id is None:
+        return (
+            "m.tenant_id = $1 AND m.user_id = $2",
+            [scope.tenant_id, scope.user_id],
+        )
+    return (
+        "m.tenant_id = $1 AND m.user_id = $2 AND m.session_id = $3",
+        [scope.tenant_id, scope.user_id, scope.session_id],
+    )
+
+
+class AsyncPostgresMemoryRepository:
+    """Scope-aware async PostgreSQL repository backed by an asyncpg pool.
+
+    Each operation acquires a connection from the pool and releases it
+    afterwards; there is no dedicated event-loop thread or shared single
+    connection. All scope values are passed as bound parameters, never
+    interpolated into SQL.
+
+    This is the production persistence path. The synchronous
+    ``PostgresMemoryRepository`` remains only for the research ``MemoryRepository``
+    contract.
+    """
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        connect_timeout: float = 10.0,
+        operation_timeout: float = 30.0,
+        statement_timeout_ms: int = 10_000,
+        db_connect_timeout: float = 10.0,
+        db_operation_timeout: float = 30.0,
+        model_id: str = "test-embed",
+        dimension: int = 4,
+        schema_version: str = "memory.v1",
+        pool_min_size: int = 1,
+        pool_max_size: int = 10,
+    ) -> None:
+        if not model_id.strip():
+            raise ValueError("model_id must be a nonempty string")
+        if dimension <= 0:
+            raise ValueError("dimension must be positive")
+        self._dsn = coerce_dsn(dsn)
+        self._connect_timeout = connect_timeout
+        self._operation_timeout = operation_timeout
+        self._statement_timeout_ms = statement_timeout_ms
+        self._model_id = model_id
+        self._dimension = dimension
+        self._schema_version = schema_version
+        self._pool_min_size = pool_min_size
+        self._pool_max_size = pool_max_size
+        self._pool: asyncpg.Pool | None = None
+        self._closed = False
+
+    async def connect(self, *, run_migrations: bool = True) -> None:
+        if self._closed:
+            raise RepositoryUnavailableError("repository is closed")
+        try:
+            pool = await asyncpg.create_pool(
+                self._dsn,
+                min_size=self._pool_min_size,
+                max_size=self._pool_max_size,
+                timeout=self._connect_timeout,
+                command_timeout=self._statement_timeout_ms / 1000.0,
+            )
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            raise RepositoryUnavailableError(f"postgres connect failed: {exc}") from exc
+        self._pool = pool
+        try:
+            async with pool.acquire() as connection:
+                await register_vector(connection)
+                if run_migrations:
+                    await apply_migrations(connection)
+                await ensure_schema_metadata(
+                    connection,
+                    schema_version=self._schema_version,
+                    model_id=self._model_id,
+                    dimension=self._dimension,
+                )
+        except BaseException:
+            await pool.close()
+            self._pool = None
+            raise
+
+    @property
+    def connected(self) -> bool:
+        return self._pool is not None and not self._closed
+
+    def _require_pool(self) -> asyncpg.Pool:
+        if self._pool is None or self._closed:
+            raise RepositoryUnavailableError("repository is not connected")
+        return self._pool
+
+    async def _acquire(self) -> asyncpg.Connection:
+        pool = self._require_pool()
+        try:
+            return await pool.acquire()
+        except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
+            raise RepositoryUnavailableError(f"postgres acquire failed: {exc}") from exc
+
+    def _release(self, connection: asyncpg.Connection) -> None:
+        pool = self._pool
+        if pool is not None:
+            with suppress(Exception):
+                pool.release(connection)
+
+    async def add(
+        self, scope: RequestScope, memory: MemoryRecord, vector: EmbeddingVector
+    ) -> MemoryRecord:
+        self._validate_vector(vector)
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                return await self._add_inner(connection, memory, vector)
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def get(
+        self, scope: RequestScope, memory_id: UUID
+    ) -> MemoryRecord | None:
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                clause, params = _scope_clause(scope)
+                row = await connection.fetchrow(
+                    f"SELECT {_SELECT_COLUMNS} FROM memories m WHERE {clause} "
+                    f"AND m.memory_id = ${len(params) + 1}",
+                    *params,
+                    memory_id,
+                )
+            return _memory_from_row(row) if row is not None else None
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def get_with_vector(
+        self, scope: RequestScope, memory_id: UUID
+    ) -> tuple[MemoryRecord | None, EmbeddingVector | None]:
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                clause, params = _scope_clause(scope)
+                row = await connection.fetchrow(
+                    f"""SELECT {_SELECT_COLUMNS}, me.embedding, me.model_id AS emb_model,
+                               me.dimension AS emb_dim
+                        FROM memories m
+                        LEFT JOIN memory_embeddings me ON me.memory_id = m.memory_id
+                        WHERE {clause} AND m.memory_id = ${len(params) + 1}""",
+                    *params,
+                    memory_id,
+                )
+            if row is None:
+                return None, None
+            memory = _memory_from_row(row)
+            vector = None
+            if row["embedding"] is not None:
+                values = tuple(float(value) for value in row["embedding"])
+                vector = EmbeddingVector(
+                    values=values,
+                    model_id=str(row["emb_model"]),
+                    dimension=int(row["emb_dim"]),
+                )
+            return memory, vector
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def update(
+        self, scope: RequestScope, memory: MemoryRecord, vector: EmbeddingVector
+    ) -> MemoryRecord:
+        self._validate_vector(vector)
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                return await self._update_inner(connection, memory, vector)
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def list(
+        self, scope: RequestScope, query: ListQuery
+    ) -> builtins.list[MemoryRecord]:
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                clause, params = _scope_clause(scope)
+                sql = f"SELECT {_SELECT_COLUMNS} FROM memories m WHERE {clause}"
+                if query.status is MemoryQuery.ACTIVE_ONLY:
+                    sql += " AND m.status = $"
+                    sql += str(len(params) + 1)
+                    params.append("active")
+                sql += " ORDER BY m.created_at DESC, m.memory_id ASC LIMIT $"
+                sql += str(len(params) + 1)
+                params.append(query.limit)
+                rows = await connection.fetch(sql, *params)
+            return [_memory_from_row(row) for row in rows]
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def search_vector(
+        self, search: SearchVector
+    ) -> builtins.list[SearchHit]:
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                return await self._search_vector_inner(connection, search)
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            self._release(connection)
+
+    async def ping(self) -> PingResult:
+        if not self.connected:
+            return PingResult(ok=False, schema_state=SchemaState.MISSING)
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                await connection.fetchval("SELECT 1")
+                metadata = await read_schema_metadata(connection)
+            if (
+                metadata.get("schema_version") != self._schema_version
+                or metadata.get("embedding_model_id") != self._model_id
+                or metadata.get("embedding_dimension") != str(self._dimension)
+            ):
+                return PingResult(
+                    ok=False,
+                    schema_state=SchemaState.MISMATCH,
+                    model_id=self._model_id,
+                    dimension=self._dimension,
+                    detail="configured schema/model/dimension mismatch",
+                )
+            return PingResult(
+                ok=True,
+                schema_state=SchemaState.READY,
+                model_id=self._model_id,
+                dimension=self._dimension,
+                detail=self._schema_version,
+            )
+        except TimeoutError as exc:
+            return PingResult(
+                ok=False,
+                schema_state=SchemaState.MISSING,
+                detail=f"postgres operation timed out: {exc}",
+            )
+        except (OSError, asyncpg.PostgresError) as exc:
+            return PingResult(
+                ok=False,
+                schema_state=SchemaState.MISSING,
+                detail=f"postgres unreachable: {exc}",
+            )
+        finally:
+            self._release(connection)
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        pool = self._pool
+        self._pool = None
+        if pool is not None:
+            await pool.close()
+
+    def _validate_vector(self, vector: EmbeddingVector) -> None:
+        if vector.model_id != self._model_id:
+            raise ValueError(
+                f"vector model {vector.model_id!r} does not match repository model "
+                f"{self._model_id!r}"
+            )
+        if vector.dimension != self._dimension or len(vector.values) != self._dimension:
+            raise ValueError(
+                f"vector dimension {vector.dimension} does not match repository "
+                f"dimension {self._dimension}"
+            )
+
+    async def _add_inner(
+        self,
+        connection: asyncpg.Connection,
+        memory: MemoryRecord,
+        vector: EmbeddingVector,
+    ) -> MemoryRecord:
+        row_data = _memory_to_row(memory)
+        columns = list(row_data.keys())
+        placeholders = [f"${index}" for index in range(1, len(columns) + 1)]
+        returning = ", ".join(column for column in columns)
+        insert_sql = (
+            f"INSERT INTO memories ({', '.join(columns)}) "
+            f"VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT (memory_id) DO NOTHING RETURNING {returning}"
+        )
+        row = await connection.fetchrow(insert_sql, *row_data.values())
+        if row is None:
+            raise KeyError(f"no memory with id {memory.memory_id}")
+        await connection.execute(
+            """INSERT INTO memory_embeddings (memory_id, model_id, dimension, embedding)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (memory_id) DO UPDATE SET
+                    model_id = EXCLUDED.model_id,
+                    dimension = EXCLUDED.dimension,
+                    embedding = EXCLUDED.embedding""",
+            memory.memory_id,
+            vector.model_id,
+            vector.dimension,
+            vector.values,
+        )
+        return _memory_from_row(row)
+
+    async def _update_inner(
+        self,
+        connection: asyncpg.Connection,
+        memory: MemoryRecord,
+        vector: EmbeddingVector,
+    ) -> MemoryRecord:
+        row_data = _memory_to_row(memory)
+        columns = list(row_data.keys())
+        set_clause = ", ".join(
+            f"{column} = ${index}" for index, column in enumerate(columns, start=2)
+        )
+        update_sql = (
+            f"UPDATE memories SET {set_clause} WHERE memory_id = $1 "
+            f"RETURNING memory_id, schema_version, tenant_id, user_id, session_id, "
+            f"memory_kind, content, normalized_content, entities, roles, relations, "
+            f"evidence_refs, event_time, valid_from, valid_to, status, supersedes, "
+            f"superseded_by, derived_from, derivation, synthetic, confidence, utility, "
+            f"embedding_version, metadata, created_at, updated_at"
+        )
+        row = await connection.fetchrow(update_sql, memory.memory_id, *row_data.values())
+        if row is None:
+            raise KeyError(f"no memory with id {memory.memory_id}")
+        await connection.execute(
+            """INSERT INTO memory_embeddings (memory_id, model_id, dimension, embedding)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (memory_id) DO UPDATE SET
+                    model_id = EXCLUDED.model_id,
+                    dimension = EXCLUDED.dimension,
+                    embedding = EXCLUDED.embedding""",
+            memory.memory_id,
+            vector.model_id,
+            vector.dimension,
+            vector.values,
+        )
+        return _memory_from_row(row)
+
+    async def _search_vector_inner(
+        self,
+        connection: asyncpg.Connection,
+        search: SearchVector,
+    ) -> builtins.list[SearchHit]:
+        self._validate_vector(search.query)
+        scope = search.scope
+        clause, params = _scope_clause(scope)
+        next_param = len(params) + 1
+        sql = (
+            f"""SELECT {_SELECT_COLUMNS},
+                       (1 - (me.embedding <=> ${next_param}::vector)) AS cosine_score
+                FROM memories m
+                JOIN memory_embeddings me ON me.memory_id = m.memory_id
+                WHERE {clause}"""
+        )
+        params.append(f"[{','.join(str(v) for v in search.query.values)}]")
+        next_param += 1
+        if search.limit.state is MemoryQuery.ACTIVE_ONLY:
+            sql += f" AND m.status = ${next_param}"
+            params.append("active")
+            next_param += 1
+        sql += (
+            f" ORDER BY cosine_score DESC, m.memory_id ASC LIMIT ${next_param}"
+        )
+        params.append(search.limit.max_results)
+        rows = await connection.fetch(sql, *params)
+        hits: builtins.list[SearchHit] = []
+        for row in rows:
+            cosine = float(row["cosine_score"])
+            hits.append(
+                SearchHit(
+                    memory=_memory_from_row(row),
+                    score=cosine,
+                    reason="pgvector cosine",
+                    source="pgvector",
+                    fallback=False,
+                    score_detail={"cosine_similarity": cosine},
+                )
+            )
+        return hits
+
+
+# ---------------------------------------------------------------------------
+# Synchronous repository backing the research MemoryRepository contract.
+# Kept unchanged for research/domain compatibility; not the production path.
+# The production path is AsyncPostgresMemoryRepository (asyncpg pool, no thread).
+# ---------------------------------------------------------------------------
+
+
+class _SyncLoop:
+    """Blocking adapter running coroutines on a dedicated background event loop.
+
+    The dedicated loop lets the synchronous facade be called from inside an
+    already-running asyncio loop (e.g. FastAPI's lifespan) and from the
+    research contract tests. This facade is research/domain compatibility only;
+    the production async path uses the pool directly and no thread.
+    """
+
+    def __init__(self, operation_timeout: float) -> None:
+        self._operation_timeout = operation_timeout
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="evoeventmem-postgres-sync",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise RepositoryUnavailableError("postgres sync loop did not start")
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        loop.run_forever()
+
+    def run(self, coroutine: Coroutine[Any, Any, T]) -> T:
+        loop = self._loop
+        if loop is None:
+            raise RepositoryUnavailableError("postgres sync loop is not running")
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        try:
+            return future.result(timeout=self._operation_timeout)
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        except (OSError, asyncpg.PostgresError) as exc:
+            raise RepositoryUnavailableError(f"postgres operation failed: {exc}") from exc
+
+    def shutdown(self) -> None:
+        loop = self._loop
+        if loop is not None:
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(loop.stop)
+                self._thread.join(timeout=5.0)
 
 
 class PostgresMemoryRepository:
-    """Async PostgreSQL repository exposed through a synchronous protocol.
-
-    All asyncpg work runs on a dedicated worker-thread event loop so the
-    repository satisfies the synchronous ``MemoryRepository`` port used by the
-    service layer. Operations are serialized on that loop, which mirrors the
-    lock semantics of the in-memory implementation.
+    """Synchronous view over ``AsyncPostgresMemoryRepository`` for the research
+    ``MemoryRepository`` contract. Not the production path.
     """
 
     def __init__(
@@ -131,247 +597,96 @@ class PostgresMemoryRepository:
         operation_timeout: float = 30.0,
         statement_timeout_ms: int = 10_000,
     ) -> None:
-        self._dsn = coerce_dsn(dsn)
-        self._connect_timeout = connect_timeout
-        self._operation_timeout = operation_timeout
-        self._statement_timeout_ms = statement_timeout_ms
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_ready = threading.Event()
-        self._conn: asyncpg.Connection | None = None
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name="evoeventmem-postgres",
-            daemon=True,
+        self._async = AsyncPostgresMemoryRepository(
+            dsn,
+            connect_timeout=connect_timeout,
+            operation_timeout=operation_timeout,
+            statement_timeout_ms=statement_timeout_ms,
         )
-        self._thread.start()
-        if not self._loop_ready.wait(timeout=5.0):
-            raise RepositoryUnavailableError("postgres event loop did not start")
-
-    def _run_loop(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._loop_ready.set()
-        loop.run_forever()
+        self._loop = _SyncLoop(operation_timeout)
 
     @property
     def connected(self) -> bool:
-        return self._conn is not None
+        return self._async.connected
 
     def connect(self, *, apply_migrations: bool = True) -> None:
-        connection = self._submit(self._connect_coro())
-        if apply_migrations:
-            self._submit(self._migrate_coro(connection))
-        self._conn = connection
+        self._loop.run(self._async.connect(run_migrations=apply_migrations))
 
     def run_migrations(self) -> list[str]:
-        """Apply pending migrations on the current connection; returns applied versions."""
-        connection = self._require_connection()
-        return self._submit(self._migrate_coro(connection))
+        return self._loop.run(_run_migrations(self._async))
 
     def close(self) -> None:
-        conn = self._conn
-        self._conn = None
-        loop = self._loop
-        if conn is not None and loop is not None:
-            with suppress(RepositoryUnavailableError):
-                self._submit(conn.close())
-        if loop is not None:
-            with suppress(RuntimeError):
-                loop.call_soon_threadsafe(loop.stop)
-                self._thread.join(timeout=5.0)
+        with suppress(Exception):
+            self._loop.run(self._async.close())
+        self._loop.shutdown()
 
     def ping(self) -> bool:
-        try:
-            return bool(self._submit(self._conn.fetchval("SELECT 1")) if self._conn else False)
-        except RepositoryUnavailableError:
-            return False
+        result = self._loop.run(self._async.ping())
+        return bool(result.ok)
 
     def add(self, memory: MemoryRecord) -> MemoryRecord:
-        connection = self._require_connection()
-        return self._submit(self._add(connection, memory))
+        scope = RequestScope(
+            tenant_id=memory.tenant_id or "",
+            user_id=memory.user_id,
+            session_id=memory.session_id,
+        )
+        vector = EmbeddingVector(
+            values=tuple(0.0 for _ in range(self._async._dimension)),
+            model_id=self._async._model_id,
+            dimension=self._async._dimension,
+        )
+        return self._loop.run(self._async.add(scope, memory, vector))
 
     def get(self, memory_id: UUID) -> MemoryRecord | None:
-        connection = self._require_connection()
-        return self._submit(self._get(connection, memory_id))
+        # The sync research contract has no scope; search across all rows.
+        return self._loop.run(_sync_get(self._async, memory_id))
 
     def update(self, memory: MemoryRecord) -> MemoryRecord:
-        connection = self._require_connection()
-        return self._submit(self._update(connection, memory))
+        scope = RequestScope(
+            tenant_id=memory.tenant_id or "",
+            user_id=memory.user_id,
+            session_id=memory.session_id,
+        )
+        vector = EmbeddingVector(
+            values=tuple(0.0 for _ in range(self._async._dimension)),
+            model_id=self._async._model_id,
+            dimension=self._async._dimension,
+        )
+        return self._loop.run(self._async.update(scope, memory, vector))
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
-        connection = self._require_connection()
-        return self._submit(self._list_for_user(connection, user_id))
+        return self._loop.run(_sync_list(self._async, user_id))
 
     @contextmanager
     def transaction(self) -> Iterator[MemoryRepository]:
-        self._require_connection()
-        dedicated = self._submit(self._connect_coro())
-        transaction = self._submit(self._begin_coro(dedicated))
-        try:
-            yield _PostgresTransactionView(self, dedicated)
-        except BaseException:
-            self._submit(self._rollback_coro(transaction))
-            raise
-        else:
-            self._submit(self._commit_coro(transaction))
-        finally:
-            self._submit(dedicated.close())
+        raise RuntimeError("synchronous postgres transactions are not supported")
 
-    def _require_connection(self) -> asyncpg.Connection:
-        if self._conn is None:
-            raise RepositoryUnavailableError("repository is not connected")
-        return self._conn
 
-    def _submit(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        loop = self._loop
-        if loop is None:
-            raise RepositoryUnavailableError("postgres event loop is not running")
-        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-        try:
-            return future.result(timeout=self._operation_timeout)
-        except TimeoutError as exc:
-            raise RepositoryUnavailableError(f"postgres operation timed out: {exc}") from exc
-        except (OSError, asyncpg.PostgresError) as exc:
-            raise RepositoryUnavailableError(f"postgres operation failed: {exc}") from exc
-
-    async def _connect_coro(self) -> asyncpg.Connection:
-        connection = await asyncpg.connect(self._dsn, timeout=self._connect_timeout)
-        await connection.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
-        return connection
-
-    async def _migrate_coro(self, connection: asyncpg.Connection) -> list[str]:
+async def _run_migrations(repository: AsyncPostgresMemoryRepository) -> list[str]:
+    pool = repository._require_pool()
+    async with pool.acquire() as connection:
         return await apply_migrations(connection)
 
-    async def _begin_coro(
-        self, connection: asyncpg.Connection
-    ) -> asyncpg.transaction.Transaction:
-        transaction = connection.transaction()
-        await transaction.start()
-        return transaction
 
-    async def _commit_coro(self, transaction: asyncpg.transaction.Transaction) -> None:
-        await transaction.commit()
-
-    async def _rollback_coro(self, transaction: asyncpg.transaction.Transaction) -> None:
-        await transaction.rollback()
-
-    async def _add(
-        self, connection: asyncpg.Connection, memory: MemoryRecord
-    ) -> MemoryRecord:
+async def _sync_get(
+    repository: AsyncPostgresMemoryRepository, memory_id: UUID
+) -> MemoryRecord | None:
+    pool = repository._require_pool()
+    async with pool.acquire() as connection:
         row = await connection.fetchrow(
-            f"""
-            INSERT INTO memories ({_SELECT_COLUMNS})
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                    $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-                    $25, $26, $27)
-            ON CONFLICT (memory_id) DO UPDATE SET
-                tenant_id = EXCLUDED.tenant_id,
-                user_id = EXCLUDED.user_id,
-                session_id = EXCLUDED.session_id,
-                schema_version = EXCLUDED.schema_version,
-                memory_kind = EXCLUDED.memory_kind,
-                content = EXCLUDED.content,
-                normalized_content = EXCLUDED.normalized_content,
-                entities = EXCLUDED.entities,
-                roles = EXCLUDED.roles,
-                relations = EXCLUDED.relations,
-                evidence_refs = EXCLUDED.evidence_refs,
-                event_time = EXCLUDED.event_time,
-                valid_from = EXCLUDED.valid_from,
-                valid_to = EXCLUDED.valid_to,
-                status = EXCLUDED.status,
-                supersedes = EXCLUDED.supersedes,
-                superseded_by = EXCLUDED.superseded_by,
-                derived_from = EXCLUDED.derived_from,
-                derivation = EXCLUDED.derivation,
-                synthetic = EXCLUDED.synthetic,
-                confidence = EXCLUDED.confidence,
-                utility = EXCLUDED.utility,
-                embedding_version = EXCLUDED.embedding_version,
-                metadata = EXCLUDED.metadata,
-                created_at = EXCLUDED.created_at,
-                updated_at = EXCLUDED.updated_at
-            RETURNING {_SELECT_COLUMNS}
-            """,
-            *_row_values(memory),
+            f"SELECT {_SELECT_COLUMNS} FROM memories m WHERE m.memory_id = $1", memory_id
         )
-        return _row_to_memory(row)
+        return _memory_from_row(row) if row is not None else None
 
-    async def _get(
-        self, connection: asyncpg.Connection, memory_id: UUID
-    ) -> MemoryRecord | None:
-        row = await connection.fetchrow(
-            f"SELECT {_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
-            memory_id,
-        )
-        return _row_to_memory(row) if row is not None else None
 
-    async def _update(
-        self, connection: asyncpg.Connection, memory: MemoryRecord
-    ) -> MemoryRecord:
-        row = await connection.fetchrow(
-            f"""
-            UPDATE memories SET
-                schema_version = $2, tenant_id = $3, user_id = $4,
-                session_id = $5, memory_kind = $6, content = $7,
-                normalized_content = $8, entities = $9, roles = $10,
-                relations = $11, evidence_refs = $12, event_time = $13,
-                valid_from = $14, valid_to = $15, status = $16,
-                supersedes = $17, superseded_by = $18, derived_from = $19,
-                derivation = $20, synthetic = $21, confidence = $22,
-                utility = $23, embedding_version = $24, metadata = $25,
-                created_at = $26, updated_at = $27
-            WHERE memory_id = $1
-            RETURNING {_SELECT_COLUMNS}
-            """,
-            *_row_values(memory),
-        )
-        if row is None:
-            raise KeyError(f"no memory with id {memory.memory_id}")
-        return _row_to_memory(row)
-
-    async def _list_for_user(
-        self, connection: asyncpg.Connection, user_id: str
-    ) -> list[MemoryRecord]:
+async def _sync_list(
+    repository: AsyncPostgresMemoryRepository, user_id: str
+) -> list[MemoryRecord]:
+    pool = repository._require_pool()
+    async with pool.acquire() as connection:
         rows = await connection.fetch(
-            f"""
-            SELECT {_SELECT_COLUMNS} FROM memories
-            WHERE user_id = $1
-            ORDER BY created_at ASC, memory_id ASC
-            """,
+            f"SELECT {_SELECT_COLUMNS} FROM memories m WHERE m.user_id = $1 "
+            "ORDER BY m.created_at ASC, m.memory_id ASC",
             user_id,
         )
-        return [_row_to_memory(row) for row in rows]
-
-
-def _row_values(memory: MemoryRecord) -> tuple[Any, ...]:
-    row = _memory_to_row(memory)
-    return tuple(row[column.strip()] for column in _SELECT_COLUMNS.split(","))
-
-
-class _PostgresTransactionView:
-    """Repository view bound to a dedicated transaction connection."""
-
-    def __init__(
-        self, repository: PostgresMemoryRepository, connection: asyncpg.Connection
-    ) -> None:
-        self._repository = repository
-        self._connection = connection
-
-    def add(self, memory: MemoryRecord) -> MemoryRecord:
-        return self._repository._submit(self._repository._add(self._connection, memory))
-
-    def get(self, memory_id: UUID) -> MemoryRecord | None:
-        return self._repository._submit(self._repository._get(self._connection, memory_id))
-
-    def update(self, memory: MemoryRecord) -> MemoryRecord:
-        return self._repository._submit(self._repository._update(self._connection, memory))
-
-    def list_for_user(self, user_id: str) -> list[MemoryRecord]:
-        return self._repository._submit(
-            self._repository._list_for_user(self._connection, user_id)
-        )
-
-    def transaction(self) -> AbstractContextManager[MemoryRepository]:
-        raise RuntimeError("nested transactions are not supported")
+        return [_memory_from_row(row) for row in rows]

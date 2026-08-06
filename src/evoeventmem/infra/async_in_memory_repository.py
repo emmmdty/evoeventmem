@@ -151,7 +151,14 @@ class AsyncInMemoryRepository:
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
         return [
-            SearchHit(memory=item.model_copy(deep=True), score=score, reason="cosine")
+            SearchHit(
+                memory=item.model_copy(deep=True),
+                score=score,
+                reason="cosine",
+                source="cosine",
+                fallback=False,
+                score_detail={"cosine_similarity": score},
+            )
             for score, item in scored[: search.limit.max_results]
         ]
 

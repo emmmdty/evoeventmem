@@ -7,7 +7,27 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
+from evoeventmem.infra.config import redact_dsn
+
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+# Extras with these keys are never emitted; they can only carry secrets or
+# raw vector/embedding payloads.
+_DROPPED_EXTRA_KEYS = frozenset(
+    {
+        "api_key",
+        "api_token",
+        "token",
+        "password",
+        "secret",
+        "embedding",
+        "vector",
+        "content",
+        "text",
+        "payload",
+        "body",
+    }
+)
 
 _RESERVED_KEYS = {
     "args",
@@ -57,6 +77,11 @@ class StructuredLogFormatter(logging.Formatter):
             payload["request_id"] = request_id
         for key, value in record.__dict__.items():
             if key.startswith("_") or key in _RESERVED_KEYS or key in {"event"}:
+                continue
+            if key in _DROPPED_EXTRA_KEYS:
+                continue
+            if key == "dsn":
+                payload[key] = redact_dsn(str(value))
                 continue
             payload[key] = value
         if record.exc_info:

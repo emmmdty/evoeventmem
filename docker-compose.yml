@@ -23,6 +23,11 @@ services:
       EEM_DB_CONNECT_TIMEOUT: "10"
       EEM_DB_OPERATION_TIMEOUT: "30"
       EEM_LOG_LEVEL: INFO
+      EEM_EMBEDDING_PROVIDER: deterministic
+      EEM_EMBEDDING_MODEL_ID: test-model
+      EEM_EMBEDDING_DIMENSION: "4"
+      EEM_SCHEMA_VERSION: memory.v1
+      EEM_ALLOW_DEV_FALLBACK: "0"
     ports:
       - "8000:8000"
     depends_on:
@@ -41,7 +46,7 @@ services:
 
   smoke:
     image: python:3.12-slim
-    command: ["python", "/scripts/compose_smoke.py"]
+    command: ["python", "/scripts/compose_smoke.py", "--base-url", "http://api:8000"]
     volumes:
       - ./scripts:/scripts:ro
     depends_on:

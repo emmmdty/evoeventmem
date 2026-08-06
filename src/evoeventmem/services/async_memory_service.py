@@ -99,6 +99,8 @@ class AsyncMemoryService:
             ListQuery(limit=1000, status=MemoryQuery.ALL),
         )
         for item in scoped:
+            if item.status is MemoryStatus.DELETED:
+                continue
             if item.normalized_content == memory.normalized_content:
                 return item
         vector = await self._embed_document(memory)

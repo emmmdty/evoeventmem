@@ -172,8 +172,12 @@ def build_raw_turn_corpus(record: NormalizedRecord) -> RawTurnCorpus:
 
 def _truncate_extraction_input(
     request: ExtractionInput, max_tokens: int
-) -> ExtractionInput:
-    """Truncate extraction turns to a token budget at whole-turn boundaries."""
+) -> tuple[ExtractionInput, bool]:
+    """Truncate extraction turns to a token budget at whole-turn boundaries.
+
+    Returns ``(request, truncated)`` where ``truncated`` is True only when the
+    input actually exceeded the budget.
+    """
     budget_chars = max_tokens * 3
     selected: list[ExtractionTurn] = []
     total_chars = 0
@@ -184,19 +188,8 @@ def _truncate_extraction_input(
         selected.append(turn)
         total_chars += turn_chars
     if len(selected) == len(request.turns):
-        return request
-    truncated = request.model_copy(
-        update={
-            "turns": selected,
-            "metadata": {
-                **request.metadata,
-                "extraction_truncated": True,
-                "extraction_original_turns": len(request.turns),
-                "extraction_kept_turns": len(selected),
-            },
-        }
-    )
-    return truncated
+        return request, False
+    return request.model_copy(update={"turns": selected}), True
 
 
 def extract_event_snapshot(
@@ -221,8 +214,9 @@ def extract_event_snapshot(
     request = ExtractionInput.from_normalized_record(record, user_id=user_id)
     request = request.clear_target_fields()
     request = request.model_copy(update={"event_summaries": [], "require_turn_evidence": True})
+    truncated = False
     if max_tokens is not None:
-        request = _truncate_extraction_input(request, max_tokens)
+        request, truncated = _truncate_extraction_input(request, max_tokens)
 
     result = extractor.extract(request)
     events: list[MemoryRecord] = []
@@ -248,14 +242,13 @@ def extract_event_snapshot(
             {
                 "conversation_id": record.sample_id,
                 "extractor": extractor_identity.model_dump(),
-                "raw_turn_count": sum(
-                    len(session.turns) for session in record.sessions
-                ),
+                "raw_turn_count": len(request.turns),
+                "extraction_truncated": truncated,
             }
         ),
         conversation_id=record.sample_id,
         extractor=extractor_identity,
-        raw_turn_count=sum(len(session.turns) for session in record.sessions),
+        raw_turn_count=len(request.turns),
         event_count=len(events),
         events=events,
         rejections=rejections,

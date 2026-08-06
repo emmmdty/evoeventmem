@@ -549,3 +549,105 @@ def test_llm_extractor_documents_cached_model_gateway_requirement() -> None:
     assert model.calls == 2
     assert documentation is not None
     assert "CachedChatModel" in documentation
+
+
+def test_clear_target_fields_removes_answer_metadata_and_observations() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="I live in Austin.",
+                metadata={"has_answer": True},
+            )
+        ],
+        observations=["Alice deployed v2."],
+    )
+
+    cleared = request.clear_target_fields()
+
+    assert cleared.turns[0].metadata == {}
+    assert cleared.observations == []
+    assert cleared.turns[0].content == "I live in Austin."
+
+
+def test_llm_extractor_require_turn_evidence_adds_constraint_to_prompt() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice shipped the release.",
+            )
+        ],
+        require_turn_evidence=True,
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice shipped the release.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice ship",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    prompt = json.loads(model.requests[0][1].content)
+    assert len(result.candidates) == 1
+    assert any(
+        "Every event MUST reference at least one raw turn" in constraint
+        for constraint in prompt["constraints"]
+    )
+
+
+def test_llm_extractor_require_turn_evidence_rejects_unresolvable_evidence() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice shipped the release.",
+            )
+        ],
+        require_turn_evidence=True,
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice shipped the release.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "evidence": [
+                        {
+                            "source_turn_id": "D1:99",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "not real",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(EvidenceValidationError) as exc_info:
+        LLMEventExtractor(model).extract(request)
+    assert exc_info.value.errors[0].code == "unknown_turn_id"

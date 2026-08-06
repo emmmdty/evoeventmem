@@ -3,15 +3,39 @@ run_id_prefix = "m13-longmemeval-small"
 dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"
 methods = ["no_memory", "full_context", "vector_rag", "event_no_etec", "etec", "full"]
 provider = "openai_compatible"
-chat_model_id = "deterministic-local-fake"
-embedding_model_id = "deterministic-local-embedding"
+chat_model_id = "gpt-4o-mini"
+embedding_model_id = "text-embedding-3-small"
 max_input_tokens = 4096
 max_candidates_per_source = 128
 max_items_per_source = 8
 
+# Legacy provider block consumed by the pre-B5 runner; superseded by the
+# explicit [reader]/[extractor]/[embedding] sections below once the runner
+# consumes benchmarks.common.providers.
 [live_provider]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 chat_model = "gpt-4o-mini"
 embedding_model = "text-embedding-3-small"
+timeout_s = 60
+
+[reader]
+provider = "openai_compatible"
+model_id = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 60
+
+[extractor]
+provider = "openai_compatible"
+model_id = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 60
+
+[embedding]
+provider = "openai_compatible"
+model_id = "text-embedding-3-small"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
 timeout_s = 60

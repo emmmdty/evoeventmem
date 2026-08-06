@@ -1,0 +1,426 @@
+{
+  "schema_version": "etec.stress.v1",
+  "fixture_id": "etec_stress_v1",
+  "embedding_model": "deterministic-local-embedding",
+  "cases": [
+    {
+      "case_id": "stress_exact_duplicate",
+      "category": "exact_duplicate",
+      "expected_action": "MERGE",
+      "expected_invariants": ["exact_span_provenance", "single_durable_event"],
+      "existing": [
+        {
+          "memory_id": "70000000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "dup:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70000000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline lives in Seattle.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "dup:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-01-02T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+      }
+    },
+    {
+      "case_id": "stress_paraphrase_merge",
+      "category": "paraphrase_merge",
+      "expected_action": "MERGE",
+      "expected_invariants": ["exact_span_provenance"],
+      "existing": [
+        {
+          "memory_id": "70100000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline currently resides in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "para:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-02-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70100000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline live in Seattle.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "para:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-02-02T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+      }
+    },
+    {
+      "case_id": "stress_newer_supersedes_older",
+      "category": "newer_supersedes_older",
+      "expected_action": "SUPERSEDE",
+      "expected_invariants": ["newer_wins", "stale_historical"],
+      "existing": [
+        {
+          "memory_id": "70200000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "sup:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70200000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline lives in Boston.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "sup:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Boston"}
+      }
+    },
+    {
+      "case_id": "stress_stale_incoming_historical",
+      "category": "stale_incoming_remains_historical",
+      "expected_action": "SUPERSEDE",
+      "expected_invariants": ["newer_wins", "stale_historical"],
+      "existing": [
+        {
+          "memory_id": "70300000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline lives in Boston.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "stale:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-03-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Boston"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70300000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline lives in Seattle.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "stale:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-01-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+      }
+    },
+    {
+      "case_id": "stress_unrelated_same_entity",
+      "category": "unrelated_same_entity",
+      "expected_action": "ADD",
+      "expected_invariants": ["events_remain_separate"],
+      "existing": [
+        {
+          "memory_id": "70400000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline attended a conference in Berlin.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "unrel:1", "locator": "messages[0]"}
+          ],
+          "event_time": "2024-04-01T09:00:00Z"
+        }
+      ],
+      "incoming": {
+        "memory_id": "70400000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline repaired her bicycle in Seattle.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "unrel:2", "locator": "messages[1]"}
+        ],
+        "event_time": "2024-04-02T09:00:00Z"
+      }
+    },
+    {
+      "case_id": "stress_overlapping_validity",
+      "category": "overlapping_validity",
+      "expected_action": "MERGE",
+      "expected_invariants": ["interval_merge"],
+      "existing": [
+        {
+          "memory_id": "70500000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline holds a Seattle library card.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "ov:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "valid_to": "2024-06-30T00:00:00Z",
+          "metadata": {"fact_slot": "library.card", "fact_value": "seatac"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70500000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline holds a Seattle library card.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "ov:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "valid_to": "2024-12-31T00:00:00Z",
+        "metadata": {"fact_slot": "library.card", "fact_value": "seatac"}
+      }
+    },
+    {
+      "case_id": "stress_disjoint_validity",
+      "category": "disjoint_validity",
+      "expected_action": "ADD",
+      "expected_invariants": ["interval_disjoint_kept_separate"],
+      "existing": [
+        {
+          "memory_id": "70600000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline holds a Seattle library card.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "disj:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "valid_to": "2024-02-01T00:00:00Z",
+          "metadata": {"fact_slot": "library.card", "fact_value": "seatac"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70600000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline holds a Seattle library card.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "disj:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "valid_to": "2024-04-01T00:00:00Z",
+        "metadata": {"fact_slot": "library.card", "fact_value": "seatac"}
+      }
+    },
+    {
+      "case_id": "stress_conflicting_evidence",
+      "category": "conflicting_evidence",
+      "expected_action": "SUPERSEDE",
+      "expected_invariants": ["newer_wins", "stale_historical"],
+      "existing": [
+        {
+          "memory_id": "70700000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline's job title is Engineer.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "conf:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.job", "fact_value": "Engineer"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70700000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline's job title is Director.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "conf:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-05-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.job", "fact_value": "Director"}
+      }
+    },
+    {
+      "case_id": "stress_missing_evidence",
+      "category": "missing_evidence",
+      "expected_action": "REJECT",
+      "expected_invariants": ["no_durable_without_evidence"],
+      "existing": [],
+      "incoming": {
+        "memory_id": "70800000-0000-0000-0000-000000000001",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Unsupported synthetic memory.",
+        "synthetic": true,
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "valid_from": "2024-01-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.unsupported", "fact_value": "unsupported"}
+      }
+    },
+    {
+      "case_id": "stress_cross_tenant_isolation",
+      "category": "cross_scope_isolation",
+      "expected_action": "ADD",
+      "expected_invariants": ["isolation"],
+      "existing": [
+        {
+          "memory_id": "70900000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "iso:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70900000-0000-0000-0000-000000000002",
+        "tenant_id": "t2",
+        "user_id": "u1",
+        "memory_kind": "event",
+        "content": "Caroline lives in Boston.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "iso:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Boston"}
+      }
+    },
+    {
+      "case_id": "stress_cross_user_isolation",
+      "category": "cross_scope_isolation",
+      "expected_action": "ADD",
+      "expected_invariants": ["isolation"],
+      "existing": [
+        {
+          "memory_id": "70a00000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "memory_kind": "event",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "isu:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70a00000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u2",
+        "memory_kind": "event",
+        "content": "Caroline lives in Boston.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "isu:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Boston"}
+      }
+    },
+    {
+      "case_id": "stress_cross_session_consolidation",
+      "category": "cross_session_consolidation",
+      "expected_action": "SUPERSEDE",
+      "expected_invariants": ["newer_wins", "stale_historical"],
+      "existing": [
+        {
+          "memory_id": "70b00000-0000-0000-0000-000000000001",
+          "tenant_id": "t1",
+          "user_id": "u1",
+          "session_id": "session-a",
+          "memory_kind": "event",
+          "content": "Caroline lives in Seattle.",
+          "entities": [{"name": "Caroline", "role": "subject"}],
+          "roles": {"Caroline": "subject"},
+          "evidence_refs": [
+            {"source_type": "turn", "source_id": "iss:1", "locator": "messages[0]"}
+          ],
+          "valid_from": "2024-01-01T00:00:00Z",
+          "metadata": {"fact_slot": "profile.city", "fact_value": "Seattle"}
+        }
+      ],
+      "incoming": {
+        "memory_id": "70b00000-0000-0000-0000-000000000002",
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "session_id": "session-b",
+        "memory_kind": "event",
+        "content": "Caroline lives in Boston.",
+        "entities": [{"name": "Caroline", "role": "subject"}],
+        "roles": {"Caroline": "subject"},
+        "evidence_refs": [
+          {"source_type": "turn", "source_id": "iss:2", "locator": "messages[1]"}
+        ],
+        "valid_from": "2024-03-01T00:00:00Z",
+        "metadata": {"fact_slot": "profile.city", "fact_value": "Boston"}
+      }
+    }
+  ]
+}

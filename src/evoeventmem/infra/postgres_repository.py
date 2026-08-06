@@ -206,9 +206,9 @@ class AsyncPostgresMemoryRepository:
         self._pool = pool
         try:
             async with pool.acquire() as connection:
-                await register_vector(connection)
                 if run_migrations:
-                    await apply_migrations(connection)
+                    await apply_migrations(connection, dimension=self._dimension)
+                await register_vector(connection)
                 await ensure_schema_metadata(
                     connection,
                     schema_version=self._schema_version,
@@ -236,11 +236,11 @@ class AsyncPostgresMemoryRepository:
         except (TimeoutError, OSError, asyncpg.PostgresError) as exc:
             raise RepositoryUnavailableError(f"postgres acquire failed: {exc}") from exc
 
-    def _release(self, connection: asyncpg.Connection) -> None:
+    async def _release(self, connection: asyncpg.Connection) -> None:
         pool = self._pool
         if pool is not None:
             with suppress(Exception):
-                pool.release(connection)
+                await pool.release(connection)
 
     async def add(
         self, scope: RequestScope, memory: MemoryRecord, vector: EmbeddingVector
@@ -253,7 +253,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def get(
         self, scope: RequestScope, memory_id: UUID
@@ -272,7 +272,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def get_with_vector(
         self, scope: RequestScope, memory_id: UUID
@@ -295,7 +295,7 @@ class AsyncPostgresMemoryRepository:
             memory = _memory_from_row(row)
             vector = None
             if row["embedding"] is not None:
-                values = tuple(float(value) for value in row["embedding"])
+                values = tuple(float(value) for value in row["embedding"].to_list())
                 vector = EmbeddingVector(
                     values=values,
                     model_id=str(row["emb_model"]),
@@ -305,7 +305,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def update(
         self, scope: RequestScope, memory: MemoryRecord, vector: EmbeddingVector
@@ -318,7 +318,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def list(
         self, scope: RequestScope, query: ListQuery
@@ -340,7 +340,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def search_vector(
         self, search: SearchVector
@@ -352,7 +352,7 @@ class AsyncPostgresMemoryRepository:
         except TimeoutError as exc:
             raise RepositoryUnavailableError("postgres operation timed out") from exc
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def ping(self) -> PingResult:
         if not self.connected:
@@ -394,7 +394,7 @@ class AsyncPostgresMemoryRepository:
                 detail=f"postgres unreachable: {exc}",
             )
         finally:
-            self._release(connection)
+            await self._release(connection)
 
     async def close(self) -> None:
         if self._closed:
@@ -445,7 +445,7 @@ class AsyncPostgresMemoryRepository:
             memory.memory_id,
             vector.model_id,
             vector.dimension,
-            vector.values,
+            list(vector.values),
         )
         return _memory_from_row(row)
 
@@ -481,7 +481,7 @@ class AsyncPostgresMemoryRepository:
             memory.memory_id,
             vector.model_id,
             vector.dimension,
-            vector.values,
+            list(vector.values),
         )
         return _memory_from_row(row)
 
@@ -501,7 +501,7 @@ class AsyncPostgresMemoryRepository:
                 JOIN memory_embeddings me ON me.memory_id = m.memory_id
                 WHERE {clause}"""
         )
-        params.append(f"[{','.join(str(v) for v in search.query.values)}]")
+        params.append(list(search.query.values))
         next_param += 1
         if search.limit.state is MemoryQuery.ACTIVE_ONLY:
             sql += f" AND m.status = ${next_param}"

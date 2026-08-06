@@ -14,15 +14,18 @@ from evoeventmem.core.ports import (
     SearchLimit,
     SearchVector,
 )
-from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
+from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemoryStatus
 from evoeventmem.infra.postgres_repository import (
     AsyncPostgresMemoryRepository,
     RepositoryUnavailableError,
 )
 
+_PG_LOOP = asyncio.new_event_loop()
+
 
 def _run(coro: object) -> object:
-    return asyncio.run(coro)  # type: ignore[arg-type]
+    asyncio.set_event_loop(_PG_LOOP)
+    return _PG_LOOP.run_until_complete(coro)  # type: ignore[arg-type]
 
 
 def _require_postgres() -> bool:
@@ -31,6 +34,30 @@ def _require_postgres() -> bool:
 
 def _dsn() -> str | None:
     return os.environ.get("DATABASE_URL") or os.environ.get("EEM_DATABASE_URL")
+
+
+@pytest.fixture(autouse=True)
+def _reset_database() -> None:
+    """Start each test from a fresh schema so hit-count assertions are
+    not polluted by rows written by other tests on the shared DB."""
+    dsn = _dsn()
+    if not dsn:
+        return
+
+    async def wipe() -> None:
+        import asyncpg
+
+        connection = await asyncpg.connect(dsn)
+        try:
+            await connection.execute("DROP EXTENSION IF EXISTS vector CASCADE")
+            await connection.execute(
+                "DROP TABLE IF EXISTS memory_embeddings, memories, "
+                "schema_metadata, schema_migrations CASCADE"
+            )
+        finally:
+            await connection.close()
+
+    _run(wipe())
 
 
 @pytest.fixture()
@@ -44,7 +71,7 @@ def postgres_repository() -> Iterator[AsyncPostgresMemoryRepository]:
         dsn,
         connect_timeout=5.0,
         operation_timeout=15.0,
-        model_id="pgvector-model",
+        model_id="test-model",
         dimension=4,
     )
     try:
@@ -80,7 +107,7 @@ def _record(*, content: str, session_id: str = "session-a") -> MemoryRecord:
 
 
 def _vector(*values: float) -> EmbeddingVector:
-    return EmbeddingVector(values=values, model_id="pgvector-model", dimension=4)
+    return EmbeddingVector(values=values, model_id="test-model", dimension=4)
 
 
 def _search(query: EmbeddingVector, scope: RequestScope, *, limit: int = 10) -> SearchVector:
@@ -132,7 +159,10 @@ def test_pgvector_filters_active_status(
             scope, _record(content="npmmirror old registry"), _vector(0.9, 0.0, 0.0, 0.0)
         )
         deleted_record = deleted.model_copy(
-            update={"status": "deleted", "metadata": {"forgotten_at": "2024-06-01T00:00:00+00:00"}}
+            update={
+                "status": MemoryStatus.DELETED,
+                "metadata": {"forgotten_at": "2024-06-01T00:00:00+00:00"},
+            }
         )
         await postgres_repository.update(scope, deleted_record, _vector(0.9, 0.0, 0.0, 0.0))
 
@@ -233,7 +263,7 @@ def test_pgvector_query_vector_dimension_mismatch_rejected(
     async def scenario() -> None:
         scope = _scope()
         bad = EmbeddingVector(
-            values=(1.0, 2.0, 3.0, 4.0, 5.0), model_id="pgvector-model", dimension=5
+            values=(1.0, 2.0, 3.0, 4.0, 5.0), model_id="test-model", dimension=5
         )
         with pytest.raises(ValueError):
             await postgres_repository.search_vector(_search(bad, scope))

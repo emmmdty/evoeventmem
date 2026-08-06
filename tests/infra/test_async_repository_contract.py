@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -28,9 +30,37 @@ from evoeventmem.infra.postgres_repository import (
     RepositoryUnavailableError,
 )
 
+_PG_LOOP = asyncio.new_event_loop()
+
 
 def _run(coro: object) -> object:
-    return asyncio.run(coro)  # type: ignore[arg-type]
+    asyncio.set_event_loop(_PG_LOOP)
+    return _PG_LOOP.run_until_complete(coro)  # type: ignore[arg-type]
+
+
+@pytest.fixture()
+def postgres_repository() -> Iterator[AsyncPostgresMemoryRepository]:
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("EEM_DATABASE_URL")
+    require = os.environ.get("EEM_REQUIRE_POSTGRES", "0") == "1"
+    if not dsn:
+        if require:
+            pytest.fail("EEM_REQUIRE_POSTGRES=1 but no DATABASE_URL is configured")
+        pytest.skip("DATABASE_URL is not set; PostgreSQL integration tests are skipped")
+    repository = AsyncPostgresMemoryRepository(
+        dsn,
+        connect_timeout=5.0,
+        operation_timeout=15.0,
+        model_id="test-model",
+        dimension=4,
+    )
+    try:
+        _run(repository.connect(run_migrations=True))
+    except (RepositoryUnavailableError, OSError) as exc:
+        if require:
+            pytest.fail(f"EEM_REQUIRE_POSTGRES=1 but PostgreSQL connection failed: {exc}")
+        pytest.skip(f"PostgreSQL connection failed: {exc}")
+    yield repository
+    _run(repository.close())
 
 
 def _scope(tenant: str = "tenant-1", user: str = "contract-user") -> RequestScope:

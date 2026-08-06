@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: evoeventmem
       POSTGRES_DB: evoeventmem
     ports:
-      - "5432:5432"
+      - "${EEM_PG_PORT:-5432}:5432"
     volumes:
       - evoeventmem_pg:/var/lib/postgresql/data
     healthcheck:

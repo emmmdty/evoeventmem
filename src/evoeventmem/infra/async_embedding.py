@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from evoeventmem.core.ports import EmbeddingVector
+from evoeventmem.core.ports import AsyncEmbeddingModel, EmbeddingVector
 
 
 class EmbeddingModelError(RuntimeError):
@@ -157,7 +157,7 @@ def _http_post(base_url: str, api_key: str, payload: dict[str, Any]) -> dict[str
         return decoded
 
 
-def build_embedding_model(*, settings: Any) -> object:
+def build_embedding_model(*, settings: Any) -> AsyncEmbeddingModel:
     """Resolve the configured production/development embedding adapter.
 
     ``deterministic`` returns the explicit development adapter (only used for

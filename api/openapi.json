@@ -565,6 +565,17 @@
             "title": "Metadata",
             "type": "object"
           },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
           "supersedes": {
             "anyOf": [
               {
@@ -576,6 +587,17 @@
               }
             ],
             "title": "Supersedes"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           },
           "user_id": {
             "title": "User Id",
@@ -715,6 +737,44 @@
     "/v1/memories": {
       "post": {
         "operationId": "write_memory_v1_memories_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -756,15 +816,6 @@
         "parameters": [
           {
             "in": "query",
-            "name": "user_id",
-            "required": true,
-            "schema": {
-              "title": "User Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "q",
             "required": true,
             "schema": {
@@ -786,8 +837,28 @@
             }
           },
           {
-            "in": "query",
-            "name": "tenant_id",
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
             "required": false,
             "schema": {
               "anyOf": [
@@ -798,7 +869,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Tenant Id"
+              "title": "X-Session-Id"
             }
           }
         ],
@@ -846,24 +917,28 @@
             }
           },
           {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
+              "minLength": 1,
+              "title": "X-Tenant-Id",
+              "type": "string"
             }
           },
           {
-            "in": "query",
-            "name": "tenant_id",
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
             "required": false,
             "schema": {
               "anyOf": [
@@ -874,7 +949,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Tenant Id"
+              "title": "X-Session-Id"
             }
           }
         ],
@@ -918,24 +993,28 @@
             }
           },
           {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
+              "minLength": 1,
+              "title": "X-Tenant-Id",
+              "type": "string"
             }
           },
           {
-            "in": "query",
-            "name": "tenant_id",
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
             "required": false,
             "schema": {
               "anyOf": [
@@ -946,7 +1025,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Tenant Id"
+              "title": "X-Session-Id"
             }
           }
         ],
@@ -1000,24 +1079,28 @@
             }
           },
           {
-            "in": "query",
-            "name": "user_id",
-            "required": false,
+            "in": "header",
+            "name": "X-Tenant-Id",
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "User Id"
+              "minLength": 1,
+              "title": "X-Tenant-Id",
+              "type": "string"
             }
           },
           {
-            "in": "query",
-            "name": "tenant_id",
+            "in": "header",
+            "name": "X-User-Id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "X-User-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
             "required": false,
             "schema": {
               "anyOf": [
@@ -1028,7 +1111,7 @@
                   "type": "null"
                 }
               ],
-              "title": "Tenant Id"
+              "title": "X-Session-Id"
             }
           }
         ],

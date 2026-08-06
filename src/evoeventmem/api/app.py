@@ -5,23 +5,36 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from evoeventmem.core.ports import MemoryRepository
+from evoeventmem.core.ports import (
+    AsyncEmbeddingModel,
+    RequestScope,
+    SearchHit,
+)
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemorySearchHit
+from evoeventmem.infra.async_embedding import (
+    DeterministicAsyncEmbeddingModel,
+    EmbeddingModelError,
+    build_embedding_model,
+)
+from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
 from evoeventmem.infra.config import Settings, redact_dsn
-from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
 from evoeventmem.infra.logging import configure_logging, request_id_var
 from evoeventmem.infra.metrics import MetricsRegistry
 from evoeventmem.infra.postgres_repository import (
-    PostgresMemoryRepository,
+    AsyncPostgresMemoryRepository,
     RepositoryUnavailableError,
 )
-from evoeventmem.services.memory_service import MemoryIdentityCollisionError, MemoryService
+from evoeventmem.services.async_memory_service import (
+    AsyncMemoryService,
+    ScopeMismatchError,
+)
+from evoeventmem.services.memory_service import MemoryIdentityCollisionError
 
 logger = logging.getLogger("evoeventmem")
 
@@ -44,7 +57,9 @@ class _V1EvidenceResponse(BaseModel):
 
 class _V1MemoryResponse(BaseModel):
     memory_id: UUID
+    tenant_id: str | None = None
     user_id: str
+    session_id: str | None = None
     kind: MemoryKind
     content: str
     entities: list[str]
@@ -61,7 +76,9 @@ class _V1MemoryResponse(BaseModel):
     def from_domain(cls, memory: MemoryRecord) -> _V1MemoryResponse:
         return cls(
             memory_id=memory.memory_id,
+            tenant_id=memory.tenant_id,
             user_id=memory.user_id,
+            session_id=memory.session_id,
             kind=memory.memory_kind,
             content=memory.content,
             entities=[entity.name for entity in memory.entities],
@@ -86,6 +103,14 @@ class _V1MemorySearchHitResponse(BaseModel):
 
     @classmethod
     def from_domain(cls, hit: MemorySearchHit) -> _V1MemorySearchHitResponse:
+        return cls(
+            memory=_V1MemoryResponse.from_domain(hit.memory),
+            score=hit.score,
+            reason=hit.reason,
+        )
+
+    @classmethod
+    def from_hit(cls, hit: SearchHit) -> _V1MemorySearchHitResponse:
         return cls(
             memory=_V1MemoryResponse.from_domain(hit.memory),
             score=hit.score,
@@ -138,12 +163,47 @@ async def _metrics_middleware(
     return response
 
 
-def _get_service(app: FastAPI) -> MemoryService:
-    service: MemoryService | None = app.state.service
-    if service is None:
-        service = MemoryService(InMemoryMemoryRepository())
-        app.state.service = service
-    return service
+def _scope_dependency(
+    x_tenant_id: str = Header(alias="X-Tenant-Id", min_length=1),
+    x_user_id: str = Header(alias="X-User-Id", min_length=1),
+    x_session_id: str | None = Header(alias="X-Session-Id", default=None),
+) -> RequestScope:
+    """Required tenant/user identity with an optional session narrowing.
+
+    The concrete header names are part of the API contract: ``X-Tenant-Id``,
+    ``X-User-Id``, and the optional ``X-Session-Id``. Missing tenant or user
+    headers fail the request before any handler runs.
+    """
+    return RequestScope(tenant_id=x_tenant_id, user_id=x_user_id, session_id=x_session_id)
+
+
+ScopeDependency = Depends(_scope_dependency)
+
+
+def _get_service(app: FastAPI) -> AsyncMemoryService:
+    return cast(AsyncMemoryService, app.state.service)
+
+
+def _embedding_identity(settings: Settings) -> dict[str, str | int]:
+    return {
+        "provider": settings.embedding_provider,
+        "model_id": settings.embedding_model_id,
+        "dimension": settings.embedding_dimension,
+    }
+
+
+def _build_embedding(settings: Settings) -> AsyncEmbeddingModel:
+    if settings.embedding_policy == "token_overlap":
+        if settings.embedding_provider != "deterministic":
+            raise ValueError(
+                "token-overlap is a development-only policy and requires "
+                "EEM_EMBEDDING_PROVIDER=deterministic"
+            )
+        return DeterministicAsyncEmbeddingModel(
+            model_id=settings.embedding_model_id,
+            dimension=settings.embedding_dimension,
+        )
+    return build_embedding_model(settings=settings)
 
 
 def _emit_store_fallback(app: FastAPI, reason: str) -> None:
@@ -160,31 +220,51 @@ def _emit_store_fallback(app: FastAPI, reason: str) -> None:
     )
 
 
-def _build_postgres_repository(settings: Settings) -> PostgresMemoryRepository:
+def _build_async_postgres_repository(settings: Settings) -> AsyncPostgresMemoryRepository:
     if settings.database_url is None:
         raise RepositoryUnavailableError("EEM_STORE=postgres but no database URL configured")
-    return PostgresMemoryRepository(
+    return AsyncPostgresMemoryRepository(
         settings.database_url,
         connect_timeout=settings.db_connect_timeout,
         operation_timeout=settings.db_operation_timeout,
         statement_timeout_ms=settings.db_statement_timeout_ms,
+        model_id=settings.embedding_model_id,
+        dimension=settings.embedding_dimension,
+        schema_version=settings.schema_version,
+    )
+
+
+def _new_service(
+    settings: Settings,
+    repository: Any,
+    embedding: AsyncEmbeddingModel,
+) -> AsyncMemoryService:
+    return AsyncMemoryService(
+        repository,
+        embedding=embedding,
+        token_overlap_policy=settings.embedding_policy == "token_overlap",
     )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings if settings is not None else Settings.from_env()
     configure_logging(resolved_settings.log_level)
+    embedding = _build_embedding(resolved_settings)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        repository: MemoryRepository
+        repository: AsyncPostgresMemoryRepository | AsyncInMemoryRepository
         if resolved_settings.store == "postgres":
             try:
-                repository = _build_postgres_repository(resolved_settings)
-                repository.connect(apply_migrations=True)
+                repository = _build_async_postgres_repository(resolved_settings)
+                await repository.connect(run_migrations=True)
             except RepositoryUnavailableError as exc:
                 _emit_store_fallback(app, str(exc))
-                repository = InMemoryMemoryRepository()
+                repository = AsyncInMemoryRepository(
+                    model_id=resolved_settings.embedding_model_id,
+                    dimension=resolved_settings.embedding_dimension,
+                    schema_version=resolved_settings.schema_version,
+                )
                 app.state.store = "memory-degraded"
             else:
                 app.state.repository = repository
@@ -202,26 +282,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     },
                 )
         else:
-            repository = InMemoryMemoryRepository()
+            repository = AsyncInMemoryRepository(
+                model_id=resolved_settings.embedding_model_id,
+                dimension=resolved_settings.embedding_dimension,
+                schema_version=resolved_settings.schema_version,
+            )
             app.state.store = "memory"
             logger.info(
                 "started in-memory store",
                 extra={"event": "store.started", "store": "memory"},
             )
         app.state.repository = repository
-        app.state.service = MemoryService(repository)
+        app.state.service = _new_service(resolved_settings, repository, embedding)
         try:
             yield
         finally:
-            if isinstance(repository, PostgresMemoryRepository):
-                repository.close()
+            if isinstance(repository, AsyncPostgresMemoryRepository):
+                await repository.close()
 
     app = FastAPI(title="EvoEventMem", version="0.1.0", lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.metrics = MetricsRegistry()
     app.state.store = "memory"
-    app.state.repository = InMemoryMemoryRepository()
-    app.state.service = None
+    app.state.repository = AsyncInMemoryRepository(
+        model_id=resolved_settings.embedding_model_id,
+        dimension=resolved_settings.embedding_dimension,
+        schema_version=resolved_settings.schema_version,
+    )
+    app.state.service = _new_service(resolved_settings, app.state.repository, embedding)
+    app.state.embedding = embedding
     app.state.http_requests = app.state.metrics.counter(
         "evoeventmem_http_requests_total",
         "HTTP requests served by the memory service API.",
@@ -241,22 +330,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.middleware("http")(_metrics_middleware)
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/readiness")
-    def readiness(request: Request) -> dict[str, Any]:
+    async def readiness(request: Request) -> dict[str, Any]:
         store = request.app.state.store
+        embedding = _embedding_identity(request.app.state.settings)
         if store == "postgres":
             repository = request.app.state.repository
-            if isinstance(repository, PostgresMemoryRepository) and repository.ping():
-                return {"status": "ready", "store": "postgres"}
+            if isinstance(repository, AsyncPostgresMemoryRepository):
+                ping = await repository.ping()
+                if ping.ok:
+                    return {"status": "ready", "store": "postgres", "embedding": embedding}
             raise HTTPException(
                 status_code=503,
                 detail={
                     "status": "degraded",
                     "store": "postgres",
                     "reason": "database unreachable",
+                    "embedding": embedding,
                 },
             )
         if store == "memory-degraded":
@@ -266,27 +359,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "status": "degraded",
                     "store": "memory-degraded",
                     "reason": "configured postgres store unavailable; serving from memory",
+                    "embedding": embedding,
                 },
             )
-        return {"status": "ready", "store": "memory"}
+        return {"status": "ready", "store": "memory", "embedding": embedding}
 
     @app.get("/metrics")
-    def metrics_endpoint(request: Request) -> Response:
+    async def metrics_endpoint(request: Request) -> Response:
         return Response(
             content=request.app.state.metrics.render_text(),
             media_type="text/plain; version=0.0.4",
         )
 
     @app.post("/v1/memories", response_model=_V1MemoryResponse)
-    def write_memory(memory: MemoryRecord, request: Request) -> _V1MemoryResponse:
+    async def write_memory(
+        memory: MemoryRecord,
+        request: Request,
+        scope: RequestScope = ScopeDependency,
+    ) -> _V1MemoryResponse:
         try:
-            written = _get_service(request.app).write(memory)
+            written = await _get_service(request.app).write(scope, memory)
         except MemoryIdentityCollisionError as exc:
             logger.info(
                 "memory write rejected due to memory_id collision",
-                extra={"event": "memory.write_rejected", "memory_id": str(memory.memory_id)},
+                extra={
+                    "event": "memory.write_rejected",
+                    "memory_id": str(memory.memory_id),
+                },
             )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ScopeMismatchError as exc:
+            raise HTTPException(status_code=400, detail="scope_mismatch") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except EmbeddingModelError as exc:
+            raise HTTPException(status_code=502, detail="embedding_failure") from exc
+        except RepositoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="store_unavailable") from exc
         logger.info(
             "memory written",
             extra={"event": "memory.written", "memory_id": str(written.memory_id)},
@@ -294,34 +403,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _V1MemoryResponse.from_domain(written)
 
     @app.get("/v1/memories/search", response_model=list[_V1MemorySearchHitResponse])
-    def search_memories(
+    async def search_memories(
         request: Request,
-        user_id: str,
+        scope: RequestScope = ScopeDependency,
         q: str = Query(min_length=1),
         limit: int = Query(default=5, ge=1, le=50),
-        tenant_id: str | None = None,
     ) -> list[_V1MemorySearchHitResponse]:
         try:
-            hits = _get_service(request.app).search(
-                user_id=user_id,
-                query=q,
-                limit=limit,
-                tenant_id=tenant_id,
-            )
+            hits = await _get_service(request.app).search(scope, q, limit)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return [_V1MemorySearchHitResponse.from_domain(hit) for hit in hits]
+        except EmbeddingModelError as exc:
+            raise HTTPException(status_code=502, detail="embedding_failure") from exc
+        except RepositoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="store_unavailable") from exc
+        return [_V1MemorySearchHitResponse.from_hit(hit) for hit in hits]
 
     @app.get("/v1/memories/{memory_id}/explain", response_model=_V1ExplainResponse)
-    def explain_memory(
+    async def explain_memory(
         request: Request,
         memory_id: UUID,
-        user_id: str | None = None,
-        tenant_id: str | None = None,
+        scope: RequestScope = ScopeDependency,
     ) -> _V1ExplainResponse:
-        result = _get_service(request.app).explain(
-            memory_id, user_id=user_id, tenant_id=tenant_id
-        )
+        result = await _get_service(request.app).explain(scope, memory_id)
         if result is None:
             raise HTTPException(
                 status_code=404,
@@ -333,21 +437,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/v1/memories/{memory_id}/feedback", response_model=_V1MemoryResponse)
-    def feedback_memory(
+    async def feedback_memory(
         request: Request,
         memory_id: UUID,
         payload: _V1FeedbackRequest,
-        user_id: str | None = None,
-        tenant_id: str | None = None,
+        scope: RequestScope = ScopeDependency,
     ) -> _V1MemoryResponse:
-        updated = _get_service(request.app).feedback(
-            memory_id,
-            outcome=payload.outcome,
-            rating=payload.rating,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            request_id=request_id_var.get(),
-        )
+        try:
+            updated = await _get_service(request.app).feedback(
+                scope,
+                memory_id,
+                outcome=payload.outcome,
+                rating=payload.rating,
+                request_id=request_id_var.get(),
+            )
+        except RepositoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="store_unavailable") from exc
         if updated is None:
             raise HTTPException(
                 status_code=404,
@@ -356,18 +461,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _V1MemoryResponse.from_domain(updated)
 
     @app.post("/v1/memories/{memory_id}/forget", response_model=_V1MemoryResponse)
-    def forget_memory(
+    async def forget_memory(
         request: Request,
         memory_id: UUID,
-        user_id: str | None = None,
-        tenant_id: str | None = None,
+        scope: RequestScope = ScopeDependency,
     ) -> _V1MemoryResponse:
-        updated = _get_service(request.app).forget(
-            memory_id,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            request_id=request_id_var.get(),
-        )
+        try:
+            updated = await _get_service(request.app).forget(
+                scope,
+                memory_id,
+                request_id=request_id_var.get(),
+            )
+        except RepositoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail="store_unavailable") from exc
         if updated is None:
             raise HTTPException(
                 status_code=404,

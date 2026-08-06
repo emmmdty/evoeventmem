@@ -304,8 +304,14 @@ def build_synthetic_dataset(
     return {"dataset_path": path, "dataset_hash": _hash_file(path), "plan": plan}
 
 
-def _correct(method: str, plan: list[dict], index: int) -> bool:
-    rate = METHOD_BASE_RATES[method]
+def _correct(
+    method: str,
+    plan: list[dict],
+    index: int,
+    rates: dict[str, float] | None = None,
+) -> bool:
+    effective = {**METHOD_BASE_RATES, **(rates or {})}
+    rate = effective[method]
     return (index + _method_seed(method)) % 10 < int(rate * 10)
 
 
@@ -333,6 +339,7 @@ def build_synthetic_run(
     git_commit: str = FIXED_GIT_COMMIT,
     dataset_path_rel: str = "data/synthetic/dataset.json",
     metadata: dict | None = None,
+    method_rates: dict[str, float] | None = None,
 ) -> dict:
     """Build a B-schema-valid finalized run tree (schema analysis.synthetic.v1)."""
     if dataset == "longmemeval":
@@ -414,7 +421,7 @@ def build_synthetic_run(
         for question in plan:
             index = question["index"]
             adversarial = question["adversarial"]
-            correct = not adversarial and _correct(method, plan, index)
+            correct = not adversarial and _correct(method, plan, index, method_rates)
             prediction = (
                 question["gold_answer"]
                 if correct

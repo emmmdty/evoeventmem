@@ -74,7 +74,19 @@ class DeterministicTokenEstimator:
         )
 
 
+DEFAULT_ESTIMATOR_NAME = "evoeventmem-deterministic-tokens"
+DEFAULT_ESTIMATOR_VERSION = "v1"
+
+DEFAULT_TOKEN_ESTIMATOR = DeterministicTokenEstimator(
+    name=DEFAULT_ESTIMATOR_NAME,
+    version=DEFAULT_ESTIMATOR_VERSION,
+)
+
+
 __all__ = [
+    "DEFAULT_ESTIMATOR_NAME",
+    "DEFAULT_ESTIMATOR_VERSION",
+    "DEFAULT_TOKEN_ESTIMATOR",
     "DeterministicTokenEstimator",
     "TokenEstimate",
 ]

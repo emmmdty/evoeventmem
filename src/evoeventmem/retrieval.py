@@ -11,7 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-from evoeventmem.core.ports import EmbeddingModel, MemoryRepository
+from evoeventmem.core.ports import ChatMessage, EmbeddingModel, MemoryRepository
 from evoeventmem.domain.models import (
     EvidenceRef,
     MemoryKind,
@@ -27,12 +27,25 @@ from evoeventmem.router import (
 from evoeventmem.router import (
     TemporalConstraint as RoutedTemporalConstraint,
 )
+from evoeventmem.tokenization import (
+    DEFAULT_TOKEN_ESTIMATOR,
+    DeterministicTokenEstimator,
+    TokenEstimate,
+)
 
 POLICY_NAME = "qemr-weight-profiles.v2"
 
 # Fixed reciprocal-rank fusion constant: contribution = weight / (k + rank).
 # Declared before any benchmark run; never tuned on reported outcomes.
 RRF_K = 60.0
+
+# Single source of truth for the complete reader input: the system directive,
+# the question, and one labeled, metadata-bearing block per packed item.
+READER_SYSTEM_DIRECTIVE = (
+    "Use the cited evidence below to answer the question. "
+    "Cite evidence labels in your answer."
+)
+QUESTION_PREFIX = "Question: "
 
 _YEAR_RE = re.compile(r"\b(20\d{2})\b")
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
@@ -237,9 +250,9 @@ class SourceFailureEvent(BaseModel):
 
 
 class RenderedMessageBudget(BaseModel):
-    content_tokens: int = Field(ge=0)
-    prompt_overhead_tokens: int = Field(ge=0)
-    total_input_tokens_estimate: int = Field(ge=0)
+    content_tokens: int = Field(default=0, ge=0)
+    prompt_overhead_tokens: int = Field(default=0, ge=0)
+    total_input_tokens_estimate: int = Field(default=0, ge=0)
 
 
 class RetrievalRequest(BaseModel):
@@ -294,6 +307,12 @@ class QEMRRetrievalResult(BaseModel):
     candidates: list[ScoredMemory] = Field(default_factory=list)
     exclusions: list[ExclusionRecord] = Field(default_factory=list)
     source_failures: list[SourceFailureEvent] = Field(default_factory=list)
+    budget: RenderedMessageBudget = Field(
+        default_factory=lambda: RenderedMessageBudget()
+    )
+    reader_messages: list[ChatMessage] = Field(default_factory=list)
+    estimator_name: str = ""
+    estimator_version: str = ""
     controls: RetrievalControls | None = None
     routing: QueryRoutingDecision | None = None
 
@@ -302,8 +321,14 @@ class QEMRRetrievalResult(BaseModel):
         computed = sum(item.token_count for item in self.selected_context)
         if computed != self.total_tokens:
             raise ValueError("total_tokens must equal the sum of selected item tokens")
-        if computed > self.budget_tokens:
+        if self.budget.total_input_tokens_estimate > self.budget_tokens:
             raise ValueError("selected context exceeds the configured token budget")
+        if self.budget.total_input_tokens_estimate != (
+            self.budget.content_tokens + self.budget.prompt_overhead_tokens
+        ):
+            raise ValueError(
+                "total_input_tokens_estimate must equal content plus overhead tokens"
+            )
         return self
 
 
@@ -336,6 +361,7 @@ class RetrievalHarness:
         max_items_per_source: int = 4,
         max_candidates_per_source: int | None = None,
         clock: Callable[[], datetime] | None = None,
+        estimator: DeterministicTokenEstimator | None = None,
     ) -> None:
         if default_budget_tokens < 1:
             raise ValueError("default_budget_tokens must be at least 1")
@@ -350,6 +376,7 @@ class RetrievalHarness:
         self._max_items_per_source = max_items_per_source
         self._max_candidates_per_source = max_candidates_per_source
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._estimator = estimator or DEFAULT_TOKEN_ESTIMATOR
 
     def retrieve(
         self,
@@ -371,6 +398,12 @@ class RetrievalHarness:
         budget = self._default_budget_tokens if budget_tokens is None else budget_tokens
         if budget < 1:
             raise ValueError("budget_tokens must be at least 1")
+        fixed_overhead = self._estimate_reader_input(query, []).total_tokens
+        if budget < fixed_overhead:
+            raise ValueError(
+                f"budget_tokens must fit the fixed reader overhead "
+                f"({fixed_overhead} tokens)"
+            )
         routing = self._router.route(query, reference_time=reference_time)
         if controls is not None and controls.forced_intent is not None:
             routing = routing.model_copy(
@@ -438,9 +471,14 @@ class RetrievalHarness:
         evidence_policy = (
             controls.evidence_policy if controls is not None else EvidencePolicy.CONSTRAINED
         )
-        selected, packing_exclusions = self._pack(eligible, budget, evidence_policy)
+        selected, marginal_tokens, final_estimate, packing_exclusions = self._pack(
+            eligible,
+            budget,
+            evidence_policy,
+            routing.query,
+        )
         exclusions.extend(packing_exclusions)
-        selected_context = self._build_packed_items(selected, routing.intent)
+        selected_context = self._build_packed_items(selected, routing.intent, marginal_tokens)
         return QEMRRetrievalResult(
             query=query,
             user_id=user_id,
@@ -451,10 +489,23 @@ class RetrievalHarness:
             evidence_policy=evidence_policy,
             budget_tokens=budget,
             selected_context=selected_context,
-            total_tokens=sum(item.token_count for item in selected_context),
+            total_tokens=sum(
+                marginal_tokens[item.memory.memory_id] for item in selected
+            ),
             candidates=scored,
             exclusions=exclusions,
             source_failures=source_failures,
+            budget=RenderedMessageBudget(
+                content_tokens=final_estimate.content_tokens,
+                prompt_overhead_tokens=final_estimate.message_overhead_tokens,
+                total_input_tokens_estimate=final_estimate.total_tokens,
+            ),
+            reader_messages=_reader_messages(
+                routing.query,
+                _reader_entries(selected),
+            ),
+            estimator_name=self._estimator.name,
+            estimator_version=self._estimator.version,
             controls=controls,
             routing=routing,
         )
@@ -492,6 +543,10 @@ class RetrievalHarness:
                 )
                 for memory in memories
             ],
+            budget=RenderedMessageBudget(),
+            reader_messages=[],
+            estimator_name=self._estimator.name,
+            estimator_version=self._estimator.version,
             routing=routing,
         )
 
@@ -1088,14 +1143,25 @@ class RetrievalHarness:
         self,
         eligible: Sequence[ScoredMemory],
         budget: int,
-        evidence_policy: EvidencePolicy = EvidencePolicy.CONSTRAINED,
-    ) -> tuple[list[ScoredMemory], list[ExclusionRecord]]:
-        remaining = budget
+        evidence_policy: EvidencePolicy,
+        query: str,
+    ) -> tuple[
+        list[ScoredMemory],
+        dict[UUID, int],
+        TokenEstimate,
+        list[ExclusionRecord],
+    ]:
+        """Pack items under the complete reader-input token budget.
+
+        The fixed overhead (system directive, question, chat-message overhead)
+        is reserved before any item is selected: an item fits only when the
+        fully rendered reader input still fits the budget. Each packed item
+        records its marginal token cost in the rendered input.
+        """
+        selected: list[ScoredMemory] = []
         covered_evidence: set[tuple[str, str, str | None]] = set()
         source_counts: dict[CandidateSource, int] = {source: 0 for source in ALL_SOURCES}
-        selected: list[ScoredMemory] = []
         exclusions: list[ExclusionRecord] = []
-        considered_fits: set[UUID] = set()
         coverage_active = evidence_policy is EvidencePolicy.CONSTRAINED
         pool = sorted(
             list(eligible),
@@ -1105,12 +1171,15 @@ class RetrievalHarness:
             fits = [
                 item
                 for item in pool
-                if item.token_count <= remaining
+                if self._estimate_reader_input(
+                    query,
+                    _reader_entries([*selected, item]),
+                ).total_tokens
+                <= budget
                 and source_counts[_packing_source(item)] < self._max_items_per_source
             ]
             if not fits:
                 break
-            considered_fits.update(item.memory.memory_id for item in fits)
             best = max(
                 fits,
                 key=lambda item: (
@@ -1125,13 +1194,35 @@ class RetrievalHarness:
             )
             pool.remove(best)
             selected.append(best)
-            remaining -= best.token_count
             source_counts[_packing_source(best)] += 1
             covered_evidence.update(_evidence_keys(best.evidence_refs))
+        marginal_tokens: dict[UUID, int] = {}
+        running: list[ScoredMemory] = []
+        for item in selected:
+            before = self._estimate_reader_input(
+                query,
+                _reader_entries(running),
+            ).total_tokens
+            running.append(item)
+            after = self._estimate_reader_input(
+                query,
+                _reader_entries(running),
+            ).total_tokens
+            marginal_tokens[item.memory.memory_id] = after - before
+        final_estimate = self._estimate_reader_input(query, _reader_entries(selected))
+        selected_ids = {item.memory.memory_id for item in selected}
         for item in pool:
+            fits_now = (
+                item.memory.memory_id not in selected_ids
+                and self._estimate_reader_input(
+                    query,
+                    _reader_entries([*selected, item]),
+                ).total_tokens
+                <= budget
+            )
             if source_counts[_packing_source(item)] >= self._max_items_per_source:
                 reason = "source_diversity_cap"
-            elif item.memory.memory_id in considered_fits:
+            elif fits_now:
                 reason = "not_selected_by_packing"
             else:
                 reason = "budget_exceeded"
@@ -1139,10 +1230,17 @@ class RetrievalHarness:
                 ExclusionRecord(
                     memory_id=item.memory.memory_id,
                     reason=reason,
-                    details={"token_count": item.token_count, "remaining": remaining},
+                    details={"token_count": item.token_count, "remaining": budget},
                 )
             )
-        return selected, exclusions
+        return selected, marginal_tokens, final_estimate, exclusions
+
+    def _estimate_reader_input(
+        self,
+        query: str,
+        entries: Sequence[tuple[MemoryRecord, list[EvidenceRef]]],
+    ) -> TokenEstimate:
+        return self._estimator.count_messages(_reader_messages(query, entries))
 
     def _coverage_bonus(
         self,
@@ -1157,6 +1255,7 @@ class RetrievalHarness:
         self,
         selected: Sequence[ScoredMemory],
         intent: QueryIntent,
+        marginal_tokens: dict[UUID, int],
     ) -> list[PackedItem]:
         items: list[PackedItem] = []
         for item in selected:
@@ -1171,7 +1270,7 @@ class RetrievalHarness:
                     memory=item.memory,
                     component_scores=component_scores,
                     final_score=item.final_score,
-                    token_count=item.token_count,
+                    token_count=marginal_tokens[item.memory.memory_id],
                     evidence_refs=item.evidence_refs,
                     historical=item.historical,
                     reason=reason,
@@ -1339,6 +1438,40 @@ def _unique_evidence(refs: Iterable[EvidenceRef]) -> list[EvidenceRef]:
 
 def _count_tokens(text: str) -> int:
     return len(text.split())
+
+
+def _reader_entries(
+    memories: Sequence[ScoredMemory],
+) -> list[tuple[MemoryRecord, list[EvidenceRef]]]:
+    return [(item.memory, item.evidence_refs) for item in memories]
+
+
+def _metadata_line(memory: MemoryRecord) -> str:
+    parts = [f"kind={memory.memory_kind.value}", f"status={memory.status.value}"]
+    anchor = _temporal_anchor(memory)
+    if anchor is not None:
+        parts.append(f"anchor={anchor.isoformat()}")
+    return " ".join(parts)
+
+
+def _reader_messages(
+    query: str,
+    entries: Sequence[tuple[MemoryRecord, list[EvidenceRef]]],
+) -> list[ChatMessage]:
+    """Render the complete reader input from one source of truth.
+
+    The system message carries the reader directive, the user message carries
+    the question followed by one labeled block per packed item with its
+    content, evidence labels, and metadata. B consumes these rendered messages
+    directly instead of assembling its own strings.
+    """
+    system = ChatMessage(role="system", content=READER_SYSTEM_DIRECTIVE)
+    parts = [f"{QUESTION_PREFIX}{query}"]
+    for index, (memory, refs) in enumerate(entries, start=1):
+        parts.append(f"[{index}] {memory.content}")
+        evidence = ",".join(ref.source_id for ref in refs)
+        parts.append(f"evidence={evidence} {_metadata_line(memory)}")
+    return [system, ChatMessage(role="user", content="\n".join(parts))]
 
 
 __all__ = [

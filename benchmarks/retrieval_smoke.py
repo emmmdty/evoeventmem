@@ -154,6 +154,13 @@ def _sample_record(
         "strategy": strategy.value,
         "budget_tokens": result.budget_tokens,
         "total_tokens": result.total_tokens,
+        "budget": {
+            "content_tokens": result.budget.content_tokens,
+            "prompt_overhead_tokens": result.budget.prompt_overhead_tokens,
+            "total_input_tokens_estimate": result.budget.total_input_tokens_estimate,
+        },
+        "estimator_name": result.estimator_name,
+        "estimator_version": result.estimator_version,
         "budget_compliant": budget_ok,
         "superseded_compliant": superseded_ok,
         "selected_memory_ids": [str(item.memory.memory_id) for item in result.selected_context],

@@ -30,6 +30,7 @@ from evoeventmem.retrieval import (
     resolve_weights,
 )
 from evoeventmem.router import QueryIntent, QueryRoutingDecision, TemporalOperator
+from evoeventmem.tokenization import DeterministicTokenEstimator
 
 
 class _FixedEmbeddingModel:
@@ -165,14 +166,15 @@ def test_fixed_vector_ignores_non_dense_sources() -> None:
 
 def test_selected_context_never_exceeds_budget() -> None:
     memories = [_memory(content=f"memory number {index} with enough tokens.") for index in range(5)]
-    harness = _harness(memories, default_budget_tokens=3)
+    harness = _harness(memories, default_budget_tokens=60)
     result = harness.retrieve(
         "What is Caroline's favorite color?",
         user_id="u1",
-        budget_tokens=3,
+        budget_tokens=60,
     )
-    assert result.total_tokens <= 3
-    assert all(item.token_count <= 3 for item in result.selected_context)
+    assert result.total_tokens <= 60
+    assert result.budget.total_input_tokens_estimate <= 60
+    assert len(result.selected_context) == 1
     assert any(exclusion.reason == "budget_exceeded" for exclusion in result.exclusions)
 
 
@@ -276,14 +278,14 @@ def test_evidence_coverage_bonus_prefers_new_evidence_over_duplicate() -> None:
         duplicate.content: (0.9, 0.435889894354067),
         novel.content: (0.86, 0.5099019513592785),
     }
-    harness = _harness([first, duplicate, novel], vectors=vectors, default_budget_tokens=4)
+    harness = _harness([first, duplicate, novel], vectors=vectors, default_budget_tokens=90)
     result = harness.retrieve("query", user_id="u1", strategy=RetrievalStrategy.FIXED_VECTOR)
     selected_ids = [item.memory.memory_id for item in result.selected_context]
     assert selected_ids[0] == first.memory_id
     assert novel.memory_id in selected_ids
     assert duplicate.memory_id not in selected_ids
     assert any(
-        exclusion.reason == "not_selected_by_packing" and exclusion.memory_id == duplicate.memory_id
+        exclusion.reason == "budget_exceeded" and exclusion.memory_id == duplicate.memory_id
         for exclusion in result.exclusions
     )
 
@@ -357,6 +359,9 @@ def test_result_model_rejects_budget_overflow() -> None:
     payload["selected_context"][0]["token_count"] = 11
     payload["total_tokens"] = 11
     payload["budget_tokens"] = 10
+    payload["budget"]["content_tokens"] = 9
+    payload["budget"]["prompt_overhead_tokens"] = 2
+    payload["budget"]["total_input_tokens_estimate"] = 11
     with pytest.raises(ValueError, match="exceeds the configured token budget"):
         QEMRRetrievalResult.model_validate(payload)
 
@@ -958,20 +963,20 @@ def test_controls_evidence_policy_changes_packing_decision() -> None:
     harness = _harness(
         [covered_first, covered_second, novel],
         vectors=vectors,
-        default_budget_tokens=4,
+        default_budget_tokens=67,
     )
     query = "What is Caroline's favorite color?"
     constrained = harness.retrieve(
         query,
         user_id="u1",
-        controls=RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=4),
+        controls=RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=67),
     )
     provenance_only = harness.retrieve(
         query,
         user_id="u1",
         controls=RetrievalControls(
             evidence_policy=EvidencePolicy.PROVENANCE_ONLY,
-            budget_tokens=4,
+            budget_tokens=67,
         ),
     )
     constrained_ids = [item.memory.memory_id for item in constrained.selected_context]
@@ -1140,7 +1145,7 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
     harness = _harness(
         [dense_leader, graph_plus_dense, temporal_plus_episodic],
         vectors=vectors,
-        default_budget_tokens=4,
+        default_budget_tokens=200,
     )
     query = "Where does Caroline live?"
     intent_profile = harness.retrieve(
@@ -1149,7 +1154,7 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
         controls=RetrievalControls(
             strategy=RetrievalStrategy.QEMR,
             weight_profile=WeightProfile.INTENT,
-            budget_tokens=4,
+            budget_tokens=200,
         ),
     )
     hybrid_profile = harness.retrieve(
@@ -1158,15 +1163,23 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
         controls=RetrievalControls(
             strategy=RetrievalStrategy.QEMR,
             weight_profile=WeightProfile.FIXED_HYBRID,
-            budget_tokens=4,
+            budget_tokens=200,
         ),
     )
     assert intent_profile.strategy is RetrievalStrategy.QEMR
     assert hybrid_profile.strategy is RetrievalStrategy.QEMR
     intent_ids = [item.memory.memory_id for item in intent_profile.selected_context]
     hybrid_ids = [item.memory.memory_id for item in hybrid_profile.selected_context]
-    assert intent_ids == [graph_plus_dense.memory_id, dense_leader.memory_id]
-    assert hybrid_ids == [temporal_plus_episodic.memory_id, graph_plus_dense.memory_id]
+    assert intent_ids == [
+        graph_plus_dense.memory_id,
+        dense_leader.memory_id,
+        temporal_plus_episodic.memory_id,
+    ]
+    assert hybrid_ids == [
+        temporal_plus_episodic.memory_id,
+        graph_plus_dense.memory_id,
+        dense_leader.memory_id,
+    ]
 
 
 def test_controls_budget_pair_changes_packed_decision() -> None:
@@ -1189,7 +1202,7 @@ def test_controls_budget_pair_changes_packed_decision() -> None:
     tight = harness.retrieve(
         "query",
         user_id="u1",
-        controls=RetrievalControls(budget_tokens=2),
+        controls=RetrievalControls(budget_tokens=44),
     )
     roomy = harness.retrieve(
         "query",
@@ -1198,3 +1211,135 @@ def test_controls_budget_pair_changes_packed_decision() -> None:
     )
     assert [item.memory.memory_id for item in tight.selected_context] == [first.memory_id]
     assert len(roomy.selected_context) == 2
+
+
+def test_reader_budget_accounts_for_directive_question_roles_labels_and_metadata() -> None:
+    memory = _memory(
+        content="alpha beta",
+        evidence_id="evidence-1",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    vectors = {"query": (1.0, 0.0), memory.content: (1.0, 0.0)}
+    harness = _harness([memory], vectors=vectors)
+    result = harness.retrieve("query", user_id="u1", budget_tokens=500)
+    assert result.budget.prompt_overhead_tokens > 0
+    assert result.budget.content_tokens > 0
+    assert result.budget.total_input_tokens_estimate == (
+        result.budget.content_tokens + result.budget.prompt_overhead_tokens
+    )
+    assert result.estimator_name == "evoeventmem-deterministic-tokens"
+    assert result.estimator_version == "v1"
+    assert [message.role for message in result.reader_messages] == ["system", "user"]
+    rendered = "\n".join(message.content for message in result.reader_messages)
+    assert "Use the cited evidence" in rendered
+    assert "Question: query" in rendered
+    assert "[1] alpha beta" in rendered
+    assert "evidence=evidence-1" in rendered
+    assert "kind=fact" in rendered
+    assert "status=active" in rendered
+    assert "anchor=2024-01-01T00:00:00+00:00" in rendered
+
+
+def test_question_length_counts_toward_reader_budget() -> None:
+    memory = _memory(content="alpha beta", evidence_id="evidence-1")
+    vectors = {
+        "short": (1.0, 0.0),
+        "a much longer question": (1.0, 0.0),
+        memory.content: (1.0, 0.0),
+    }
+    harness = _harness([memory], vectors=vectors)
+    short = harness.retrieve("short", user_id="u1", budget_tokens=500)
+    long = harness.retrieve("a much longer question", user_id="u1", budget_tokens=500)
+    assert long.budget.total_input_tokens_estimate > short.budget.total_input_tokens_estimate
+
+
+def test_punctuation_counts_toward_reader_budget() -> None:
+    plain = _memory(content="alpha beta", evidence_id="evidence-1")
+    punctuated = _memory(content="alpha beta!", evidence_id="evidence-1")
+    plain_harness = _harness([plain], vectors={"query": (1.0, 0.0), plain.content: (1.0, 0.0)})
+    punct_harness = _harness(
+        [punctuated],
+        vectors={"query": (1.0, 0.0), punctuated.content: (1.0, 0.0)},
+    )
+    plain_result = plain_harness.retrieve("query", user_id="u1", budget_tokens=59)
+    punctuated_result = punct_harness.retrieve("query", user_id="u1", budget_tokens=59)
+    assert len(plain_result.selected_context) == 1
+    assert len(punctuated_result.selected_context) == 1
+    assert punctuated_result.budget.total_input_tokens_estimate == (
+        plain_result.budget.total_input_tokens_estimate + 1
+    )
+
+
+def test_unicode_content_counts_toward_reader_budget() -> None:
+    ascii_memory = _memory(content="alpha beta", evidence_id="evidence-1")
+    unicode_memory = _memory(content="阿尔法 贝塔", evidence_id="evidence-1")
+    ascii_harness = _harness(
+        [ascii_memory],
+        vectors={"query": (1.0, 0.0), ascii_memory.content: (1.0, 0.0)},
+    )
+    unicode_harness = _harness(
+        [unicode_memory],
+        vectors={"query": (1.0, 0.0), unicode_memory.content: (1.0, 0.0)},
+    )
+    ascii_result = ascii_harness.retrieve("query", user_id="u1", budget_tokens=59)
+    unicode_result = unicode_harness.retrieve("query", user_id="u1", budget_tokens=59)
+    assert len(ascii_result.selected_context) == 1
+    assert len(unicode_result.selected_context) == 1
+    assert unicode_result.budget.content_tokens > ascii_result.budget.content_tokens
+
+
+def test_metadata_length_counts_toward_reader_budget() -> None:
+    short_harness = _harness(
+        [_memory(content="alpha beta", evidence_id="e1")],
+        vectors={"query": (1.0, 0.0), "alpha beta": (1.0, 0.0)},
+    )
+    long_harness = _harness(
+        [_memory(content="gamma delta", evidence_id="a-much-longer-evidence-id")],
+        vectors={"query": (1.0, 0.0), "gamma delta": (1.0, 0.0)},
+    )
+    short_result = short_harness.retrieve("query", user_id="u1", budget_tokens=500)
+    long_result = long_harness.retrieve("query", user_id="u1", budget_tokens=500)
+    assert long_result.budget.total_input_tokens_estimate == (
+        short_result.budget.total_input_tokens_estimate + 8
+    )
+
+
+def test_budget_binds_before_item_cap() -> None:
+    memories = [
+        _memory(content="alpha beta", evidence_id=f"e{index}")
+        for index in range(6)
+    ]
+    vectors = {"query": (1.0, 0.0), **{memory.content: (1.0, 0.0) for memory in memories}}
+    harness = _harness(
+        memories,
+        vectors=vectors,
+        max_items_per_source=100,
+        default_budget_tokens=200,
+    )
+    result = harness.retrieve("query", user_id="u1", budget_tokens=97)
+    assert len(result.selected_context) == 4
+    assert result.budget.total_input_tokens_estimate <= result.budget_tokens
+    assert all(
+        exclusion.reason != "source_diversity_cap" for exclusion in result.exclusions
+    ), "token budget must bind before the item-count cap"
+    assert sum(
+        1 for exclusion in result.exclusions if exclusion.reason == "budget_exceeded"
+    ) == 2
+
+
+def test_budget_matches_frozen_estimator_on_rendered_messages() -> None:
+    memory = _memory(
+        content="alpha beta",
+        evidence_id="evidence-1",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    vectors = {"query": (1.0, 0.0), memory.content: (1.0, 0.0)}
+    harness = _harness([memory], vectors=vectors)
+    result = harness.retrieve("query", user_id="u1", budget_tokens=500)
+    recheck = DeterministicTokenEstimator(
+        name=result.estimator_name,
+        version=result.estimator_version,
+    ).count_messages(result.reader_messages)
+    assert recheck.total_tokens == result.budget.total_input_tokens_estimate
+    assert recheck.content_tokens == result.budget.content_tokens
+    assert recheck.message_overhead_tokens == result.budget.prompt_overhead_tokens

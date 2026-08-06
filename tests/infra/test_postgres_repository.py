@@ -8,8 +8,11 @@ import pytest
 
 from evoeventmem.core.ports import (
     EmbeddingVector,
+    MemoryQuery,
     RequestScope,
     SchemaState,
+    SearchLimit,
+    SearchVector,
 )
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
 from evoeventmem.infra.migrations import MIGRATIONS
@@ -19,9 +22,12 @@ from evoeventmem.infra.postgres_repository import (
     RepositoryUnavailableError,
 )
 
+_PG_LOOP = asyncio.new_event_loop()
+
 
 def _run(coro: object) -> object:
-    return asyncio.run(coro)  # type: ignore[arg-type]
+    asyncio.set_event_loop(_PG_LOOP)
+    return _PG_LOOP.run_until_complete(coro)  # type: ignore[arg-type]
 
 
 def _require_postgres() -> bool:
@@ -107,12 +113,62 @@ def test_ping_false_while_disconnected() -> None:
 
 
 @pytest.mark.postgres
+def test_connect_registers_vector_type_after_migrations() -> None:
+    """connect() must create the vector extension (migrations) before the
+    pgvector codec registration introspects public.vector (regression)."""
+
+    async def scenario() -> None:
+        import asyncpg
+
+        dsn = _dsn()
+        if not dsn:
+            if _require_postgres():
+                pytest.fail("EEM_REQUIRE_POSTGRES=1 but no DATABASE_URL is configured")
+            pytest.skip("DATABASE_URL is not set; PostgreSQL integration tests are skipped")
+        reset = await asyncpg.connect(dsn)
+        try:
+            await reset.execute("DROP EXTENSION IF EXISTS vector CASCADE")
+            await reset.execute(
+                "DROP TABLE IF EXISTS memory_embeddings, memories, "
+                "schema_metadata, schema_migrations CASCADE"
+            )
+        finally:
+            await reset.close()
+
+        repository = AsyncPostgresMemoryRepository(
+            dsn,
+            connect_timeout=5.0,
+            operation_timeout=15.0,
+            model_id="test-model",
+            dimension=4,
+        )
+        try:
+            await repository.connect(run_migrations=True)
+            assert repository.connected
+            scope = _scope()
+            added = await repository.add(scope, _record(), _vector(1.0, 0.0, 0.0, 0.0))
+            hits = await repository.search_vector(
+                SearchVector(
+                    query=_vector(1.0, 0.0, 0.0, 0.0),
+                    scope=scope,
+                    limit=SearchLimit(state=MemoryQuery.ACTIVE_ONLY, max_results=10),
+                )
+            )
+            assert any(hit.memory.memory_id == added.memory_id for hit in hits)
+        finally:
+            await repository.close()
+
+    _run(scenario())
+
+
+@pytest.mark.postgres
 def test_migrations_are_versioned_and_idempotent(
     connected_repository: AsyncPostgresMemoryRepository,
 ) -> None:
     assert {version for version, _ in MIGRATIONS} == {
         "0001_core_schema",
         "0002_pgvector",
+        "0003_pgvector_hnsw",
     }
 
 
@@ -225,6 +281,8 @@ def test_readiness_fails_on_dimension_mismatch(
     connected_repository: AsyncPostgresMemoryRepository,
 ) -> None:
     async def scenario() -> None:
+        from evoeventmem.infra.migrations import SchemaMismatchError
+
         mismatched = AsyncPostgresMemoryRepository(
             connected_repository._dsn,
             connect_timeout=5.0,
@@ -232,10 +290,9 @@ def test_readiness_fails_on_dimension_mismatch(
             model_id="test-model",
             dimension=8,
         )
-        await mismatched.connect(run_migrations=False)
-        ping = await mismatched.ping()
-        assert ping.ok is False
-        assert ping.schema_state is SchemaState.MISMATCH
+        with pytest.raises(SchemaMismatchError):
+            await mismatched.connect(run_migrations=False)
+        assert not mismatched.connected
         await mismatched.close()
 
     _run(scenario())

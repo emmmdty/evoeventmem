@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
 """
 
 
-async def apply_migrations(connection: asyncpg.Connection) -> list[str]:
+async def apply_migrations(
+    connection: asyncpg.Connection, *, dimension: int | None = None
+) -> list[str]:
     """Apply pending migrations in order, each in its own transaction.
 
     Returns the list of versions applied during this call.
@@ -44,6 +46,12 @@ async def apply_migrations(connection: asyncpg.Connection) -> list[str]:
     for version, sql in MIGRATIONS:
         if version in applied:
             continue
+        if "{dimension}" in sql:
+            if dimension is None:
+                raise ValueError(
+                    f"migration {version} requires the configured embedding dimension"
+                )
+            sql = sql.format(dimension=dimension)
         async with connection.transaction():
             await connection.execute(sql)
             await connection.execute(

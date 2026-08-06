@@ -9,21 +9,23 @@ max_items_per_source = 8
 
 [reader]
 provider = "openai_compatible"
-model_id = "gpt-4o-mini"
-base_url = "https://api.openai.com/v1"
+model_id = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
 api_key_env = "OPENAI_API_KEY"
 timeout_s = 60
+thinking = "disabled"
 
 [extractor]
 provider = "openai_compatible"
-model_id = "gpt-4o-mini"
-base_url = "https://api.openai.com/v1"
+model_id = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
 api_key_env = "OPENAI_API_KEY"
 timeout_s = 60
+thinking = "disabled"
 
 [embedding]
 provider = "openai_compatible"
-model_id = "text-embedding-3-small"
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+model_id = "qwen3-embedding-0.6b"
+base_url = "http://127.0.0.1:11436/v1"
+api_key_env = "EMBEDDING_API_KEY"
 timeout_s = 60

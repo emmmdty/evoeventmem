@@ -1,0 +1,38 @@
+# Workstream C analysis configuration (C3+).
+# Declares inputs to analysis: datasets, metrics, primary comparisons,
+# bootstrap parameters, Holm family, and review sampling settings.
+# This file contains NO result values; every number here is a parameter.
+#
+# The analysis_id is derived from the config hash (canonical form of this
+# file) plus the FINALIZED hashes of every source run. Changing any
+# declaration here changes the analysis_id.
+
+[analysis]
+schema_version = "analysis.config.v1"
+datasets = ["longmemeval", "locomo"]
+metrics = ["exact_match", "token_f1", "evidence_f1"]
+holm_family = "primary"
+
+[analysis.bootstrap]
+n_boot = 10000
+seed = 0
+alpha = 0.05
+
+[analysis.review]
+# Deterministic stratified failure sample: at least this many failures, or
+# all failures when fewer exist.
+target_min_failures = 50
+stratified = true
+
+[analysis.comparisons.longmemeval]
+primary = [
+  { id = "lme_qemr_vs_fixed_vector", left = "full", right = "vector_rag", metric = "exact_match" },
+  { id = "lme_etec_vs_raw_events", left = "full", right = "event_no_etec", metric = "exact_match" },
+]
+
+[analysis.comparisons.locomo]
+primary = [
+  { id = "loc_qemr_vs_fixed_vector", left = "full", right = "vector_rag", metric = "exact_match" },
+  { id = "loc_etec_vs_raw_events", left = "full", right = "event_no_etec", metric = "exact_match" },
+  { id = "loc_session_summary_vs_full", left = "session_summary", right = "full", metric = "exact_match" },
+]

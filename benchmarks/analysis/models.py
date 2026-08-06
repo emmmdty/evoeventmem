@@ -54,6 +54,13 @@ class AnalysisRow(BaseModel):
     source_failures: list[SourceFailure] = Field(default_factory=list)
     packed_item_count: int = Field(ge=0)
 
+    # Normalized retrieval/extraction traces (filled by the loaders).
+    context_text: str = ""
+    intent: str | None = None
+    candidate_count: int | None = None
+    exclusion_reasons: list[str] = Field(default_factory=list)
+    extraction_rejection_reasons: list[str] = Field(default_factory=list)
+
     # Consolidation actions (B-owned enum).
     consolidation_actions: list[ConsolidationAction] = Field(default_factory=list)
 

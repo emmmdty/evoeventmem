@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -24,6 +25,15 @@ from evoeventmem.infra.async_embedding import (
 )
 from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
 from evoeventmem.infra.config import Settings, redact_dsn
+from evoeventmem.infra.failures import (
+    REASON_EMBEDDING_UNAVAILABLE,
+    REASON_INTERNAL,
+    REASON_MEMORY_ID_COLLISION,
+    REASON_SCOPE_MISMATCH,
+    REASON_STORE_UNAVAILABLE,
+    reason_for_status,
+    reason_source,
+)
 from evoeventmem.infra.logging import configure_logging, request_id_var
 from evoeventmem.infra.metrics import MetricsRegistry
 from evoeventmem.infra.postgres_repository import (
@@ -128,39 +138,111 @@ class _V1FeedbackRequest(BaseModel):
     rating: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-async def _request_id_middleware(
+async def _observability_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
+    """Record every request with request ID, route template, stable reason
+    code, failure source, and duration in a try/except/finally block.
+
+    Degraded serving (development fallback or token-overlap policy) is marked
+    on every response with ``X-EvoEventMem-Degraded: true``. Metrics always use
+    route templates, never UUID-bearing raw paths.
+    """
+    started = time.monotonic()
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     token = request_id_var.set(request_id)
+    status = 500
+    reason: str | None = None
     try:
         response = await call_next(request)
+        path_template = _path_template(request)
+        status = response.status_code
+        reason = reason_for_status(status, _extract_detail(response))
+        response.headers["X-Request-ID"] = request_id
+        if _is_degraded(request.app):
+            response.headers["X-EvoEventMem-Degraded"] = "true"
+        return response
+    except Exception as exc:
+        path_template = _path_template(request)
+        status = 500
+        reason = REASON_INTERNAL
+        logger.exception(
+            "unhandled request failure",
+            extra={
+                "event": "http.request",
+                "method": request.method,
+                "path": path_template,
+                "status": status,
+                "reason": reason,
+                "source": reason_source(reason),
+            },
+        )
+        raise exc
     finally:
+        duration = time.monotonic() - started
+        resolved_reason = reason or REASON_INTERNAL
+        request.app.state.http_requests.inc(
+            labels={
+                "method": request.method,
+                "path": _path_template(request),
+                "status": str(status),
+            }
+        )
+        request.app.state.http_duration.observe(
+            duration,
+            labels={"method": request.method, "path": _path_template(request)},
+        )
+        if status >= 400:
+            request.app.state.http_exceptions.inc(
+                labels={
+                    "reason": resolved_reason,
+                    "source": reason_source(resolved_reason),
+                }
+            )
+        if _is_degraded(request.app):
+            request.app.state.degraded_responses.inc()
+        logger.info(
+            "http request completed",
+            extra={
+                "event": "http.request",
+                "request_id": request_id,
+                "method": request.method,
+                "path": path_template,
+                "status": status,
+                "reason": resolved_reason,
+                "source": reason_source(resolved_reason),
+                "duration_ms": round(duration * 1000.0, 3),
+                "degraded": _is_degraded(request.app),
+            },
+        )
         request_id_var.reset(token)
-    response.headers["X-Request-ID"] = request_id
-    return response
 
 
-async def _metrics_middleware(
-    request: Request,
-    call_next: Callable[[Request], Awaitable[Response]],
-) -> Response:
-    started = time.monotonic()
-    response = await call_next(request)
-    duration = time.monotonic() - started
-    request.app.state.http_requests.inc(
-        labels={
-            "method": request.method,
-            "path": request.url.path,
-            "status": str(response.status_code),
-        }
-    )
-    request.app.state.http_duration.observe(
-        duration,
-        labels={"method": request.method, "path": request.url.path},
-    )
-    return response
+def _extract_detail(response: Response) -> object:
+    try:
+        body = bytes(response.body)
+        payload = json.loads(body)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload.get("detail")
+    return None
+
+
+def _path_template(request: Request) -> str:
+    route = request.scope.get("route")
+    return route.path if route is not None else "unmatched"
+
+
+def _is_degraded(app: FastAPI) -> bool:
+    settings = cast(Settings, app.state.settings)
+    return app.state.store == "memory-degraded" or settings.embedding_policy == "token_overlap"
+
+
+def _fail_closed_check(request: Request) -> None:
+    if request.app.state.store == "postgres-unavailable":
+        raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE)
 
 
 def _scope_dependency(
@@ -253,19 +335,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        repository: AsyncPostgresMemoryRepository | AsyncInMemoryRepository
+        repository: AsyncPostgresMemoryRepository | AsyncInMemoryRepository | None = None
         if resolved_settings.store == "postgres":
             try:
                 repository = _build_async_postgres_repository(resolved_settings)
                 await repository.connect(run_migrations=True)
             except RepositoryUnavailableError as exc:
-                _emit_store_fallback(app, str(exc))
-                repository = AsyncInMemoryRepository(
-                    model_id=resolved_settings.embedding_model_id,
-                    dimension=resolved_settings.embedding_dimension,
-                    schema_version=resolved_settings.schema_version,
-                )
-                app.state.store = "memory-degraded"
+                if resolved_settings.allow_development_fallback:
+                    _emit_store_fallback(app, str(exc))
+                    repository = AsyncInMemoryRepository(
+                        model_id=resolved_settings.embedding_model_id,
+                        dimension=resolved_settings.embedding_dimension,
+                        schema_version=resolved_settings.schema_version,
+                    )
+                    app.state.store = "memory-degraded"
+                else:
+                    app.state.store = "postgres-unavailable"
+                    logger.warning(
+                        "postgres store unavailable; failing closed",
+                        extra={
+                            "event": "store.unavailable",
+                            "store": "postgres",
+                            "reason": REASON_STORE_UNAVAILABLE,
+                            "degraded": False,
+                        },
+                    )
             else:
                 app.state.repository = repository
                 app.state.store = "postgres"
@@ -292,8 +386,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "started in-memory store",
                 extra={"event": "store.started", "store": "memory"},
             )
-        app.state.repository = repository
-        app.state.service = _new_service(resolved_settings, repository, embedding)
+        if repository is not None:
+            app.state.repository = repository
+            app.state.service = _new_service(resolved_settings, repository, embedding)
         try:
             yield
         finally:
@@ -325,30 +420,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "evoeventmem_store_fallback_total",
         "Count of observable fallbacks from the configured store to in-memory.",
     )
+    app.state.http_exceptions = app.state.metrics.counter(
+        "evoeventmem_http_exceptions_total",
+        "HTTP exception responses with a stable reason code and failure source.",
+        labels=("reason", "source"),
+    )
+    app.state.degraded_responses = app.state.metrics.counter(
+        "evoeventmem_degraded_responses_total",
+        "Responses served in an explicitly degraded development mode.",
+    )
 
-    app.middleware("http")(_request_id_middleware)
-    app.middleware("http")(_metrics_middleware)
+    app.middleware("http")(_observability_middleware)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok"}
+        if _is_degraded(request.app):
+            body["degraded"] = True
+        return body
 
     @app.get("/readiness")
     async def readiness(request: Request) -> dict[str, Any]:
         store = request.app.state.store
-        embedding = _embedding_identity(request.app.state.settings)
+        settings = cast(Settings, request.app.state.settings)
+        embedding = _embedding_identity(settings)
+        if store == "postgres-unavailable":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "degraded",
+                    "store": "postgres-unavailable",
+                    "reason": REASON_STORE_UNAVAILABLE,
+                    "embedding": embedding,
+                },
+            )
         if store == "postgres":
             repository = request.app.state.repository
             if isinstance(repository, AsyncPostgresMemoryRepository):
                 ping = await repository.ping()
                 if ping.ok:
+                    if settings.embedding_policy == "token_overlap":
+                        return {
+                            "status": "degraded",
+                            "store": "postgres",
+                            "reason": "development_token_overlap_policy",
+                            "embedding": embedding,
+                        }
                     return {"status": "ready", "store": "postgres", "embedding": embedding}
             raise HTTPException(
                 status_code=503,
                 detail={
                     "status": "degraded",
                     "store": "postgres",
-                    "reason": "database unreachable",
+                    "reason": REASON_STORE_UNAVAILABLE,
                     "embedding": embedding,
                 },
             )
@@ -358,10 +482,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail={
                     "status": "degraded",
                     "store": "memory-degraded",
-                    "reason": "configured postgres store unavailable; serving from memory",
+                    "reason": REASON_STORE_UNAVAILABLE,
                     "embedding": embedding,
                 },
             )
+        if settings.embedding_policy == "token_overlap":
+            return {
+                "status": "degraded",
+                "store": "memory",
+                "reason": "development_token_overlap_policy",
+                "embedding": embedding,
+            }
         return {"status": "ready", "store": "memory", "embedding": embedding}
 
     @app.get("/metrics")
@@ -377,6 +508,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         scope: RequestScope = ScopeDependency,
     ) -> _V1MemoryResponse:
+        _fail_closed_check(request)
         try:
             written = await _get_service(request.app).write(scope, memory)
         except MemoryIdentityCollisionError as exc:
@@ -387,15 +519,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "memory_id": str(memory.memory_id),
                 },
             )
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=REASON_MEMORY_ID_COLLISION) from exc
         except ScopeMismatchError as exc:
-            raise HTTPException(status_code=400, detail="scope_mismatch") from exc
+            raise HTTPException(status_code=400, detail=REASON_SCOPE_MISMATCH) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except EmbeddingModelError as exc:
-            raise HTTPException(status_code=502, detail="embedding_failure") from exc
+            raise HTTPException(status_code=502, detail=REASON_EMBEDDING_UNAVAILABLE) from exc
         except RepositoryUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="store_unavailable") from exc
+            raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
         logger.info(
             "memory written",
             extra={"event": "memory.written", "memory_id": str(written.memory_id)},
@@ -409,14 +541,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q: str = Query(min_length=1),
         limit: int = Query(default=5, ge=1, le=50),
     ) -> list[_V1MemorySearchHitResponse]:
+        _fail_closed_check(request)
         try:
             hits = await _get_service(request.app).search(scope, q, limit)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except EmbeddingModelError as exc:
-            raise HTTPException(status_code=502, detail="embedding_failure") from exc
+            raise HTTPException(status_code=502, detail=REASON_EMBEDDING_UNAVAILABLE) from exc
         except RepositoryUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="store_unavailable") from exc
+            raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
         return [_V1MemorySearchHitResponse.from_hit(hit) for hit in hits]
 
     @app.get("/v1/memories/{memory_id}/explain", response_model=_V1ExplainResponse)
@@ -425,6 +558,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         memory_id: UUID,
         scope: RequestScope = ScopeDependency,
     ) -> _V1ExplainResponse:
+        _fail_closed_check(request)
         result = await _get_service(request.app).explain(scope, memory_id)
         if result is None:
             raise HTTPException(
@@ -443,6 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload: _V1FeedbackRequest,
         scope: RequestScope = ScopeDependency,
     ) -> _V1MemoryResponse:
+        _fail_closed_check(request)
         try:
             updated = await _get_service(request.app).feedback(
                 scope,
@@ -452,7 +587,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_id=request_id_var.get(),
             )
         except RepositoryUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="store_unavailable") from exc
+            raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
         if updated is None:
             raise HTTPException(
                 status_code=404,
@@ -466,6 +601,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         memory_id: UUID,
         scope: RequestScope = ScopeDependency,
     ) -> _V1MemoryResponse:
+        _fail_closed_check(request)
         try:
             updated = await _get_service(request.app).forget(
                 scope,
@@ -473,7 +609,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_id=request_id_var.get(),
             )
         except RepositoryUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="store_unavailable") from exc
+            raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
         if updated is None:
             raise HTTPException(
                 status_code=404,

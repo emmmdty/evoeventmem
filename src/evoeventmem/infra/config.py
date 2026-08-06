@@ -42,6 +42,7 @@ class Settings:
     embedding_timeout_s: float = 30.0
     schema_version: str = "memory.v1"
     embedding_policy: str = "vector"
+    allow_development_fallback: bool = False
 
     @property
     def embedding_api_key(self) -> str | None:
@@ -92,6 +93,9 @@ class Settings:
             embedding_timeout_s=_env_float(env, "EEM_EMBEDDING_TIMEOUT_S", 30.0),
             schema_version=env.get("EEM_SCHEMA_VERSION", "memory.v1").strip(),
             embedding_policy=embedding_policy,
+            allow_development_fallback=_env_bool(
+                env, "EEM_ALLOW_DEV_FALLBACK", False
+            ),
         )
 
 

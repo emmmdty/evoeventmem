@@ -170,12 +170,42 @@ def build_raw_turn_corpus(record: NormalizedRecord) -> RawTurnCorpus:
     return RawTurnCorpus(conversation_id=record.sample_id, chunks=chunks)
 
 
+def _truncate_extraction_input(
+    request: ExtractionInput, max_tokens: int
+) -> ExtractionInput:
+    """Truncate extraction turns to a token budget at whole-turn boundaries."""
+    budget_chars = max_tokens * 3
+    selected: list[ExtractionTurn] = []
+    total_chars = 0
+    for turn in request.turns:
+        turn_chars = len(turn.content) + 64
+        if selected and total_chars + turn_chars > budget_chars:
+            break
+        selected.append(turn)
+        total_chars += turn_chars
+    if len(selected) == len(request.turns):
+        return request
+    truncated = request.model_copy(
+        update={
+            "turns": selected,
+            "metadata": {
+                **request.metadata,
+                "extraction_truncated": True,
+                "extraction_original_turns": len(request.turns),
+                "extraction_kept_turns": len(selected),
+            },
+        }
+    )
+    return truncated
+
+
 def extract_event_snapshot(
     record: NormalizedRecord,
     extractor: Any,
     *,
     user_id: str,
     extractor_identity: ProviderIdentity,
+    max_tokens: int | None = None,
 ) -> ExtractionSnapshot:
     """Extract events once from target-cleared raw turns.
 
@@ -183,10 +213,16 @@ def extract_event_snapshot(
     all target/answer fields are cleared. Official event summaries are kept out
     of the extraction input entirely (they are evaluation targets only).
     Every accepted event must reference an exact raw-turn span.
+
+    When ``max_tokens`` is set, the input is truncated at whole-session
+    boundaries (earliest sessions retained first) so a single extraction
+    invocation stays within the configured budget.
     """
     request = ExtractionInput.from_normalized_record(record, user_id=user_id)
     request = request.clear_target_fields()
     request = request.model_copy(update={"event_summaries": [], "require_turn_evidence": True})
+    if max_tokens is not None:
+        request = _truncate_extraction_input(request, max_tokens)
 
     result = extractor.extract(request)
     events: list[MemoryRecord] = []

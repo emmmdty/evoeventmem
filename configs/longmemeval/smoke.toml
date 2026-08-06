@@ -3,7 +3,8 @@ run_id_prefix = "m13-longmemeval-smoke"
 dataset_path = "tests/fixtures/longmemeval/oracle_tiny.json"
 methods = ["no_memory", "full_context", "vector_rag", "event_no_etec", "etec", "full"]
 provider = "deterministic_fake"
-max_input_tokens = 256
+max_input_tokens = 4096
+max_extraction_tokens = 65536
 max_candidates_per_source = 32
 max_items_per_source = 4
 

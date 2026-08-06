@@ -186,6 +186,7 @@ class LocomoConfig(BaseModel):
     methods: list[Method] = Field(default_factory=lambda: list(Method))
     provider: Literal["deterministic_fake", "openai_compatible"] = "deterministic_fake"
     max_input_tokens: int = Field(gt=0)
+    max_extraction_tokens: int | None = Field(default=None, gt=0)
     max_candidates_per_source: int = Field(ge=1)
     max_items_per_source: int = Field(ge=1)
     sample_limit: int | None = Field(default=None, ge=1)
@@ -511,6 +512,7 @@ def _process_sample(
         extractor,
         user_id=user_id,
         extractor_identity=extractor_identity,
+        max_tokens=config.max_extraction_tokens,
     )
     extraction_ms = (perf_counter() - started) * 1000
 

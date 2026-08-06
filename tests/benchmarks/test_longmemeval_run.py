@@ -325,13 +325,14 @@ def test_main_config_resolves_independent_models() -> None:
     config = load_config(MAIN_CONFIG)
 
     assert config.provider == "openai_compatible"
-    assert config.providers.reader.model_id == "gpt-4o-mini"
-    assert config.providers.extractor.model_id == "gpt-4o-mini"
-    assert config.providers.embedding.model_id == "text-embedding-3-small"
-    assert config.providers.reader.base_url == "https://api.openai.com/v1"
+    assert config.providers.reader.model_id == "deepseek-v4-flash"
+    assert config.providers.extractor.model_id == "deepseek-v4-flash"
+    assert config.providers.embedding.model_id == "qwen3-embedding-0.6b"
+    assert config.providers.reader.base_url == "https://api.deepseek.com"
     assert config.providers.reader.api_key_env == "OPENAI_API_KEY"
-    assert config.providers.embedding.api_key_env == "OPENAI_API_KEY"
-    assert config.providers.reader.thinking is None
+    assert config.providers.embedding.api_key_env == "EMBEDDING_API_KEY"
+    assert config.providers.reader.thinking == "disabled"
+    assert config.max_extraction_tokens == 65536
     assert set(config.methods) == {method.value for method in Method}
 
 

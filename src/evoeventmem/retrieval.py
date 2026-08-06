@@ -17,7 +17,15 @@ from evoeventmem.domain.models import (
     MemoryRecord,
     MemoryStatus,
 )
-from evoeventmem.router import QueryIntent, QueryRouter, QueryRoutingDecision
+from evoeventmem.router import (
+    QueryIntent,
+    QueryRouter,
+    QueryRoutingDecision,
+    TemporalOperator,
+)
+from evoeventmem.router import (
+    TemporalConstraint as RoutedTemporalConstraint,
+)
 
 POLICY_NAME = "qemr-weight-profiles.v1"
 
@@ -100,6 +108,10 @@ FIXED_HYBRID_WEIGHTS: dict[CandidateSource, float] = {
 }
 
 HISTORICAL_INTENTS = frozenset({QueryIntent.TEMPORAL, QueryIntent.EPISODIC})
+
+# Fixed policy cap: unconstrained ``when`` queries treat temporal presence as a
+# small feature, never equal to the dense relevance weight.
+UNCONSTRAINED_TEMPORAL_WEIGHT_CAP = 0.2
 
 
 class Candidate(BaseModel):
@@ -327,9 +339,18 @@ class RetrievalHarness:
         candidates, capped_memory_ids = self._cap_candidates(
             self._collect_candidates(query, routing, memories, reference)
         )
+        temporal_exclusions: list[ExclusionRecord] = []
+        if strategy is not RetrievalStrategy.FIXED_VECTOR:
+            candidates, temporal_exclusions = self._apply_temporal_constraint(
+                candidates,
+                routing,
+                reference,
+            )
+        weights = self._effective_weights(weights, routing)
         normalized = self._normalize(candidates)
         scored = self._merge_candidates(normalized, weights, routing.intent)
         eligible, exclusions = self._classify_memories(scored, routing.intent)
+        exclusions = [*temporal_exclusions, *exclusions]
         exclusions.extend(self._capped_memory_exclusions(scored, capped_memory_ids))
         selected, packing_exclusions = self._pack(eligible, budget)
         exclusions.extend(packing_exclusions)
@@ -478,6 +499,223 @@ class RetrievalHarness:
             if _temporal_anchor(memory) is not None
         ]
 
+    def _effective_weights(
+        self,
+        weights: dict[CandidateSource, float],
+        routing: QueryRoutingDecision,
+    ) -> dict[CandidateSource, float]:
+        """Return the effective per-source weights for a routing decision.
+
+        For unconstrained ``when`` queries (operator ``NONE``), temporal
+        presence is a small feature, so the temporal weight is capped low to
+        keep dense/entity relevance dominant. This is a fixed policy constant,
+        not a tuned value.
+        """
+        if (
+            routing.intent in HISTORICAL_INTENTS
+            and not routing.temporal_constraint.is_constrained
+        ):
+            adjusted = dict(weights)
+            adjusted[CandidateSource.TEMPORAL] = min(
+                weights[CandidateSource.TEMPORAL],
+                UNCONSTRAINED_TEMPORAL_WEIGHT_CAP,
+            )
+            return adjusted
+        return weights
+
+    def _apply_temporal_constraint(
+        self,
+        candidates: Sequence[Candidate],
+        routing: QueryRoutingDecision,
+        reference: datetime,
+    ) -> tuple[list[Candidate], list[ExclusionRecord]]:
+        """Apply the parsed temporal constraint to the candidate pool.
+
+        Temporal behavior is relevance-first: dense/entity/relation sources
+        establish the relevance pool, and this stage only re-ranks or filters
+        that pool by temporal anchors. A memory that is not in the relevance
+        pool (no non-temporal candidate) is never rescued by recency alone.
+        For ``NONE``, time presence is a small additive feature and cannot let
+        an unrelated newest memory dominate semantic relevance.
+
+        Returns the constrained candidates plus observable exclusion records
+        for memories dropped by an explicit interval constraint.
+        """
+        constraint = routing.temporal_constraint
+        operator = constraint.operator
+        relevant_ids = {
+            candidate.memory.memory_id
+            for candidate in candidates
+            if candidate.source is not CandidateSource.TEMPORAL
+            and candidate.raw_score > 0.0
+        }
+        query_tokens = _token_set(routing.query)
+        historical = routing.intent in HISTORICAL_INTENTS
+        pool: list[Candidate] = []
+        outside_pool: list[Candidate] = []
+        for candidate in candidates:
+            if candidate.source is not CandidateSource.TEMPORAL:
+                continue
+            memory_id = candidate.memory.memory_id
+            in_pool = memory_id in relevant_ids
+            rescued = (
+                historical
+                and candidate.memory.status is MemoryStatus.SUPERSEDED
+                and bool(_token_set(candidate.memory.content) & query_tokens)
+            )
+            if in_pool or rescued:
+                pool.append(candidate)
+            else:
+                outside_pool.append(
+                    candidate.model_copy(
+                        update={
+                            "raw_score": 0.0,
+                            "reason": "temporal-candidate-outside-relevance-pool",
+                        }
+                    )
+                )
+        non_temporal = [
+            candidate
+            for candidate in candidates
+            if candidate.source is not CandidateSource.TEMPORAL
+        ]
+        if operator is TemporalOperator.NONE:
+            upgraded = self._apply_unconstrained_temporal(pool, reference)
+            return non_temporal + upgraded + outside_pool, []
+        if operator is TemporalOperator.LATEST or operator is TemporalOperator.EARLIEST:
+            processed = self._apply_extremal_temporal(
+                pool,
+                earliest=operator is TemporalOperator.EARLIEST,
+            )
+            return non_temporal + processed + outside_pool, []
+        kept = self._apply_interval_temporal(pool, constraint)
+        kept_ids = {candidate.memory.memory_id for candidate in kept}
+        dropped_pool_ids = {
+            candidate.memory.memory_id for candidate in pool
+        } - kept_ids
+        exclusions = [
+            ExclusionRecord(
+                memory_id=memory_id,
+                reason="temporal_interval_excluded",
+                details={
+                    "operator": operator.value,
+                    "lower_bound_utc": (
+                        constraint.lower_bound_utc.isoformat()
+                        if constraint.lower_bound_utc is not None
+                        else None
+                    ),
+                    "upper_bound_utc": (
+                        constraint.upper_bound_utc.isoformat()
+                        if constraint.upper_bound_utc is not None
+                        else None
+                    ),
+                },
+            )
+            for memory_id in sorted(dropped_pool_ids, key=str)
+        ]
+        kept_non_temporal = [
+            candidate
+            for candidate in non_temporal
+            if candidate.memory.memory_id in kept_ids
+        ]
+        return kept_non_temporal + kept + outside_pool, exclusions
+
+    def _apply_unconstrained_temporal(
+        self,
+        temporal: Sequence[Candidate],
+        reference: datetime,
+    ) -> list[Candidate]:
+        upgraded: list[Candidate] = []
+        for candidate in temporal:
+            anchor = _temporal_anchor(candidate.memory)
+            if anchor is None:
+                continue
+            upgraded.append(
+                candidate.model_copy(
+                    update={
+                        "reason": "temporal-presence-small-feature",
+                        "raw_score": _temporal_recency_presence(candidate.memory, reference),
+                    }
+                )
+            )
+        return upgraded
+
+    def _apply_extremal_temporal(
+        self,
+        temporal: Sequence[Candidate],
+        *,
+        earliest: bool,
+    ) -> list[Candidate]:
+        anchored = [
+            candidate
+            for candidate in temporal
+            if _temporal_anchor(candidate.memory) is not None
+        ]
+        if not anchored:
+            return list(temporal)
+        anchored.sort(
+            key=lambda candidate: (
+                _temporal_anchor(candidate.memory) or datetime.max.replace(tzinfo=UTC),
+                str(candidate.memory.memory_id),
+            ),
+            reverse=not earliest,
+        )
+        winner = anchored[0]
+        winning = winner.model_copy(
+            update={
+                "raw_score": 1.0,
+                "reason": "extremal-temporal-best-in-relevant-pool",
+            }
+        )
+        losers = [
+            candidate.model_copy(
+                update={"raw_score": 0.0, "normalized_score": 0.0},
+            )
+            for candidate in anchored[1:]
+        ]
+        return [winning, *losers]
+
+    def _apply_interval_temporal(
+        self,
+        temporal: Sequence[Candidate],
+        constraint: RoutedTemporalConstraint,
+    ) -> list[Candidate]:
+        operator = constraint.operator
+        if operator is TemporalOperator.AT:
+            lower = constraint.lower_bound_utc or constraint.upper_bound_utc
+            upper = constraint.upper_bound_utc or lower
+        elif operator is TemporalOperator.BEFORE:
+            lower = None
+            upper = constraint.upper_bound_utc
+        elif operator is TemporalOperator.AFTER:
+            lower = constraint.lower_bound_utc
+            upper = None
+        elif operator is TemporalOperator.BETWEEN:
+            lower = constraint.lower_bound_utc
+            upper = constraint.upper_bound_utc
+        else:
+            return list(temporal)
+        if lower is None and upper is None:
+            return list(temporal)
+        ranked: list[Candidate] = []
+        for candidate in temporal:
+            anchor = _temporal_anchor(candidate.memory)
+            if anchor is None:
+                continue
+            agreement = _interval_agreement(anchor, lower, upper)
+            if agreement <= 0.0:
+                continue
+            ranked.append(
+                candidate.model_copy(
+                    update={
+                        "raw_score": agreement,
+                        "reason": "temporal-interval-agreement",
+                    }
+                )
+            )
+        ranked.sort(key=lambda candidate: (-candidate.raw_score, str(candidate.memory.memory_id)))
+        return ranked
+
     def _graph_candidates(
         self,
         query: str,
@@ -568,8 +806,6 @@ class RetrievalHarness:
     ) -> list[ScoredMemory]:
         by_memory: dict[UUID, dict[CandidateSource, Candidate]] = {}
         for candidate in candidates:
-            if candidate.normalized_score <= 0.0:
-                continue
             per_source = by_memory.setdefault(candidate.memory.memory_id, {})
             existing = per_source.get(candidate.source)
             if existing is None or _better_candidate(candidate, existing):
@@ -590,6 +826,7 @@ class RetrievalHarness:
                     for source in ALL_SOURCES
                     if source in per_source
                 )
+                if candidate.normalized_score > 0.0
             ]
             weight_total = sum(weight for weight in weights.values() if weight > 0.0)
             weighted_sum = sum(score.weighted_score for score in source_scores)
@@ -813,6 +1050,34 @@ def _temporal_recency(memory: MemoryRecord, reference: datetime) -> float:
         return 0.0
     distance_days = abs((reference - anchor).days)
     return 1.0 / (1.0 + distance_days / 365.0)
+
+
+def _temporal_recency_presence(memory: MemoryRecord, reference: datetime) -> float:
+    """Small, bounded temporal feature for unconstrained ``when`` queries.
+
+    Time presence is a minor ordinal signal that can nudge ties but cannot
+    dominate semantic/dense relevance.
+    """
+    return 0.05 * _temporal_recency(memory, reference)
+
+
+def _interval_agreement(
+    anchor: datetime,
+    lower: datetime | None,
+    upper: datetime | None,
+) -> float:
+    """Score how well an event anchor lies within the query's interval.
+
+    Closed-interval membership: 1.0 inside the interval, 0.0 outside it.
+    ``None`` bounds are open on that side. Out-of-interval candidates never
+    receive partial credit, so an explicit temporal filter cannot promote an
+    out-of-range memory above an in-range one.
+    """
+    if lower is not None and anchor < lower:
+        return 0.0
+    if upper is not None and anchor > upper:
+        return 0.0
+    return 1.0
 
 
 def _episodic_score(

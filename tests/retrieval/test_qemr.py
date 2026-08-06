@@ -24,7 +24,7 @@ from evoeventmem.retrieval import (
     RetrievalStrategy,
     resolve_weights,
 )
-from evoeventmem.router import QueryIntent
+from evoeventmem.router import QueryIntent, TemporalOperator
 
 
 class _FixedEmbeddingModel:
@@ -323,7 +323,7 @@ def test_source_diversity_cap_excludes_oversubscribed_source() -> None:
     )
 
 
-def test_scores_are_normalized_per_source_max() -> None:
+def test_temporal_scores_are_small_capped_feature_for_unconstrained_when() -> None:
     anchored = _memory(
         content="Caroline lives in Seattle.",
         valid_from=datetime(2023, 5, 1, tzinfo=UTC),
@@ -339,9 +339,8 @@ def test_scores_are_normalized_per_source_max() -> None:
     scores = {
         item.memory.memory_id: item.component_scores for item in result.selected_context
     }
-    assert scores[anchored.memory_id]["temporal"] == 1.0
-    assert scores[far.memory_id]["temporal"] < 1.0
-    assert scores[far.memory_id]["temporal"] > 0.0
+    assert scores[anchored.memory_id]["temporal"] == pytest.approx(0.2)
+    assert 0.0 < scores[far.memory_id]["temporal"] < 0.2
 
 
 def test_result_model_rejects_budget_overflow() -> None:
@@ -428,8 +427,8 @@ def test_reference_time_controls_temporal_scores() -> None:
     near_recent = _component(near, recent.memory_id, "temporal")
     far_recent = _component(far, recent.memory_id, "temporal")
 
-    assert near_recent == pytest.approx(1.0)
-    assert far_recent == pytest.approx(1.0)
+    assert near_recent == pytest.approx(0.2)
+    assert far_recent == pytest.approx(0.2)
     assert 0.0 < near_old < near_recent
     assert 0.0 < far_old < far_recent
     assert far_old > near_old
@@ -478,3 +477,229 @@ def _component(result: QEMRRetrievalResult, memory_id: UUID, source: str) -> flo
         if item.memory.memory_id == memory_id:
             return item.component_scores[source]
     raise AssertionError(f"memory {memory_id} not in selected context")
+
+
+def test_unrelated_newest_memory_cannot_beat_older_relevant_memory_when_unconstrained() -> None:
+    relevant_old = _memory(
+        content="Caroline moved to Lisbon in March 2021.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000001"),
+    )
+    unrelated_new = _memory(
+        content="The team launched project Zephyr.",
+        valid_from=datetime(2024, 12, 1, tzinfo=UTC),
+        entities=[{"name": "Zephyr", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000002"),
+    )
+    vectors = {
+        "When did Caroline move?": (1.0, 0.0, 0.0),
+        relevant_old.content: (0.95, 0.0, 0.0),
+        unrelated_new.content: (0.1, 0.9, 0.0),
+    }
+    harness = _harness([relevant_old, unrelated_new], vectors=vectors)
+    result = harness.retrieve("When did Caroline move?", user_id="u1")
+    assert result.intent is QueryIntent.TEMPORAL
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert ranked_ids[0] == relevant_old.memory_id, (
+        "relevant older memory must rank above unrelated newest memory"
+    )
+
+
+def test_latest_ordering_applies_only_within_relevant_pool() -> None:
+    relevant_recent = _memory(
+        content="Caroline moved to Seattle.",
+        valid_from=datetime(2023, 5, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000011"),
+    )
+    relevant_old = _memory(
+        content="Caroline moved to Austin.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000012"),
+    )
+    unrelated_recent = _memory(
+        content="David bought new shoes.",
+        valid_from=datetime(2024, 12, 1, tzinfo=UTC),
+        entities=[{"name": "David", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000013"),
+    )
+    vectors = {
+        "When did Caroline last move?": (1.0, 0.0),
+        relevant_recent.content: (0.9, 0.0),
+        relevant_old.content: (0.85, 0.0),
+        unrelated_recent.content: (0.0, 1.0),
+    }
+    harness = _harness([relevant_recent, relevant_old, unrelated_recent], vectors=vectors)
+    result = harness.retrieve(
+        "When did Caroline last move?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert ranked_ids[0] == relevant_recent.memory_id
+    assert ranked_ids[1] == relevant_old.memory_id
+    assert unrelated_recent.memory_id not in ranked_ids
+
+
+def test_earliest_orders_only_relevant_pool() -> None:
+    relevant_old = _memory(
+        content="Caroline's first trip to Lisbon.",
+        valid_from=datetime(2019, 6, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000021"),
+    )
+    relevant_recent = _memory(
+        content="Caroline's second trip to Lisbon.",
+        valid_from=datetime(2022, 6, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000022"),
+    )
+    unrelated_recent = _memory(
+        content="Priya adopted a cat.",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        entities=[{"name": "Priya", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000023"),
+    )
+    vectors = {
+        "When was Caroline's earliest trip?": (1.0, 0.0),
+        relevant_old.content: (0.9, 0.0),
+        relevant_recent.content: (0.85, 0.0),
+        unrelated_recent.content: (0.0, 1.0),
+    }
+    harness = _harness([relevant_old, relevant_recent, unrelated_recent], vectors=vectors)
+    result = harness.retrieve(
+        "When was Caroline's earliest trip?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert ranked_ids[0] == relevant_old.memory_id
+    assert unrelated_recent.memory_id not in ranked_ids
+
+
+def test_before_after_between_use_interval_agreement() -> None:
+    in_range = _memory(
+        content="The merger closed.",
+        valid_from=datetime(2021, 6, 15, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000031"),
+    )
+    before_range = _memory(
+        content="The merger was proposed.",
+        valid_from=datetime(2019, 2, 1, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000032"),
+    )
+    vectors = {
+        "What happened between 2020 and 2022?": (1.0, 0.0),
+        in_range.content: (0.9, 0.0),
+        before_range.content: (0.8, 0.0),
+    }
+    harness = _harness([in_range, before_range], vectors=vectors)
+    result = harness.retrieve(
+        "What happened between 2020 and 2022?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert ranked_ids[0] == in_range.memory_id
+    assert before_range.memory_id not in ranked_ids
+    assert any(
+        exclusion.reason == "temporal_interval_excluded"
+        and exclusion.memory_id == before_range.memory_id
+        for exclusion in result.exclusions
+    ), "out-of-range memories must be excluded with an observable reason"
+
+
+def test_after_filters_out_events_before_bound() -> None:
+    early = _memory(
+        content="Company founded.",
+        valid_from=datetime(2018, 1, 1, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000041"),
+    )
+    late = _memory(
+        content="Company IPO.",
+        valid_from=datetime(2023, 1, 1, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000042"),
+    )
+    vectors = {
+        "What happened after 2020?": (1.0, 0.0),
+        early.content: (0.85, 0.0),
+        late.content: (0.9, 0.0),
+    }
+    harness = _harness([early, late], vectors=vectors)
+    result = harness.retrieve(
+        "What happened after 2020?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert late.memory_id in ranked_ids
+    assert early.memory_id not in ranked_ids
+    assert any(
+        exclusion.reason == "temporal_interval_excluded"
+        and exclusion.memory_id == early.memory_id
+        for exclusion in result.exclusions
+    ), "events before the after-bound must be excluded with an observable reason"
+
+
+def test_fixed_vector_results_remain_unchanged_with_temporal_sources_present() -> None:
+    old = _memory(
+        content="Caroline lived in Austin.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000051"),
+    )
+    recent = _memory(
+        content="Caroline lives in Seattle.",
+        valid_from=datetime(2023, 5, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+        memory_id=UUID("30000000-0000-0000-0000-000000000052"),
+    )
+    vectors = {
+        "What is Caroline's favorite color?": (1.0, 0.0),
+        old.content: (0.9, 0.0),
+        recent.content: (0.85, 0.0),
+    }
+    harness = _harness([old, recent], vectors=vectors)
+    result = harness.retrieve(
+        "What is Caroline's favorite color?",
+        user_id="u1",
+        strategy=RetrievalStrategy.FIXED_VECTOR,
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert set(ranked_ids) == {old.memory_id, recent.memory_id}
+    assert all(
+        item.component_scores.get("temporal", 0.0) == 0.0
+        for item in result.selected_context
+    ), "fixed vector must not apply temporal weights"
+
+
+def test_sequence_and_duration_constraints_remain_observable() -> None:
+    first = _memory(
+        content="Caroline flew to Lisbon first.",
+        valid_from=datetime(2021, 3, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    second = _memory(
+        content="Caroline flew to Porto afterwards.",
+        valid_from=datetime(2021, 4, 1, tzinfo=UTC),
+        entities=[{"name": "Caroline", "role": "subject"}],
+    )
+    harness = _harness([first, second])
+    sequence = harness.retrieve(
+        "In what order did Caroline visit Lisbon and Porto?",
+        user_id="u1",
+    )
+    assert sequence.routing is not None
+    assert sequence.routing.temporal_constraint.operator is TemporalOperator.SEQUENCE
+    assert sequence.routing.temporal_constraint.rule_hits == ["sequence_rule"]
+    assert sequence.routing.temporal_constraint.matched_spans
+    assert sequence.selected_context
+
+    duration = harness.retrieve("How long did the meeting last?", user_id="u1")
+    assert duration.routing is not None
+    assert duration.routing.temporal_constraint.operator is TemporalOperator.DURATION
+    assert duration.routing.temporal_constraint.rule_hits == ["duration_rule"]
+    assert duration.routing.temporal_constraint.matched_spans
+    assert duration.selected_context

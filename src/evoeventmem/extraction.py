@@ -255,6 +255,19 @@ class _LLMExtractionPayload(BaseModel):
     events: list[_EventDraft] = Field(default_factory=list)
 
 
+def _strip_json_fences(text: str) -> str:
+    """Strip optional Markdown code fences around an LLM JSON response."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
 def _evidence_scope(request: ExtractionInput, *parts: str) -> str:
     scope_parts: list[str] = []
     if request.dataset is not None:
@@ -563,7 +576,9 @@ class LLMEventExtractor:
         ]
         response = self._model.generate(messages)
         try:
-            payload = _LLMExtractionPayload.model_validate_json(response.text)
+            payload = _LLMExtractionPayload.model_validate_json(
+                _strip_json_fences(response.text)
+            )
         except ValidationError as exc:
             raise ValueError("LLM extractor returned invalid event JSON") from exc
 

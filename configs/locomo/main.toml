@@ -10,13 +10,41 @@ max_input_tokens = 4096
 max_candidates_per_source = 128
 max_items_per_source = 8
 
+# Legacy provider block consumed by the pre-B6 runner; superseded by the
+# explicit [reader]/[extractor]/[embedding] sections below once the runner
+# consumes benchmarks.common.providers.
 [live_provider]
 base_url = "https://api.deepseek.com"
 api_key_env = "OPENAI_API_KEY"
 chat_model = "deepseek-v4-flash"
 disable_thinking = true
 # qwen3-embedding-0.6b served on gpu-5090 (ssh -L 11436:127.0.0.1:11436 gpu-5090); bge-m3 on 11435
+# CONFLICT: plan/spec references gpu-4090; the existing config comments gpu-5090.
+# The embedding base_url must be confirmed before the live main run.
 embedding_base_url = "http://127.0.0.1:11436/v1"
 embedding_api_key_env = "EMBEDDING_API_KEY"
 embedding_model = "qwen3-embedding-0.6b"
+timeout_s = 60
+
+[reader]
+provider = "openai_compatible"
+model_id = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 60
+thinking = "disabled"
+
+[extractor]
+provider = "openai_compatible"
+model_id = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 60
+thinking = "disabled"
+
+[embedding]
+provider = "openai_compatible"
+model_id = "qwen3-embedding-0.6b"
+base_url = "http://127.0.0.1:11436/v1"
+api_key_env = "EMBEDDING_API_KEY"
 timeout_s = 60

@@ -254,6 +254,25 @@ def test_async_service_forget_removes_from_search() -> None:
     _run(scenario())
 
 
+def test_async_service_write_never_dedups_onto_forgotten_memories() -> None:
+    async def scenario() -> None:
+        service, _ = _make_service()
+        scope = _scope()
+        original = await service.write(scope, _record(content="npmmirror registry"))
+        forgotten = await service.forget(scope, original.memory_id)
+        assert forgotten is not None
+        assert forgotten.status is MemoryStatus.DELETED
+        fresh = await service.write(scope, _record(content="npmmirror registry"))
+        assert fresh.memory_id != original.memory_id
+        assert fresh.status is not MemoryStatus.DELETED
+        assert "forgotten_at" not in fresh.metadata
+        hits = await service.search(scope, "npmmirror", limit=5)
+        assert any(hit.memory.memory_id == fresh.memory_id for hit in hits)
+        assert not any(hit.memory.memory_id == original.memory_id for hit in hits)
+
+    _run(scenario())
+
+
 def test_async_service_propagates_repository_unavailability() -> None:
     class _UnavailableRepository(AsyncInMemoryRepository):
         async def add(

@@ -232,7 +232,7 @@ class _EvidenceDraft(BaseModel):
     source_turn_id: str | None = None
     source_session_id: str | None = None
     start_char: int | None = Field(default=None, ge=0)
-    end_char: int | None = Field(default=None, gt=0)
+    end_char: int | None = Field(default=None, ge=0)
     quote: str | None = None
 
 

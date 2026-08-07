@@ -632,7 +632,9 @@ class LLMEventExtractor:
         rejections: list[EvidenceReferenceError] = []
         for event_index, draft in enumerate(payload.events):
             try:
-                evidence_refs = _validate_evidence(request, event_index, draft.evidence)
+                evidence_refs = _validate_evidence(
+                    request, event_index, draft.evidence, event_content=draft.content
+                )
             except EvidenceValidationError as exc:
                 rejections.extend(exc.errors)
                 continue
@@ -678,9 +680,7 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
                             "source_session_id": (
                                 "existing session_id or null when turn_id is unique"
                             ),
-                            "start_char": 0,
-                            "end_char": 10,
-                            "quote": "exact substring",
+                            "quote": "exact substring of the turn text",
                         }
                     ],
                 }
@@ -690,10 +690,9 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "Return only JSON.",
             "Every evidence reference must use one of the provided turn_id values.",
             "Provide source_session_id whenever duplicate turn_id values exist.",
-            "Every quote must exactly match content[start_char:end_char].",
+            "Every quote must be an exact substring of the referenced turn text.",
             "In every string value, use single quotes for quoted speech and never "
             "write an unescaped double quote inside a string.",
-            "Write start_char and end_char as plain integers without leading zeros.",
             "Write event_time as a complete ISO-8601 timestamp with zero-padded "
             "seconds and offset, e.g. 2023-05-20T15:58:00+00:00.",
         ] + (
@@ -722,10 +721,43 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
 
+def _resolve_span(
+    draft: _EvidenceDraft,
+    turn: ExtractionTurn,
+    *,
+    event_content: str | None,
+) -> tuple[int, int] | None:
+    """Resolve an exact raw-turn span for one evidence draft.
+
+    Priority: the model-provided span when it is valid; otherwise a
+    deterministic normalized search of the quote; otherwise a deterministic
+    search of the event content. Character positioning is a deterministic
+    algorithm, never a model responsibility.
+    """
+    if (
+        draft.start_char is not None
+        and draft.end_char is not None
+        and 0 <= draft.start_char < draft.end_char
+        and draft.end_char <= len(turn.content)
+    ):
+        return draft.start_char, draft.end_char
+    if draft.quote:
+        span = _exact_normalized_span(draft.quote, turn.content)
+        if span is not None:
+            return span
+    if event_content:
+        span = _exact_normalized_span(event_content, turn.content)
+        if span is not None:
+            return span
+    return None
+
+
 def _validate_evidence(
     request: ExtractionInput,
     event_index: int,
     evidence: Sequence[_EvidenceDraft],
+    *,
+    event_content: str | None = None,
 ) -> list[EvidenceRef]:
     turns_by_id: dict[str, list[ExtractionTurn]] = {}
     for turn in request.turns:
@@ -795,7 +827,8 @@ def _validate_evidence(
             )
             continue
         turn = matching_turns[0]
-        if draft.start_char >= draft.end_char or draft.end_char > len(turn.content):
+        span = _resolve_span(draft, turn, event_content=event_content)
+        if span is None:
             errors.append(
                 EvidenceReferenceError(
                     code="invalid_span",
@@ -805,34 +838,20 @@ def _validate_evidence(
                     start_char=draft.start_char,
                     end_char=draft.end_char,
                     quote=draft.quote,
-                    message=f"event {event_index} has invalid span for {draft.source_turn_id}",
-                )
-            )
-            continue
-        actual_quote = turn.content[draft.start_char : draft.end_char]
-        if actual_quote != draft.quote:
-            errors.append(
-                EvidenceReferenceError(
-                    code="quote_mismatch",
-                    event_index=event_index,
-                    source_turn_id=draft.source_turn_id,
-                    source_session_id=draft.source_session_id,
-                    start_char=draft.start_char,
-                    end_char=draft.end_char,
-                    quote=draft.quote,
                     message=(
-                        f"event {event_index} quote does not match span for "
+                        f"event {event_index} has no matching span in "
                         f"{draft.source_turn_id}"
                     ),
                 )
             )
             continue
+        start_char, end_char = span
         refs.append(
             _turn_evidence(
                 request,
                 turn,
-                start_char=draft.start_char,
-                end_char=draft.end_char,
+                start_char=start_char,
+                end_char=end_char,
             )
         )
     if errors:

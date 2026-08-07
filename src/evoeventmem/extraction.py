@@ -206,6 +206,7 @@ class ExtractionResult(BaseModel):
 
 class EvidenceReferenceError(BaseModel):
     code: Literal[
+        "missing_turn_id",
         "unknown_turn_id",
         "ambiguous_turn_id",
         "invalid_span",
@@ -228,11 +229,11 @@ class EvidenceValidationError(ValueError):
 
 
 class _EvidenceDraft(BaseModel):
-    source_turn_id: str = Field(min_length=1)
+    source_turn_id: str | None = None
     source_session_id: str | None = None
-    start_char: int = Field(ge=0)
-    end_char: int = Field(gt=0)
-    quote: str = Field(min_length=1)
+    start_char: int | None = Field(default=None, ge=0)
+    end_char: int | None = Field(default=None, gt=0)
+    quote: str | None = None
 
 
 class _EventDraft(BaseModel):
@@ -733,6 +734,20 @@ def _validate_evidence(
     errors: list[EvidenceReferenceError] = []
     refs: list[EvidenceRef] = []
     for draft in evidence:
+        if draft.source_turn_id is None:
+            errors.append(
+                EvidenceReferenceError(
+                    code="missing_turn_id",
+                    event_index=event_index,
+                    source_turn_id="",
+                    source_session_id=draft.source_session_id,
+                    start_char=draft.start_char,
+                    end_char=draft.end_char,
+                    quote=draft.quote,
+                    message=f"event {event_index} evidence is missing source_turn_id",
+                )
+            )
+            continue
         matching_turns = turns_by_id.get(draft.source_turn_id, [])
         if draft.source_session_id is not None:
             matching_turns = [

@@ -479,6 +479,39 @@ def _exact_normalized_span(needle: str, haystack: str) -> tuple[int, int] | None
         search_from = normalized_start + 1
 
 
+def _chunk_turns(
+    request: ExtractionInput, chunk_turns: int
+) -> list[ExtractionInput]:
+    """Split a request into chunks of at most ``chunk_turns`` turns.
+
+    Chunks break at session boundaries so a session's dialogue is never split
+    mid-conversation. Requests already at or below the limit return unchanged.
+    """
+    if len(request.turns) <= chunk_turns:
+        return [request]
+    chunks: list[ExtractionInput] = []
+    current: list[ExtractionTurn] = []
+    current_session: str | None = None
+    for turn in request.turns:
+        if (
+            len(current) >= chunk_turns
+            and current_session is not None
+            and turn.session_id != current_session
+        ):
+            chunks.append(request.model_copy(update={"turns": current}))
+            current = []
+            current_session = None
+        current.append(turn)
+        current_session = turn.session_id
+        if len(current) >= chunk_turns:
+            chunks.append(request.model_copy(update={"turns": current}))
+            current = []
+            current_session = None
+    if current:
+        chunks.append(request.model_copy(update={"turns": current}))
+    return chunks
+
+
 def _deduplicate_candidates(
     candidates: Sequence[ExtractedEventCandidate],
 ) -> list[ExtractedEventCandidate]:
@@ -606,11 +639,33 @@ class LLMEventExtractor:
     """
 
     PROMPT_VERSION = "event-extraction.v1"
+    CHUNK_TURNS = 30
 
     def __init__(self, model: ChatModel) -> None:
         self._model = model
 
     def extract(self, request: ExtractionInput) -> ExtractionResult:
+        chunks = _chunk_turns(request, self.CHUNK_TURNS)
+        if len(chunks) == 1:
+            return self._extract_single(chunks[0])
+        all_candidates: list[ExtractedEventCandidate] = []
+        all_rejections: list[EvidenceReferenceError] = []
+        raw_parts: list[str] = []
+        for chunk in chunks:
+            result = self._extract_single(chunk)
+            all_candidates.extend(result.candidates)
+            all_rejections.extend(result.rejections)
+            if result.raw_output:
+                raw_parts.append(result.raw_output)
+        return ExtractionResult(
+            prompt_version=self.PROMPT_VERSION,
+            candidates=_deduplicate_candidates(all_candidates),
+            rejections=all_rejections,
+            raw_output="\n".join(raw_parts) or None,
+            model_id=self._model.model_id,
+        )
+
+    def _extract_single(self, request: ExtractionInput) -> ExtractionResult:
         messages = [
             ChatMessage(role="system", content=self.PROMPT_VERSION),
             ChatMessage(role="user", content=_build_llm_prompt(request)),

@@ -143,16 +143,17 @@
     {
       "id": "M15",
       "title": "Ablations, statistics, and error analysis",
-      "status": "TODO",
+      "status": "IN_PROGRESS",
       "path": "tasks/mainline/M15_analysis.md",
       "verify": [
-        "uv run python -m benchmarks.analysis.validate_report runs/main"
+        "uv run pytest -q tests/analysis",
+        "uv run python -m benchmarks.analysis.validate_report --config configs/analysis/main.toml"
       ]
     },
     {
       "id": "M16",
       "title": "Production API, persistence, and observability",
-      "status": "TODO",
+      "status": "DONE",
       "path": "tasks/mainline/M16_production_api.md",
       "verify": [
         "uv run pytest -q tests/api tests/infra",

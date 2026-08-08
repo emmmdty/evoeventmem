@@ -21,8 +21,8 @@
 | M12 | [QEMR hybrid retrieval and budget packing](tasks/mainline/M12_qemr.md) | DONE |
 | M13 | [LongMemEval main experiment](tasks/mainline/M13_longmemeval.md) | DONE |
 | M14 | [LoCoMo main experiment](tasks/mainline/M14_locomo.md) | DONE |
-| M15 | [Ablations, statistics, and error analysis](tasks/mainline/M15_analysis.md) | TODO |
-| M16 | [Production API, persistence, and observability](tasks/mainline/M16_production_api.md) | TODO |
+| M15 | [Ablations, statistics, and error analysis](tasks/mainline/M15_analysis.md) | IN_PROGRESS |
+| M16 | [Production API, persistence, and observability](tasks/mainline/M16_production_api.md) | DONE |
 | M17 | [OpenCode MCP adapter](tasks/mainline/M17_opencode_mcp.md) | TODO |
 | M18 | [Reproduction, demo, and resume release](tasks/mainline/M18_release.md) | TODO |
 

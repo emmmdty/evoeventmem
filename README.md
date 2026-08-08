@@ -11,7 +11,7 @@
 5. 完成公开基准、消融、效率和错误分析。
 6. 将 Memory Service 以 MCP 接入 OpenCode，形成 Coding/Debug Agent 演示。
 
-附加优化项目必须在主线结果稳定后启动，见 [`docs/OPTIONAL_EXTENSIONS.md`](docs/OPTIONAL_EXTENSIONS.md)。
+附加优化项目必须在主线结果稳定后启动，见 [`docs/archive/OPTIONAL_EXTENSIONS.md`](docs/archive/OPTIONAL_EXTENSIONS.md)。
 
 ## 为什么采用独立 Memory Service
 
@@ -24,18 +24,19 @@ OpenCode MCP ─────────┤          │
 
 Agent Runtime 负责规划、工具调用和执行；本项目负责记忆写入、整合、检索、证据追踪与生命周期管理。
 
-## 初始化后的状态
+## 当前状态
 
-当前脚手架只包含一个可测试的最小垂直切片：
+已实现 M01–M16 完整主线：
 
-- MemoryRecord 数据模型；
-- In-memory repository；
-- 简单词项重叠检索；
-- FastAPI 健康检查、写入和检索接口；
-- 数据集下载脚本；
-- Codex 逐任务执行规范。
+- 事件记忆写入链路：候选提取、实体/事件链接、ETEC 时序整合（ADD/MERGE/SUPERSEDE/REJECT）、证据溯源持久化；
+- 查询链路：规则路由器、QEMR 查询自适应混合检索（向量+时序+图）、token 预算打包；
+- 提取方法论：分块提取 + 确定性 span 定位（模型无关，LLM 只做语义判断）；
+- 双基准评测工程：LongMemEval / LoCoMo 运行器、统一预算、无 oracle 泄漏、不可变产物（FINALIZED.json）、内容寻址分析；
+- 生产服务：FastAPI + PostgreSQL/pgvector（asyncpg 池）、多租户隔离（tenant/user/session）、fail-closed 降级、可观测性、Docker Compose。
 
-它**不是最终算法实现**。后续工作必须按 `TASKS.md` 顺序推进。
+项目结构、评测协议、部署决策与竞品定位分别见
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/EVALUATION.md`](docs/EVALUATION.md)、
+[`docs/DEPLOYMENT_DECISIONS.md`](docs/DEPLOYMENT_DECISIONS.md)、[`docs/COMPETITIVE_ANALYSIS.md`](docs/COMPETITIVE_ANALYSIS.md)。
 
 ## 快速开始
 
@@ -84,7 +85,7 @@ python scripts/taskctl.py prompt M01 > /tmp/M01.prompt.txt
 codex exec --sandbox workspace-write "$(cat /tmp/M01.prompt.txt)"
 ```
 
-不要使用“完成整个项目”一类提示词。详见 [`docs/CODEX_WORKFLOW.md`](docs/CODEX_WORKFLOW.md)。
+不要使用“完成整个项目”一类提示词。详见 [`docs/archive/CODEX_WORKFLOW.md`](docs/archive/CODEX_WORKFLOW.md)。
 
 ## 数据集
 

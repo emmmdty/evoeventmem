@@ -241,7 +241,7 @@ class _EventDraft(BaseModel):
     speaker: str | None = None
     entities: list[str] = Field(default_factory=list)
     event_time: datetime | None = None
-    evidence: list[_EvidenceDraft] = Field(min_length=1)
+    evidence: list[_EvidenceDraft] = Field(default_factory=list)
 
     @field_validator("event_time", mode="before")
     @classmethod

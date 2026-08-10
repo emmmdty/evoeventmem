@@ -666,14 +666,28 @@ class LLMEventExtractor:
         )
 
     def _extract_single(self, request: ExtractionInput) -> ExtractionResult:
-        last_error: Exception | None = None
         for attempt in range(3):
             try:
                 return self._extract_attempt(request, attempt)
-            except (ValidationError, ValueError) as exc:
-                last_error = exc
-        assert last_error is not None
-        raise last_error
+            except (ValidationError, ValueError):
+                continue
+        return ExtractionResult(
+            prompt_version=self.PROMPT_VERSION,
+            candidates=[],
+            rejections=[
+                EvidenceReferenceError(
+                    code="invalid_span",
+                    event_index=0,
+                    source_turn_id="",
+                    source_session_id=None,
+                    message=(
+                        "extraction chunk failed to produce valid JSON after "
+                        "3 attempts; chunk excluded"
+                    ),
+                )
+            ],
+            model_id=self._model.model_id,
+        )
 
     def _extract_attempt(self, request: ExtractionInput, attempt: int) -> ExtractionResult:
         messages = [

@@ -666,10 +666,29 @@ class LLMEventExtractor:
         )
 
     def _extract_single(self, request: ExtractionInput) -> ExtractionResult:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._extract_attempt(request, attempt)
+            except (ValidationError, ValueError) as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    def _extract_attempt(self, request: ExtractionInput, attempt: int) -> ExtractionResult:
         messages = [
             ChatMessage(role="system", content=self.PROMPT_VERSION),
             ChatMessage(role="user", content=_build_llm_prompt(request)),
         ]
+        if attempt:
+            messages[1] = ChatMessage(
+                role="user",
+                content=(
+                    f"{messages[1].content}\n"
+                    f"--- retry {attempt}: return well-formed JSON, "
+                    "do not truncate or break the structure ---"
+                ),
+            )
         response = self._model.generate(messages)
         try:
             payload = _LLMExtractionPayload.model_validate_json(
@@ -750,6 +769,11 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "write an unescaped double quote inside a string.",
             "Write event_time as a complete ISO-8601 timestamp with zero-padded "
             "seconds and offset, e.g. 2023-05-20T15:58:00+00:00.",
+            "Extract concrete facts stated by the user: times, durations, "
+            "locations, preferences, decisions, and named entities. A fact like "
+            "\"the commute takes 45 minutes each way\" must be extracted as its "
+            "own event even when the surrounding topic is also extracted.",
+            "Do not merge a concrete user fact into a general topic summary.",
         ] + (
             [
                 "Every event MUST reference at least one raw turn; summary-only "

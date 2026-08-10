@@ -261,7 +261,7 @@ class _LLMExtractionPayload(BaseModel):
     events: list[_EventDraft] = Field(default_factory=list)
 
 
-def _repair_iso_timestamp(value: str) -> str | None:
+def _repair_iso_timestamp(value: str) -> str:
     """Repair truncated ISO-8601 timestamps emitted by LLMs.
 
     Handles truncated seconds or offsets such as ``2023-05-20T02:21:0+00:0``

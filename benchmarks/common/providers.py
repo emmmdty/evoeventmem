@@ -120,7 +120,15 @@ class ModelBundle:
 
 
 def resolve_provider_config(payload: dict[str, object]) -> ProviderConfig:
-    """Build a ProviderConfig from a raw config dict (TOML-decoded)."""
+    """Build a ProviderConfig from a raw config dict (TOML-decoded).
+
+    Environment variables override the TOML defaults per role:
+
+    - ``EEM_LLM_BASE_URL`` / ``EEM_LLM_MODEL`` / ``EEM_LLM_API_KEY_ENV``
+      apply to both reader and extractor unless a role-specific variable is set.
+    - Role-specific: ``EEM_READER_*``, ``EEM_EXTRACTOR_*``, ``EEM_EMBEDDING_*``.
+    - ``EEM_LLM_THINKING``, ``EEM_LLM_MAX_TOKENS`` apply to chat roles.
+    """
     provider = payload.get("provider", "deterministic_fake")
     if provider not in ("deterministic_fake", "openai_compatible"):
         raise ValueError(f"unsupported provider: {provider}")
@@ -129,7 +137,29 @@ def resolve_provider_config(payload: dict[str, object]) -> ProviderConfig:
         section = payload.get(name)
         if not isinstance(section, dict):
             raise ValueError(f"missing explicit [{name}] provider section")
-        return {"role": name, "kind": provider, **section}
+        merged: dict[str, object] = {"role": name, "kind": provider, **section}
+        prefix = name.upper()
+        if name in ("reader", "extractor"):
+            for env_name, field in (
+                ("EEM_LLM_BASE_URL", "base_url"),
+                ("EEM_LLM_MODEL", "model_id"),
+                ("EEM_LLM_API_KEY_ENV", "api_key_env"),
+            ):
+                value = os.environ.get(env_name)
+                if value:
+                    merged[field] = value
+            thinking = os.environ.get("EEM_LLM_THINKING")
+            if thinking:
+                merged["thinking"] = thinking
+            max_tokens = os.environ.get("EEM_LLM_MAX_TOKENS")
+            if max_tokens:
+                merged["max_tokens"] = int(max_tokens)
+        for field in ("base_url", "model_id", "api_key_env"):
+            env_name = f"EEM_{prefix}_{field.upper()}"
+            value = os.environ.get(env_name)
+            if value:
+                merged[field] = value
+        return merged
 
     return ProviderConfig(
         provider=provider,

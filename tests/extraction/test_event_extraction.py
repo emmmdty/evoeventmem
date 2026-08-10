@@ -6,13 +6,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 from benchmarks.common.normalization import iter_locomo_records
 from evoeventmem.core.ports import ChatMessage, ChatResponse
 from evoeventmem.domain.models import MemoryKind
 from evoeventmem.extraction import (
-    EvidenceValidationError,
     ExtractionEventSummary,
     ExtractionInput,
     ExtractionTurn,

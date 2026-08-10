@@ -40,6 +40,7 @@ from evoeventmem.extraction import (
     ExtractedEventCandidate,
     ExtractionInput,
     ExtractionResult,
+    ExtractionTurn,
     LLMEventExtractor,
     _turn_evidence,
 )

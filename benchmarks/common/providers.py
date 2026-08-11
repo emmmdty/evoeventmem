@@ -155,7 +155,8 @@ def resolve_provider_config(payload: dict[str, object]) -> ProviderConfig:
             if max_tokens:
                 merged["max_tokens"] = int(max_tokens)
         for field in ("base_url", "model_id", "api_key_env"):
-            env_name = f"EEM_{prefix}_{field.upper()}"
+            env_suffix = "MODEL" if field == "model_id" else field.upper()
+            env_name = f"EEM_{prefix}_{env_suffix}"
             value = os.environ.get(env_name)
             if value:
                 merged[field] = value

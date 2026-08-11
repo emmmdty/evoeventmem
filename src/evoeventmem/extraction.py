@@ -788,6 +788,11 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "\"the commute takes 45 minutes each way\" must be extracted as its "
             "own event even when the surrounding topic is also extracted.",
             "Do not merge a concrete user fact into a general topic summary.",
+            "Do NOT extract dialogue-process events such as \"the user asked\", "
+            "\"the assistant provided\", \"the user requested\", \"the assistant "
+            "explained\", or \"the user thanked\". Extract only durable facts: "
+            "the user's attributes, preferences, decisions, activities, "
+            "locations, and time-bound events.",
         ] + (
             [
                 "Every event MUST reference at least one raw turn; summary-only "

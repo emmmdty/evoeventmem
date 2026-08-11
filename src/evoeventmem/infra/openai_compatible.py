@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -95,6 +96,7 @@ def _post_json(
         headers={
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "opencode/1.0",
         },
         method="POST",
     )
@@ -110,7 +112,12 @@ def _post_json(
             if exc.code < 500 and exc.code != 429:
                 raise RuntimeError(f"OpenAI-compatible provider request failed: {exc}") from exc
             last_error = exc
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
             last_error = exc
     else:
         raise RuntimeError(

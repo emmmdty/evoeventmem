@@ -43,7 +43,8 @@ RRF_K = 60.0
 # the question, and one labeled, metadata-bearing block per packed item.
 READER_SYSTEM_DIRECTIVE = (
     "Use the cited evidence below to answer the question. "
-    "Cite evidence labels in your answer."
+    "Answer concisely in a few words or one short sentence, "
+    "matching the facts in the evidence. Do not add explanations."
 )
 QUESTION_PREFIX = "Question: "
 
@@ -106,10 +107,10 @@ QEMR_WEIGHT_PROFILES: dict[QueryIntent, dict[CandidateSource, float]] = {
     },
     QueryIntent.HYBRID: {
         CandidateSource.DENSE: 1.0,
-        CandidateSource.TEMPORAL: 1.0,
-        CandidateSource.GRAPH: 1.0,
-        CandidateSource.EPISODIC: 1.0,
-        CandidateSource.PROCEDURAL: 1.0,
+        CandidateSource.GRAPH: 0.3,
+        CandidateSource.TEMPORAL: 0.2,
+        CandidateSource.EPISODIC: 0.1,
+        CandidateSource.PROCEDURAL: 0.0,
     },
 }
 

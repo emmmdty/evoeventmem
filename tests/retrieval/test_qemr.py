@@ -1356,3 +1356,27 @@ def test_budget_matches_frozen_estimator_on_rendered_messages() -> None:
     assert recheck.total_tokens == result.budget.total_input_tokens_estimate
     assert recheck.content_tokens == result.budget.content_tokens
     assert recheck.message_overhead_tokens == result.budget.prompt_overhead_tokens
+
+
+def test_duration_constraint_does_not_exclude_untimestamped_events() -> None:
+    untimed = _memory(
+        content="User has a daily commute that takes 45 minutes each way.",
+        evidence_id="evidence-1",
+        memory_id=UUID("60000000-0000-0000-0000-000000000001"),
+    )
+    vectors = {
+        "How long is my daily commute to work?": (1.0, 0.0),
+        untimed.content: (0.9, 0.0),
+    }
+    harness = _harness([untimed], vectors=vectors)
+    result = harness.retrieve(
+        "How long is my daily commute to work?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    assert untimed.memory_id in [
+        item.memory.memory_id for item in result.selected_context
+    ]
+    assert not any(
+        exclusion.reason == "temporal_interval_excluded" for exclusion in result.exclusions
+    )

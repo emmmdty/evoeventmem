@@ -768,6 +768,8 @@ class RetrievalHarness:
         if operator is TemporalOperator.NONE:
             upgraded = self._apply_unconstrained_temporal(pool, reference)
             return non_temporal + upgraded + outside_pool, []
+        if operator is TemporalOperator.DURATION:
+            return list(candidates), []
         if operator is TemporalOperator.LATEST or operator is TemporalOperator.EARLIEST:
             processed = self._apply_extremal_temporal(
                 pool,

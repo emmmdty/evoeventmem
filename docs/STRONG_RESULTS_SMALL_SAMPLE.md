@@ -116,8 +116,9 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
   根因是候选 cap / 链接索引按随机 `memory_id` UUID 打破平局（`retrieval._cap_candidates`、
   `linking._build_request_indexes`）的 run-to-run 非确定性。**该根因已于 2026-08-14 修复**
   （tie-break 改用内容+证据派生的 `memory_order_key`，新增 run-id 无关回归测试）；
-  6m 重跑复验因外部服务不可达仍待办，修复前跨 run 数字不可逐位比对。报告内所有
-  比较均为同 run 配对，不受影响。
+  修复后的同代码双 run 复验因 opencode 网关周配额耗尽（`GoUsageLimitError`，2026-08-15）
+  待配额重置后继续（`runs/recheck/` 已跑 21/24，resume 即可）。修复前跨 run 数字不可
+  逐位比对；报告内所有比较均为同 run 配对，不受影响。
 
 ## 7. multi-session 切片（ETEC 合并机制验证，2026-08-14）
 

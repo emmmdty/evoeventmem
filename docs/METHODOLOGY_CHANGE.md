@@ -97,8 +97,25 @@
    `memory_order_key` 使 tie-break 基于内容+证据而非随机 memory_id，
    覆盖 `retrieval._cap_candidates` 与 `linking._build_request_indexes`，
    新增回归测试 `test_retrieval_decisions_are_run_id_independent` 与
-   `test_event_index_order_is_run_id_independent`；**6m 重跑因 embedding/LLM
-   服务不可达而阻塞**——修复后的复跑验证仍是待办，修复前跨 run 数字不可逐位比对）。
+   `test_event_index_order_is_run_id_independent`）。
    另注：`a0907e94`（6m）报告生成所用的 analysis config（`sha256:f796e6fd…`）
    与仓库内 `configs/analysis/main.toml`（`ef98168f…`）不一致——该 config 未入库，
    报告已封存不可变，重生成需还原该 config 变体。
+
+## 7. 6m 重跑复验进展（2026-08-15）
+
+- **环境诊断**：embedding 服务在 `gpu-5090` 上正常（`qwen_embed_server.py`，无认证），
+  需 `ssh -L 11436:127.0.0.1:11436 gpu-5090` 建立隧道；LLM 网关 opencode.ai/zen/go/v1
+  经 urllib（HTTP/1.1）可达，curl 默认 HTTP/2 的 PROTOCOL_ERROR 与 `GoUsageLimitError`
+  曾造成"服务不可达"误判。`.env` 补充 `EMBEDDING_API_KEY=local-no-auth`（服务无认证，
+  占位满足 provider 配置校验）。
+- **运行器缺陷修复**（commit `7e21dd6`）：`--resume-dir` 对自定义 `--sample-ids` 子集
+  run 会因样本集重建自 config sample_limit 而 manifest drift；现从既有 manifest
+  恢复 expected ids，新增 `test_resume_custom_sample_subset_restores_manifest_ids`。
+- **重跑进度**：6m（6 方法 × 24 样本，config_hash `6f959d5e…` 与原 run 一致）已跑 21/24
+  样本（`runs/recheck/`，per-sample 不可变），因 opencode 网关**周配额耗尽**
+  （`GoUsageLimitError`，2 天后重置）中断。已完成样本中 etec EM 与旧 run 相当
+  （0.524/21 vs 旧 0.524，无端到端差异声明）。
+- **未决**：修复后的"同代码两次 run 预测一致"复验待配额重置后完成（resume 即可，
+  无需重跑已完成样本）；新旧 run 提取快照不一致（235 vs 263 事件），跨 run 预测
+  对比不能作为非确定性修复的干净证据——确定性验证以回归测试 + 同代码双 run 为准。

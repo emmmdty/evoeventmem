@@ -377,3 +377,19 @@ def _parse_locator(locator: str) -> tuple[int, int]:
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_resume_custom_sample_subset_restores_manifest_ids(tmp_path: Path) -> None:
+    config = load_config(SMOKE_CONFIG)
+    run_dir = tmp_path / "run"
+    first = run_experiment(config, run_dir, sample_ids=["lme-q1"])
+
+    assert first.sample_validation.completed_sample_count == 1
+    manifest = RunManifest.model_validate_json(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest.expected_sample_ids == ["lme-q1"]
+
+    second = run_experiment(config, run_dir)
+    assert second.sample_validation.completed_sample_count == 1
+    assert second.sample_validation.valid

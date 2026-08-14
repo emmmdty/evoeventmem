@@ -355,6 +355,13 @@ def run_experiment(
     mutation; manifest drift refuses the run.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
+    existing_manifest = (
+        RunManifest.model_validate(json.loads((run_dir / "manifest.json").read_text()))
+        if (run_dir / "manifest.json").exists()
+        else None
+    )
+    if sample_ids is None and existing_manifest is not None:
+        sample_ids = list(existing_manifest.expected_sample_ids)
     records = _apply_sample_ids(_load_records(config), sample_ids)
     expected_sample_ids = [record.sample_id for record in records]
     expected_question_ids = [record.questions[0].question_id for record in records]

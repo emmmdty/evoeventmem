@@ -437,7 +437,13 @@ class ETECConsolidator:
             and features.entity_role_overlap >= self._thresholds.merge_entity_role_min
             and score >= self._thresholds.merge_score_min
         ):
-            if _merge_temporally_compatible(source, target):
+            if _distinct_fact_value(source, target):
+                rule_hits.append("distinct_fact_value")
+                reason = (
+                    "Both memories declare fact metadata with distinct values, "
+                    "so they are added as separate facts."
+                )
+            elif _merge_temporally_compatible(source, target):
                 action = ConsolidationAction.MERGE
                 rule_hits.append("duplicate_fact")
                 reason = (
@@ -949,6 +955,30 @@ def fact_value_key(memory: MemoryRecord) -> str:
 
 def _same_fact_value(source: MemoryRecord, target: MemoryRecord) -> bool:
     return fact_value_key(source) == fact_value_key(target)
+
+
+def _explicit_fact_value(memory: MemoryRecord) -> str | None:
+    value = memory.metadata.get("fact_value")
+    if isinstance(value, str) and normalized_linking_key(value):
+        return normalized_linking_key(value)
+    return None
+
+
+def _distinct_fact_value(source: MemoryRecord, target: MemoryRecord) -> bool:
+    """True when both memories declare explicit fact values that disagree.
+
+    Memories that only carry semantic content (no explicit fact value) keep
+    the ordinary merge path; the gate applies only when the write pipeline
+    declares durable fact identity and the values disagree, so distinct
+    facts are never folded into one record.
+    """
+    source_value = _explicit_fact_value(source)
+    target_value = _explicit_fact_value(target)
+    return (
+        source_value is not None
+        and target_value is not None
+        and source_value != target_value
+    )
 
 
 def _memory_is_multi_valued(memory: MemoryRecord) -> bool:

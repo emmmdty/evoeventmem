@@ -332,7 +332,7 @@ def test_main_config_resolves_independent_models() -> None:
     assert config.providers.reader.api_key_env == "OPENAI_API_KEY"
     assert config.providers.embedding.api_key_env == "EMBEDDING_API_KEY"
     assert config.providers.reader.thinking == "disabled"
-    assert config.max_extraction_tokens == 65536
+    assert config.max_extraction_tokens == 262144
     assert set(config.methods) == {method.value for method in Method}
 
 

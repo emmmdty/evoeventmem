@@ -15,7 +15,13 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from evoeventmem.core.ports import EmbeddingModel
-from evoeventmem.domain.models import EntityRef, MemoryKind, MemoryRecord, MemoryStatus
+from evoeventmem.domain.models import (
+    EntityRef,
+    MemoryKind,
+    MemoryRecord,
+    MemoryStatus,
+    memory_order_key,
+)
 
 _KEY_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
 
@@ -270,7 +276,7 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
     ):
         for entity_posting in entity_postings.values():
             entity_posting.sort(key=lambda entry: entry.stable_key)
-    indexes.event_targets.sort(key=lambda memory: str(memory.memory_id))
+    indexes.event_targets.sort(key=memory_order_key)
     for event_postings in (
         indexes.event_content_index,
         indexes.event_token_index,
@@ -278,7 +284,7 @@ def _build_request_indexes(request: CandidateGenerationRequest) -> _RequestIndex
         indexes.fact_slot_index,
     ):
         for event_posting in event_postings.values():
-            event_posting.sort(key=lambda memory: str(memory.memory_id))
+            event_posting.sort(key=memory_order_key)
     return indexes
 
 

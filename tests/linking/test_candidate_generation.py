@@ -1004,3 +1004,51 @@ def test_common_token_selection_work_is_globally_bounded() -> None:
     assert result.event_comparison_count == 3
     assert model.calls == 1
     assert len(model.embedded_texts) <= 2 * (4 + 3)
+
+
+def test_event_index_order_is_run_id_independent() -> None:
+    """Event posting order must not depend on random memory UUIDs.
+
+    ``_build_request_indexes`` previously sorted event targets and postings
+    by ``memory_id``, so two runs over identical snapshots (different random
+    UUIDs) could generate candidates in different order and, at a limit,
+    produce different candidates.
+    """
+    source, existing, _ = _fixture_records()
+    template = existing[0].model_copy(
+        update={
+            "metadata": {},
+            "event_time": source.event_time,
+            "valid_from": source.event_time,
+        }
+    )
+    uuids_a = [UUID(int=index + 1) for index in range(6)]
+    uuids_b = [UUID(int=index + 1000) for index in range(6)]
+
+    def run(uuids: list[UUID]) -> tuple[list[str], list[str]]:
+        records = [
+            template.model_copy(
+                update={
+                    "memory_id": uuid,
+                    "content": f"Target event {index}",
+                    "entities": [
+                        source.entities[0].model_copy(update={"name": f"Person {index}"})
+                    ],
+                }
+            )
+            for index, uuid in enumerate(uuids)
+        ]
+        result = LinkCandidateGenerator(DeterministicFakeEmbeddingModel()).generate(
+            CandidateGenerationRequest(
+                source=source,
+                existing=records,
+                max_entity_candidates=6,
+                max_event_candidates=6,
+                event_time_window_days=30,
+            )
+        )
+        events = [candidate.target_memory.content for candidate in result.event_candidates]
+        entities = [candidate.target_memory.content for candidate in result.entity_candidates]
+        return sorted(events), sorted(entities)
+
+    assert run(uuids_a) == run(uuids_b)

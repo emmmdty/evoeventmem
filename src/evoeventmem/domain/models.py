@@ -19,6 +19,40 @@ def normalize_memory_content(content: str) -> str:
     return " ".join(content.split()).casefold()
 
 
+def memory_order_key(memory: MemoryRecord) -> tuple[str, ...]:
+    """Run-independent ordering prefix for a durable memory.
+
+    ``memory_id`` is a random UUID assigned at write time; using it as the
+    primary tie-break makes retrieval and linking order depend on the run.
+    This key derives only from content and evidence refs, which are
+    identical across runs that share the same extraction snapshot.
+
+    Callers that need a total order append ``str(memory.memory_id)`` as the
+    final element: ties on this prefix are semantically equivalent memories,
+    so the trailing UUID only breaks ties that cannot change the rendered
+    reader input.
+    """
+    evidence = tuple(
+        part
+        for ref in sorted(
+            memory.evidence_refs,
+            key=lambda ref: (
+                ref.source_type,
+                ref.source_id,
+                ref.locator or "",
+                ref.quote or "",
+            ),
+        )
+        for part in (
+            ref.source_type,
+            ref.source_id,
+            ref.locator or "",
+            ref.quote or "",
+        )
+    )
+    return (normalize_memory_content(memory.content), *evidence)
+
+
 class MemoryKind(StrEnum):
     FACT = "fact"
     EVENT = "event"

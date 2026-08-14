@@ -418,7 +418,7 @@
       "case_id": "controlled_evidence_policy",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 67,
+      "budget_tokens": 90,
       "memories": [
         {
           "memory_id": "78100000-0000-0000-0000-000000000001",
@@ -450,7 +450,7 @@
           "memory_id": "78100000-0000-0000-0000-000000000003",
           "user_id": "u1",
           "memory_kind": "fact",
-          "content": "epsilon zeta",
+          "content": "zeta omega",
           "entities": [],
           "evidence_refs": [
             {

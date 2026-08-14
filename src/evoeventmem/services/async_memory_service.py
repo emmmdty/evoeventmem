@@ -15,7 +15,7 @@ from evoeventmem.core.ports import (
     SearchLimit,
     SearchVector,
 )
-from evoeventmem.domain.models import MemoryRecord, MemoryStatus
+from evoeventmem.domain.models import MemoryRecord, MemoryStatus, memory_order_key
 from evoeventmem.services import memory_rules
 from evoeventmem.services.memory_service import (
     MemoryExplainResult,
@@ -213,7 +213,7 @@ class AsyncMemoryService:
             score = token_overlap_score(query, f"{item.content} {entity_text}")
             if score > 0:
                 scored.append((score, item))
-        scored.sort(key=lambda pair: (-pair[0], str(pair[1].memory_id)))
+        scored.sort(key=lambda pair: (-pair[0], *memory_order_key(pair[1])))
         return [
             SearchHit(
                 memory=item,

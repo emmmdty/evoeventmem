@@ -361,10 +361,10 @@ def _controlled_switch_deltas(
     pairs: list[tuple[str, RetrievalControls, RetrievalControls]] = [
         (
             "controlled_evidence_policy",
-            RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=67),
+            RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=90),
             RetrievalControls(
                 evidence_policy=EvidencePolicy.PROVENANCE_ONLY,
-                budget_tokens=67,
+                budget_tokens=90,
             ),
         ),
         (

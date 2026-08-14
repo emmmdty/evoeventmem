@@ -15,6 +15,7 @@ from evoeventmem.domain.models import (
     MemoryRecord,
     MemorySearchHit,
     MemoryStatus,
+    memory_order_key,
 )
 from evoeventmem.services import memory_rules
 from evoeventmem.services.memory_rules import memory_idempotency_key
@@ -408,7 +409,10 @@ class MemoryService:
                         reason="starter token-overlap baseline",
                     )
                 )
-        return sorted(hits, key=lambda hit: (-hit.score, str(hit.memory.memory_id)))[:limit]
+        return sorted(
+            hits,
+            key=lambda hit: (-hit.score, *memory_order_key(hit.memory)),
+        )[:limit]
 
     def _in_scope(
         self,

@@ -17,6 +17,7 @@ from evoeventmem.domain.models import (
     MemoryKind,
     MemoryRecord,
     MemoryStatus,
+    memory_order_key,
 )
 from evoeventmem.router import (
     QueryIntent,
@@ -614,7 +615,10 @@ class RetrievalHarness:
         for source in ALL_SOURCES:
             source_candidates = sorted(
                 [candidate for candidate in candidates if candidate.source is source],
-                key=lambda candidate: (-candidate.raw_score, str(candidate.memory.memory_id)),
+                key=lambda candidate: (
+                    -candidate.raw_score,
+                    *memory_order_key(candidate.memory),
+                ),
             )
             kept.extend(source_candidates[: self._max_candidates_per_source])
             dropped.update(
@@ -778,6 +782,12 @@ class RetrievalHarness:
             return non_temporal + processed + outside_pool, []
         kept = self._apply_interval_temporal(pool, constraint)
         kept_ids = {candidate.memory.memory_id for candidate in kept}
+        unanchored_ids = {
+            candidate.memory.memory_id
+            for candidate in non_temporal
+            if _temporal_anchor(candidate.memory) is None
+        }
+        kept_ids.update(unanchored_ids)
         dropped_pool_ids = {
             candidate.memory.memory_id for candidate in pool
         } - kept_ids
@@ -844,7 +854,7 @@ class RetrievalHarness:
         anchored.sort(
             key=lambda candidate: (
                 _temporal_anchor(candidate.memory) or datetime.max.replace(tzinfo=UTC),
-                str(candidate.memory.memory_id),
+                *memory_order_key(candidate.memory),
             ),
             reverse=not earliest,
         )
@@ -889,6 +899,7 @@ class RetrievalHarness:
         for candidate in temporal:
             anchor = _temporal_anchor(candidate.memory)
             if anchor is None:
+                ranked.append(candidate)
                 continue
             agreement = _interval_agreement(anchor, lower, upper)
             if agreement <= 0.0:
@@ -901,7 +912,12 @@ class RetrievalHarness:
                     }
                 )
             )
-        ranked.sort(key=lambda candidate: (-candidate.raw_score, str(candidate.memory.memory_id)))
+        ranked.sort(
+            key=lambda candidate: (
+                -candidate.raw_score,
+                *memory_order_key(candidate.memory),
+            )
+        )
         return ranked
 
     def _graph_candidates(
@@ -1015,7 +1031,12 @@ class RetrievalHarness:
         ranks = self._source_ranks(candidates)
         weight_total = sum(weight for weight in weights.values() if weight > 0.0)
         merged: list[ScoredMemory] = []
-        for memory_id in sorted(by_memory, key=str):
+        for memory_id in sorted(
+            by_memory,
+            key=lambda mid: memory_order_key(
+                next(iter(by_memory[mid].values())).memory
+            ),
+        ):
             per_source = by_memory[memory_id]
             memory = next(iter(per_source.values())).memory
             source_scores: list[SourceScore] = []
@@ -1089,7 +1110,7 @@ class RetrievalHarness:
                 ],
                 key=lambda candidate: (
                     -candidate.raw_score,
-                    str(candidate.memory.memory_id),
+                    *memory_order_key(candidate.memory),
                 ),
             )
             ranks[source] = {
@@ -1156,10 +1177,17 @@ class RetrievalHarness:
     ]:
         """Pack items under the complete reader-input token budget.
 
-        The fixed overhead (system directive, question, chat-message overhead)
-        is reserved before any item is selected: an item fits only when the
-        fully rendered reader input still fits the budget. Each packed item
-        records its marginal token cost in the rendered input.
+        Packing runs in two phases. Phase one prefers source diversity: an
+        item is eligible only while its source is under the per-source cap,
+        so a wide but shallow context is assembled first. Phase two then
+        fills any remaining budget with the best-scoring items regardless of
+        source, so a roomy budget is never left half-empty by the diversity
+        preference alone.
+
+        The fixed overhead (system directive, question, chat-message
+        overhead) is reserved before any item is selected: an item fits only
+        when the fully rendered reader input still fits the budget. Each
+        packed item records its marginal token cost in the rendered input.
         """
         selected: list[ScoredMemory] = []
         covered_evidence: set[tuple[str, str, str | None]] = set()
@@ -1168,23 +1196,21 @@ class RetrievalHarness:
         coverage_active = evidence_policy is EvidencePolicy.CONSTRAINED
         pool = sorted(
             list(eligible),
-            key=lambda item: (-item.final_score, str(item.memory.memory_id)),
+            key=lambda item: (-item.final_score, *memory_order_key(item.memory)),
         )
-        while pool:
-            fits = [
-                item
-                for item in pool
-                if self._estimate_reader_input(
+
+        def fits_budget(item: ScoredMemory) -> bool:
+            return (
+                self._estimate_reader_input(
                     query,
                     _reader_entries([*selected, item]),
                 ).total_tokens
                 <= budget
-                and source_counts[_packing_source(item)] < self._max_items_per_source
-            ]
-            if not fits:
-                break
-            best = max(
-                fits,
+            )
+
+        def best_of(candidates: Sequence[ScoredMemory]) -> ScoredMemory:
+            return max(
+                candidates,
                 key=lambda item: (
                     item.final_score
                     + (
@@ -1192,13 +1218,31 @@ class RetrievalHarness:
                         if coverage_active
                         else 0.0
                     ),
-                    str(item.memory.memory_id),
+                    *memory_order_key(item.memory),
                 ),
             )
-            pool.remove(best)
-            selected.append(best)
-            source_counts[_packing_source(best)] += 1
-            covered_evidence.update(_evidence_keys(best.evidence_refs))
+
+        def pack(pool: list[ScoredMemory], allow_oversubscribed: bool) -> None:
+            while pool:
+                fits = [
+                    item
+                    for item in pool
+                    if fits_budget(item)
+                    and (
+                        allow_oversubscribed
+                        or source_counts[_packing_source(item)] < self._max_items_per_source
+                    )
+                ]
+                if not fits:
+                    return
+                best = best_of(fits)
+                pool.remove(best)
+                selected.append(best)
+                source_counts[_packing_source(best)] += 1
+                covered_evidence.update(_evidence_keys(best.evidence_refs))
+
+        pack(pool, allow_oversubscribed=False)
+        pack(pool, allow_oversubscribed=True)
         marginal_tokens: dict[UUID, int] = {}
         running: list[ScoredMemory] = []
         for item in selected:
@@ -1223,12 +1267,7 @@ class RetrievalHarness:
                 ).total_tokens
                 <= budget
             )
-            if source_counts[_packing_source(item)] >= self._max_items_per_source:
-                reason = "source_diversity_cap"
-            elif fits_now:
-                reason = "not_selected_by_packing"
-            else:
-                reason = "budget_exceeded"
+            reason = "not_selected_by_packing" if fits_now else "budget_exceeded"
             exclusions.append(
                 ExclusionRecord(
                     memory_id=item.memory.memory_id,
@@ -1333,7 +1372,7 @@ def _better_candidate(candidate: Candidate, existing: Candidate) -> bool:
         return candidate.normalized_score > existing.normalized_score
     if candidate.raw_score != existing.raw_score:
         return candidate.raw_score > existing.raw_score
-    return str(candidate.memory.memory_id) < str(existing.memory.memory_id)
+    return memory_order_key(candidate.memory) < memory_order_key(existing.memory)
 
 
 def _query_reference_datetime(query: str, now: datetime) -> datetime:

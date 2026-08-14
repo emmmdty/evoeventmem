@@ -1024,6 +1024,36 @@ def test_same_value_disjoint_closed_intervals_add_separate_history() -> None:
     assert repository.get(later.memory_id) is not None
 
 
+def test_merge_requires_same_fact_value_preserving_distinct_facts() -> None:
+    repository = InMemoryMemoryRepository()
+    packed = _memory(
+        "7d000000-0000-0000-0000-000000000001",
+        "On the trip, the user packed 7 shirts.",
+        fact_slot="trip.packed",
+        fact_value="7 shirts",
+        valid_from=datetime(2024, 3, 1, tzinfo=UTC),
+        evidence_id="packed:1",
+    )
+    worn = _memory(
+        "7d000000-0000-0000-0000-000000000002",
+        "On the trip, the user wore 3 shirts.",
+        fact_slot="trip.worn",
+        fact_value="3 shirts",
+        valid_from=datetime(2024, 3, 2, tzinfo=UTC),
+        evidence_id="worn:2",
+    )
+    repository.add(packed)
+
+    result = _consolidator().apply(repository, worn)
+
+    assert result.decision.action is ConsolidationAction.ADD
+    assert "distinct_fact_value" in result.decision.rule_hits
+    assert repository.get(packed.memory_id) is not None
+    assert repository.get(worn.memory_id) is not None
+    assert packed.content in repository.get(packed.memory_id).content  # type: ignore[arg-type]
+    assert worn.content in repository.get(worn.memory_id).content  # type: ignore[arg-type]
+
+
 def test_merge_preserves_transitive_derived_from_provenance() -> None:
     repository = InMemoryMemoryRepository()
     target_parent = UUID("6f000000-0000-0000-0000-000000000010")

@@ -290,7 +290,7 @@ def test_evidence_coverage_bonus_prefers_new_evidence_over_duplicate() -> None:
     )
 
 
-def test_source_diversity_cap_excludes_oversubscribed_source() -> None:
+def test_source_diversity_cap_is_phase_one_preference_not_budget_ceiling() -> None:
     dense_a = _memory(
         content="alpha beta",
         evidence_id="evidence-1",
@@ -320,14 +320,25 @@ def test_source_diversity_cap_excludes_oversubscribed_source() -> None:
         vectors=vectors,
         max_items_per_source=1,
     )
-    result = harness.retrieve("epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID)
-    selected_ids = {item.memory.memory_id for item in result.selected_context}
-    assert dense_a.memory_id in selected_ids
-    assert graph.memory_id in selected_ids
-    assert dense_b.memory_id not in selected_ids
+    tight = harness.retrieve(
+        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=76
+    )
+    tight_ids = {item.memory.memory_id for item in tight.selected_context}
+    assert tight_ids == {dense_a.memory_id, graph.memory_id}
+    assert dense_b.memory_id not in tight_ids
     assert any(
-        exclusion.reason == "source_diversity_cap" and exclusion.memory_id == dense_b.memory_id
-        for exclusion in result.exclusions
+        exclusion.reason == "budget_exceeded" and exclusion.memory_id == dense_b.memory_id
+        for exclusion in tight.exclusions
+    ), "budget binds when the token budget is the tighter constraint"
+    roomy = harness.retrieve(
+        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=200
+    )
+    roomy_ids = {item.memory.memory_id for item in roomy.selected_context}
+    assert dense_a.memory_id in roomy_ids
+    assert graph.memory_id in roomy_ids
+    assert dense_b.memory_id in roomy_ids, (
+        "the per-source cap is a phase-one diversity preference; "
+        "remaining budget must still be filled with the best-scoring items"
     )
 
 
@@ -716,6 +727,47 @@ def test_earliest_orders_only_relevant_pool() -> None:
     ranked_ids = [item.memory.memory_id for item in result.selected_context]
     assert ranked_ids[0] == relevant_old.memory_id
     assert unrelated_recent.memory_id not in ranked_ids
+
+
+def test_interval_constraint_keeps_unanchored_memories_eligible() -> None:
+    in_range = _memory(
+        content="The merger closed.",
+        valid_from=datetime(2021, 6, 15, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000061"),
+    )
+    before_range = _memory(
+        content="The merger was proposed.",
+        valid_from=datetime(2019, 2, 1, tzinfo=UTC),
+        memory_id=UUID("30000000-0000-0000-0000-000000000062"),
+    )
+    unanchored = _memory(
+        content="The merger was approved last month.",
+        memory_id=UUID("30000000-0000-0000-0000-000000000063"),
+    )
+    vectors = {
+        "What happened between 2020 and 2022?": (1.0, 0.0),
+        in_range.content: (0.9, 0.0),
+        before_range.content: (0.8, 0.0),
+        unanchored.content: (0.85, 0.0),
+    }
+    harness = _harness([in_range, before_range, unanchored], vectors=vectors)
+    result = harness.retrieve(
+        "What happened between 2020 and 2022?",
+        user_id="u1",
+        reference_time=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    ranked_ids = [item.memory.memory_id for item in result.selected_context]
+    assert in_range.memory_id in ranked_ids
+    assert before_range.memory_id not in ranked_ids
+    assert unanchored.memory_id in ranked_ids, (
+        "a memory without a temporal anchor cannot be verified as out-of-interval "
+        "and must remain eligible through its non-temporal sources"
+    )
+    assert any(
+        exclusion.reason == "temporal_interval_excluded"
+        and exclusion.memory_id == before_range.memory_id
+        for exclusion in result.exclusions
+    ), "out-of-range anchored memories must still be excluded observably"
 
 
 def test_before_after_between_use_interval_agreement() -> None:
@@ -1380,3 +1432,67 @@ def test_duration_constraint_does_not_exclude_untimestamped_events() -> None:
     assert not any(
         exclusion.reason == "temporal_interval_excluded" for exclusion in result.exclusions
     )
+
+
+def test_retrieval_decisions_are_run_id_independent() -> None:
+    """Identical memories with different random UUIDs must select identically.
+
+    Run-to-run non-determinism previously came from tie-breaks on random
+    ``memory_id`` UUIDs (retrieval._cap_candidates, source ranks, packing);
+    ordering must derive from content and evidence only.
+    """
+    template = _memory(
+        content="Caroline lives in Seattle.",
+        evidence_id="evidence-1",
+        entities=[{"name": "Caroline", "role": "subject"}],
+        valid_from=datetime(2023, 5, 1, tzinfo=UTC),
+    )
+
+    def run(uuids: list[UUID]) -> tuple[list[str], list[tuple[str, float]]]:
+        memories = [
+            template.model_copy(
+                update={
+                    "memory_id": uuid,
+                    "content": f"{template.content} {suffix}",
+                }
+            )
+            for uuid, suffix in zip(uuids, ("alpha", "beta", "gamma", "delta"), strict=True)
+        ]
+        harness = _harness(
+            memories,
+            vectors={
+                "query": (1.0, 0.0),
+                **{memory.content: (1.0, 0.0) for memory in memories},
+            },
+        )
+        result = harness.retrieve(
+            "query",
+            user_id="u1",
+            strategy=RetrievalStrategy.FIXED_HYBRID,
+            budget_tokens=500,
+        )
+        selected = [item.memory.content for item in result.selected_context]
+        ranked = [
+            (candidate.memory.content, candidate.final_score)
+            for candidate in result.candidates
+        ]
+        return selected, sorted(ranked, key=lambda pair: pair[0])
+
+    first = run(
+        [
+            UUID("50000000-0000-0000-0000-000000000001"),
+            UUID("50000000-0000-0000-0000-000000000002"),
+            UUID("50000000-0000-0000-0000-000000000003"),
+            UUID("50000000-0000-0000-0000-000000000004"),
+        ]
+    )
+    second = run(
+        [
+            UUID("90000000-0000-0000-0000-000000000004"),
+            UUID("90000000-0000-0000-0000-000000000003"),
+            UUID("90000000-0000-0000-0000-000000000002"),
+            UUID("90000000-0000-0000-0000-000000000001"),
+        ]
+    )
+    assert first == second
+    assert len(first[0]) == 4

@@ -1,5 +1,10 @@
 # 评测协议
 
+> 方法论（2026-08-13 变更，详见 [`docs/METHODOLOGY_CHANGE.md`](docs/METHODOLOGY_CHANGE.md)）：
+> 评测节奏从"先跑 500 样本再分析"改为"**小样本强结果先行，大样本一致性验证**"。
+> 24 样本 run 的价值是机制级强结果（修复验证、机制指标、效率、失败归因），不做显著性声明；
+> 500 样本只承担一致性验证（功效分析表明其最小可检测效应 > 观测效应，无显著性是预期内结果）。
+
 ## 1. 主任务
 
 ### LongMemEval
@@ -83,3 +88,18 @@ Mem0/Graphiti 可作为外部基线，但不应阻塞主线；版本、模型和
 - 时间/更新关键子集有明显提升，同时总体不退化；
 - 在相近效果下显著降低 token 或延迟；
 - stale-memory error、Evidence F1 等机制指标显著改善。
+
+### 当前实证状态（2026-08-14）
+
+已落地的机制级强结果（`runs/` 产物，内容寻址报告）：
+- 证据溯源覆盖率 100%（packed evidence 全部携带 `raw_turn_id`，确定性 span 定位闭环）；
+- 0 分格修复 10→4（ETEC merge gate + 预算满装 packing）；
+- LoCoMo 1986 题：记忆方法 142.2 vs full_context 4102.3 tokens/query（Δ −3959.9，p<0.001，约省 96.5%）；
+- 33/33 失败人工复核：主因 answer_present_reader_wrong 26（reader 冗余措辞），真正检索/提取/预算失效仅 7/33。
+
+未达成的门槛（如实记录，不伪装）：
+- 无端到端 QA 增益声明：24 样本 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ −0.1667 为负，且受 run-to-run UUID 平局非确定性影响，见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md` §6）；
+- `etec` vs `event_no_etec` 在 single-session 切片 EM 逐题一致（Δ 0，CI [0,0]）；
+- SUPERSEDE 与 temporal interval 排除尚未在任何切片触发（multi-session 切片仅 2 次 MERGE）。
+
+结论口径：本项目的交付物是"机制证据链 + 可复现产物"，不是绝对分数竞争（竞品见 `docs/COMPETITIVE_ANALYSIS.md`）。

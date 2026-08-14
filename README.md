@@ -26,13 +26,18 @@ Agent Runtime 负责规划、工具调用和执行；本项目负责记忆写入
 
 ## 当前状态
 
-已实现 M01–M16 完整主线：
+已实现 M01–M16 完整主线（M15 分析已完成，见 [`docs/EVALUATION.md`](docs/EVALUATION.md) 与 [`docs/STRONG_RESULTS_SMALL_SAMPLE.md`](docs/STRONG_RESULTS_SMALL_SAMPLE.md)）：
 
 - 事件记忆写入链路：候选提取、实体/事件链接、ETEC 时序整合（ADD/MERGE/SUPERSEDE/REJECT）、证据溯源持久化；
 - 查询链路：规则路由器、QEMR 查询自适应混合检索（向量+时序+图）、token 预算打包；
 - 提取方法论：分块提取 + 确定性 span 定位（模型无关，LLM 只做语义判断）；
 - 双基准评测工程：LongMemEval / LoCoMo 运行器、统一预算、无 oracle 泄漏、不可变产物（FINALIZED.json）、内容寻址分析；
 - 生产服务：FastAPI + PostgreSQL/pgvector（asyncpg 池）、多租户隔离（tenant/user/session）、fail-closed 降级、可观测性、Docker Compose。
+
+评测结论（当前口径，全部数字可溯源到 `runs/` 产物）：
+
+- **机制级强结果（24 样本小样本闭环）**：证据溯源覆盖率 100%、0 分格修复 10→4（merge gate + 预算满装）、LoCoMo 记忆方法省约 96.5% 输入 token、33/33 失败人工复核（主因是 reader 精确输出，真正检索/提取/预算失效仅 7/33）。
+- **无端到端 QA 增益声明**：`full` vs `vector_rag` 在 24 样本上无正向显著差异；方法论定位是"机制证据链 + 可复现产物"，不是绝对分数竞争。详见 `docs/METHODOLOGY_CHANGE.md`（含大样本一致性验证的定位）。
 
 项目结构、评测协议、部署决策与竞品定位分别见
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/EVALUATION.md`](docs/EVALUATION.md)、

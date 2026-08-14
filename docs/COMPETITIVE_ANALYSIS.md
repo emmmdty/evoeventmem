@@ -68,8 +68,9 @@ Agent 长期记忆已成为 LLM Agent 架构的"基础组件"（腾讯官方表�
 - **竞品对照**：Mem0 也做多信号融合，但我们的差异是**按查询意图动态加权**（QEMR weight profiles），且权重先验声明不事后调参
 
 ### H3：证据绑定能约束错误合并
-- **验证方式**：`evidence_policy=constrained` vs `provenance_only` 消融——证据参与决策 vs 仅保留溯源
+- **验证方式**：`evidence_policy` 消融因子（`runs/ablation/controlled` + `longmemeval-test20`，全部 finalized）——证据参与决策 vs 仅保留溯源；merge gate 修复（不同 fact_value 不再合并）直接贡献 0 分格 10→4
 - **这是 Mem0/Zep/TencentDB 都没有做的实验**（它们没有"证据参与决策"的开关）
+- **诚实边界**：H1/H2/H3 的端到端 QA 增益未获显著证据（24 样本 `full` vs `vector_rag` 无正向显著差异）；已落地的是机制级证据（溯源覆盖率 100%、合并决策正确性修复、失败归因 33/33），见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md`
 
 ### 4. 生态位结论
 
@@ -80,5 +81,5 @@ Agent 长期记忆已成为 LLM Agent 架构的"基础组件"（腾讯官方表�
 
 **如果面试官问"和 Mem0 有什么区别"，答案骨架**：
 1. 承认 Mem0 是成熟产品，我们不是竞品，是研究对照
-2. 我们的主张是"H3：证据约束能防止错误合并"——Mem0 的 ADD-only 恰恰**不做**合并决策，我们的 ETEC 显式决策 + 证据仲裁是它没有的
-3. 我们愿意被消融检验：每个模块有开关、有对照、有失败分类
+2. 我们的主张是"证据约束能防止错误合并"——Mem0 的 ADD-only 恰恰**不做**合并决策，我们的 ETEC 显式决策 + 证据仲裁是它没有的
+3. 我们愿意被消融检验：每个模块有开关、有对照、有失败分类，且如实报告未达成的门槛（当前无端到端 QA 增益声明）

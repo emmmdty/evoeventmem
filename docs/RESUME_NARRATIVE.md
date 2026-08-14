@@ -5,10 +5,10 @@
 ## 1. 一句话简历版本（30 秒电梯陈述）
 
 **中文版**：
-> 设计并实现了一个框架无关的 Agent 时序事件记忆服务：事件以"证据约束 + 时间有效区间 + 合并谱系"存储，检索采用按查询意图自适应的混合策略（向量+时序+图）。核心主张是"证据约束能防止错误记忆合并"，通过显式 ADD/MERGE/SUPERSEDE/REJECT 决策与消融实验验证，在 LongMemEval/LoCoMo 基准上完成了全流程评测工程（提取、检索、合并、分析）。
+> 设计并实现了一个框架无关的 Agent 时序事件记忆服务：事件以"证据约束 + 时间有效区间 + 合并谱系"存储，检索采用按查询意图自适应的混合策略（向量+时序+图）。核心主张是"证据约束能防止错误记忆合并"，通过显式 ADD/MERGE/SUPERSEDE/REJECT 决策验证，在 LongMemEval/LoCoMo 基准上完成了全流程评测工程（提取、检索、合并、分析），交付机制级证据链（溯源 100%、0 分修复、token 节省 96.5%、失败归因 33/33 复核）。
 
 **英文版**：
-> Built a framework-agnostic temporal event-memory service for agents: memories carry enforced evidence provenance, validity intervals, and merge lineage; retrieval adapts per query intent across vector/temporal/graph signals. Core thesis: evidence constraints prevent erroneous memory consolidation — validated via explicit ADD/MERGE/SUPERSEDE/REJECT decisions and ablations on LongMemEval/LoCoMo.
+> Built a framework-agnostic temporal event-memory service for agents: memories carry enforced evidence provenance, validity intervals, and merge lineage; retrieval adapts per query intent across vector/temporal/graph signals. Core thesis: evidence constraints prevent erroneous memory consolidation — validated via explicit ADD/MERGE/SUPERSEDE/REJECT decisions and a full evaluation pipeline on LongMemEval/LoCoMo delivering mechanism-level evidence (100% provenance coverage, 10→4 zero-score repair, ~96.5% input-token savings, 33/33 reviewed failure attribution).
 
 ## 2. 差异化叙事的三个支柱（都经得起拷问）
 
@@ -21,7 +21,13 @@
 
 **为什么经得起拷问**：面试官问"证据有什么用？"→ 答：可审计性（每条记忆可查回源头）+ 约束合并（证据冲突时拒绝合并，防止错误事实融合）。这是 Mem0 ADD-only / Zep 边失效都没有的机制。
 
-**潜在的拷问**："证据约束会不会降低召回？"→ 诚实答：会。这正是我们要**量化**的权衡——`constrained` vs `provenance_only` 消融就测这个。承认 trade-off 比假装完美更可信。
+**潜在的拷问**："证据约束会不会降低召回？"→ 诚实答：会。这正是我们要**量化**的权衡——evidence_policy 消融因子就测这个（runs/ablation 中六因子全部产生决策变化，且报告如实渲染 factor_leak 诊断）。承认 trade-off 比假装完美更可信。
+
+**已落地的机制证据**（可引用）：
+- 证据溯源覆盖率 100%：LongMemEval 24 样本三方法 packed evidence 全部携带 `raw_turn_id`（r2/6m/ms run）；
+- 确定性 span 定位修复在机制层闭环（对照 LoCoMo 旧缺陷 0/23434 条带 turn 引用）；
+- 0 分格修复 10→4：ETEC merge gate（不同 fact_value 不再合并）+ 预算满装 packing；
+- 33/33 失败人工复核：主因是 reader 精确输出（26/33），真正检索/提取/预算失效仅 7/33。
 
 ### 支柱二：模型无关的确定性内核（回应"DeepSeek bug"）
 
@@ -49,8 +55,8 @@
 
 **应对**：
 1. 不回避：承认绝对分数低于 Mem0（Mem0 是 62.8k stars 的商业产品，我们是独立实现）
-2. 转定位：我们的研究主张不是"分数更高"，而是"H3：证据约束能否防止错误合并"——这是一个 Mem0 没有做过的实验（Mem0 是 ADD-only，不做合并决策）
-3. 证据：`constrained` vs `provenance_only` 消融、`etec` vs `event_no_etec` 对比——我们提供机制层面的证据
+2. 转定位：我们的研究主张不是"分数更高"，而是"证据约束能否防止错误合并"——这是一个 Mem0 没有做过的实验（Mem0 是 ADD-only，不做合并决策）
+3. 证据：六因子消融（`runs/ablation/` 全部 finalized，受控夹具六因子全部 active）+ `etec` vs `event_no_etec` 对比（single-session 切片 EM 逐题一致，如实报告）+ 机制级强结果（溯源 100%、0 分修复 10→4、token 节省 96.5%、失败归因 33/33 复核）
 4. 收尾：如果我要分数，我可以用更强的 reader 模型（Mem0 用生产级模型栈），但我们的目标是机制分析
 
 ### Q2："为什么不用现成的 Mem0/Zep，自己造轮子？"
@@ -93,20 +99,29 @@
 
 ### Q7："你的结果提升来自哪个模块？"（消融追问）
 
-**应对**：必须等 ablation 结果出来。**在此之前不能声称任何提升**。回答模板：
-- "我们设计了 6 因子消融（证据/时序/图/路由/权重/预算），目前 XX 因子对 YY 类问题影响最大"
-- 用实际数据说话，没有数据就说"在跑"
+**应对**：ablation 已跑完，**但不能声称端到端 QA 提升**——24 样本上 `full` vs `vector_rag`
+无正向显著差异，机制诊断也没有给出"XX 因子提升 QA"的证据。诚实回答模板：
+- "六因子消融（证据/时序/图/路由/权重/预算）已全部跑完：受控夹具六因子全部 active，LongMemEval
+  切片上均产生检索决策变化（routing 22/24，其余 24/24）。但这是**决策级诊断**，不是 QA 增益；
+  报告同时如实披露了 factor_leak 诊断。"
+- "真正的强结果是机制级的：溯源覆盖率 100%、0 分格修复 10→4、token 节省 96.5%、失败归因 33/33 复核。"
+- 用实际数据说话，绝不编造"XX 提升 Y%"。
 
 ## 4. 目前必须补齐的证据（决定叙事是否成立）
 
 | 证据 | 状态 | 缺失影响 |
 |---|---|---|
-| LongMemEval 500 样本结果 | 服务器跑批中（~40%） | 无数字，叙事悬空 |
-| LoCoMo 结果 | 未启动 | 同上 |
-| 6 因子消融 | 未跑（等 base 完成） | H1-H3 无验证 |
-| 失败分类 + 复核 | 未跑（等结果） | 无法讲"失败分析" |
-| p95 延迟 | 未测 | Q6 回答不了 |
-| 提取质量数字 | 已有（平均 82 事件/样本，0 零事件） | 可先讲 |
+| LongMemEval 结果 | ✅ 已完成（24 样本小样本闭环；500 样本降级为一致性验证，见 `docs/METHODOLOGY_CHANGE.md`） | 无 |
+| LoCoMo 结果 | ✅ 已完成（1986 题主 run，`runs/main/report`） | 无 |
+| 6 因子消融 | ✅ 已完成（`runs/ablation/controlled` + `longmemeval-test20`，六因子全部 active） | 无 |
+| 失败分类 + 复核 | ✅ 已完成（33/33 人工复核，`runs/review/longmemeval-r2.reviewed.jsonl`） | 无 |
+| p95 延迟 | 未测 | Q6 回答不了（检索路径零 LLM，可讲架构不承诺数字） |
+| 提取质量数字 | ✅ 已有（24 样本 172–292 事件/样本，0 零事件） | 可先讲 |
+
+> 注意：小样本闭环是**机制级强结果**（修复验证、机制指标、效率、失败归因），不是显著性声明；
+> `full` vs `vector_rag` 在 24 样本上无正向显著差异（6m 报告 Δ −0.1667 为负，且受 run-to-run
+> 非确定性影响，见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md`）。叙事重心是"机制证据链 + 可复现产物"，
+> 不是"分数更高"。
 
 ## 5. 简历最终表述（推荐）
 
@@ -114,7 +129,11 @@
 
 **要点**：
 1. 实现框架无关记忆服务：事件存储（证据+有效区间+合并谱系）、查询自适应混合检索（向量+时序+图）、显式合并决策（ADD/MERGE/SUPERSEDE/REJECT）
-2. 提出并验证"证据约束防止错误记忆合并"假设：证据参与决策 vs 仅溯源的双模式消融
-3. 完整评测工程：LongMemEval/LoCoMo 双基准、统一预算无泄漏、6 因子消融、失败分类复核、不可变产物
-4. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）
-5. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）
+2. 验证"证据约束"的机制价值：溯源覆盖率 100%、merge gate 修复 0 分格 10→4、33/33 失败归因复核（主因 reader 输出精度，非检索失效）
+3. 完整评测工程：LongMemEval/LoCoMo 双基准、统一预算无泄漏、6 因子消融（全部 finalized）、失败分类复核、不可变产物
+4. 效率证据：LoCoMo 记忆方法 142 tokens/query vs full_context 4102（约省 96.5% 输入 token）
+5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）
+6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）
+
+**诚实红线**：不声称"端到端 QA 提升"——24 样本上 `full` vs `vector_rag` 无正向显著差异；
+交付物是机制证据链 + 可复现产物。

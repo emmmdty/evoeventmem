@@ -255,8 +255,15 @@ def headline_claim(
     present_datasets: Sequence[str],
     declared_datasets: Sequence[str],
 ) -> tuple[Claim | None, list[str]]:
-    """Two-dataset headline, produced only when both datasets are present."""
-    missing = sorted(set(declared_datasets) - set(present_datasets))
+    """Two-dataset headline, produced only when both declared datasets are present.
+
+    A config declaring fewer than two datasets cannot produce a two-dataset
+    headline at all; the result is blocked with no missing dataset.
+    """
+    declared = sorted(declared_datasets)
+    if len(declared) < 2:
+        return None, []
+    missing = sorted(set(declared) - set(present_datasets))
     if missing:
         return None, missing
     sorted_datasets = sorted(present_datasets)
@@ -380,11 +387,16 @@ def render_markdown(data: Mapping[str, Any]) -> str:
     else:
         lines.append("## Two-dataset headline")
         lines.append("")
-        lines.append(
-            "Blocked: missing finalized dataset(s) "
-            + ", ".join(data["headline_blocked_by_missing_datasets"])
-            + "."
-        )
+        blocked = data["headline_blocked_by_missing_datasets"]
+        if blocked:
+            lines.append(
+                "Blocked: missing finalized dataset(s) " + ", ".join(blocked) + "."
+            )
+        else:
+            lines.append(
+                "Blocked: a two-dataset headline is only produced when the "
+                "analysis config declares at least two datasets."
+            )
         lines.append("")
     for dataset, payload in sorted(data["datasets"].items()):
         lines.append(f"## Dataset: {dataset}")

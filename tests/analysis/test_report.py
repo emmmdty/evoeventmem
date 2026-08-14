@@ -154,6 +154,51 @@ def test_report_refuses_invalid_inputs(analysis_fixture, tmp_path) -> None:
         )
 
 
+def test_single_dataset_config_blocks_headline_not_crash(analysis_fixture, tmp_path) -> None:
+    config_path = tmp_path / "single.toml"
+    config_path.write_text(
+        """
+[analysis]
+schema_version = "analysis.config.v1"
+datasets = ["longmemeval"]
+metrics = ["exact_match", "token_f1", "evidence_f1"]
+holm_family = "primary"
+
+[analysis.bootstrap]
+n_boot = 100
+seed = 0
+alpha = 0.05
+
+[analysis.review]
+target_min_failures = 50
+stratified = true
+
+[analysis.comparisons.longmemeval]
+primary = [
+  { id = "lme_qemr_vs_fixed_vector", left = "full", right = "vector_rag", metric = "exact_match" },
+]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    output_root = tmp_path / "artifacts" / "analysis"
+    analysis_id = generate_report(
+        config_path=config_path,
+        source_runs=[analysis_fixture["longmemeval"]["run_dir"]],
+        controlled_run=None,
+        ablation_runs=[],
+        output_root=output_root,
+    )
+    payload = json.loads(
+        (output_root / analysis_id / "report.json").read_text(encoding="utf-8")
+    )
+    assert payload["headline"] is None
+    assert payload["headline_blocked_by_missing_datasets"] == []
+    assert set(payload["datasets"]) == {"longmemeval"}
+    assert len(payload["datasets"]["longmemeval"]["claims"]) == 1
+    markdown = (output_root / analysis_id / "report.md").read_text(encoding="utf-8")
+    assert "Blocked: a two-dataset headline" in markdown
+
+
 def test_write_report_files_writes_only_inside_analysis_dir(generated, tmp_path) -> None:
     payload = json.loads((generated["artifact"] / "report.json").read_text(encoding="utf-8"))
     out_dir = tmp_path / "isolated"

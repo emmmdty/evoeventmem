@@ -162,11 +162,27 @@ def normalize_category(dataset: str, raw: str | None) -> str:
     return str(raw) if raw else "unmapped"
 
 
+def _find_repo_root(run_dir: Path) -> Path | None:
+    """Walk up from a run directory to the repository root (``pyproject.toml``)."""
+    for directory in Path(run_dir).resolve().parents:
+        if (directory / "pyproject.toml").is_file():
+            return directory
+    return None
+
+
 def resolve_dataset_path(run_dir: Path, manifest: RunManifest) -> Path:
     candidate = Path(manifest.dataset_path)
     if candidate.is_absolute():
         return candidate
-    return run_dir / candidate
+    run_relative = run_dir / candidate
+    if run_relative.is_file():
+        return run_relative
+    repo_root = _find_repo_root(run_dir)
+    if repo_root is not None:
+        root_relative = repo_root / candidate
+        if root_relative.is_file():
+            return root_relative
+    return run_relative
 
 
 def file_sha256(path: Path) -> str:

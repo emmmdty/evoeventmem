@@ -10,8 +10,10 @@ from benchmarks.common.artifacts import (
     ArtifactClass,
     load_finalized,
 )
+from benchmarks.common.providers import ResolvedModelConfig
 from benchmarks.experiments.ablation import (
     REQUIRED_FACTORS,
+    _resolved_from_provider,
     load_config,
     main,
     run_ablation,
@@ -79,9 +81,7 @@ def test_factor_isolation_exactly_one_difference(tmp_path: Path) -> None:
     base_controls = config.base.controls.model_dump()
     for arm in config.arms:
         arm_controls = arm.controls.model_dump()
-        differing = {
-            field for field in arm_controls if arm_controls[field] != base_controls[field]
-        }
+        differing = {field for field in arm_controls if arm_controls[field] != base_controls[field]}
         assert differing, (arm.name, "no difference at all")
         assert differing <= set(FACTOR_FIELDS[arm.factor]), (arm.name, differing)
 
@@ -119,9 +119,7 @@ def test_evidence_nonempty_in_both_evidence_modes(tmp_path: Path) -> None:
         for row in rows:
             for item in row["packed_items"]:
                 assert item["evidence_refs"]
-                assert any(
-                    ref["raw_turn_id"] for ref in item["evidence_refs"]
-                )
+                assert any(ref["raw_turn_id"] for ref in item["evidence_refs"])
 
 
 def test_budget_settings_bind_packing_on_controlled_data(tmp_path: Path) -> None:
@@ -150,12 +148,8 @@ def test_question_level_packing_bound_is_recorded_not_inferred(tmp_path: Path) -
     assert any(row["packing_bound"] for row in rows)
     for row in rows:
         assert isinstance(row["packing_bound"], bool)
-    summary = json.loads(
-        (run_dir / budget_arm.name / "summary.json").read_text(encoding="utf-8")
-    )
-    assert summary["packing_bound_questions"] == sum(
-        1 for row in rows if row["packing_bound"]
-    )
+    summary = json.loads((run_dir / budget_arm.name / "summary.json").read_text(encoding="utf-8"))
+    assert summary["packing_bound_questions"] == sum(1 for row in rows if row["packing_bound"])
 
 
 def test_controlled_resume_is_idempotent(tmp_path: Path) -> None:
@@ -233,6 +227,42 @@ def test_config_rejects_wrong_policy_version() -> None:
     drifted = config.model_copy(update={"expected_retrieval_policy": "not-the-frozen-policy"})
     with pytest.raises(ValueError, match="froze"):
         run_ablation(drifted, Path("/tmp/opencode/never-run"))
+
+
+def test_live_api_key_env_resolved_from_shared_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live base-run roles resolve api_key_env from EEM_LLM_API_KEY_ENV (no manifest field)."""
+    monkeypatch.setenv("EEM_LLM_API_KEY_ENV", "OPENAI_API_KEY")
+    monkeypatch.delenv("EEM_READER_API_KEY_ENV", raising=False)
+    resolved = _resolved_from_provider(
+        _identity(kind="openai_compatible", endpoint="https://opencode.ai/zen/go/v1"),
+        "reader",
+    )
+    assert resolved.api_key_env == "OPENAI_API_KEY"
+    ResolvedModelConfig.model_validate(resolved.model_dump())
+
+
+def test_live_api_key_env_resolved_from_role_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Role-specific EEM_{ROLE}_API_KEY_ENV wins over the shared variable."""
+    monkeypatch.setenv("EEM_LLM_API_KEY_ENV", "OPENAI_API_KEY")
+    monkeypatch.setenv("EEM_READER_API_KEY_ENV", "READER_KEY")
+    resolved = _resolved_from_provider(
+        _identity(kind="openai_compatible", endpoint="https://opencode.ai/zen/go/v1"),
+        "reader",
+    )
+    assert resolved.api_key_env == "READER_KEY"
+    ResolvedModelConfig.model_validate(resolved.model_dump())
+
+
+def _identity(*, kind: str, endpoint: str) -> object:
+    from benchmarks.common.artifacts import ProviderIdentity
+
+    return ProviderIdentity(
+        kind=kind,
+        provider=kind,
+        model_id="deepseek-v4-flash",
+        version="",
+        endpoint=endpoint,
+    )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:

@@ -1,0 +1,114 @@
+schema_version = "ablation.config.v1"
+ablation_id = "longmemeval-test20"
+dataset = "longmemeval"
+dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"
+expected_retrieval_policy = "qemr-weight-profiles.v2"
+max_items_per_source = 8
+max_candidates_per_source = 128
+sample_limit = 24
+base_run_dir = "runs/publication/longmemeval-test20-6m"
+
+[base]
+name = "base"
+factor = "base"
+
+[base.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 4096
+
+[[arms]]
+name = "evidence"
+factor = "evidence_policy"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "provenance_only"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 4096
+
+[[arms]]
+name = "temporal"
+factor = "temporal_source"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = false
+enable_graph_source = true
+budget_tokens = 4096
+
+[[arms]]
+name = "graph"
+factor = "graph_source"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = false
+budget_tokens = 4096
+
+[[arms]]
+name = "router"
+factor = "routing"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "forced"
+forced_intent = "semantic"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 4096
+
+[[arms]]
+name = "weights"
+factor = "weights"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "fixed_vector"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 4096
+
+[[arms]]
+name = "budget_2048"
+factor = "budget"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 2048
+
+[[arms]]
+name = "budget_1024"
+factor = "budget"
+
+[arms.controls]
+strategy = "qemr"
+routing_mode = "rule"
+weight_profile = "intent"
+evidence_policy = "constrained"
+enable_temporal_source = true
+enable_graph_source = true
+budget_tokens = 1024

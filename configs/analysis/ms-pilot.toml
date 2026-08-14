@@ -1,0 +1,29 @@
+# Workstream C analysis configuration (C3+), multi-session slice edition.
+# Single-dataset narrowed config for the multi-session publication run
+# (longmemeval-test20-ms): both primary LongMemEval comparisons apply because
+# the slice run declares all six methods. No ablation family exists for the
+# slice, so none is passed to the report CLI.
+# This file contains NO result values; every number here is a parameter.
+
+[analysis]
+schema_version = "analysis.config.v1"
+datasets = ["longmemeval"]
+metrics = ["exact_match", "token_f1", "evidence_f1"]
+holm_family = "primary"
+
+[analysis.bootstrap]
+n_boot = 10000
+seed = 0
+alpha = 0.05
+
+[analysis.review]
+# Deterministic stratified failure sample: at least this many failures, or
+# all failures when fewer exist.
+target_min_failures = 50
+stratified = true
+
+[analysis.comparisons.longmemeval]
+primary = [
+  { id = "lme_qemr_vs_fixed_vector", left = "full", right = "vector_rag", metric = "exact_match" },
+  { id = "lme_etec_vs_raw_events", left = "full", right = "event_no_etec", metric = "exact_match" },
+]

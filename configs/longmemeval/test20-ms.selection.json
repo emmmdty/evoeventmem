@@ -1,0 +1,8 @@
+{
+  "schema_version": "longmemeval.slice-selection.v1",
+  "slice": "multi-session",
+  "seed": 42,
+  "method": "sha256(seed+question_id) ordering per question_type, round-robin interleave across knowledge-update/multi-session/temporal-reasoning",
+  "question_types": {"knowledge-update": 8, "multi-session": 8, "temporal-reasoning": 8},
+  "sample_ids": ["ba61f0b9", "6456829e", "c8090214", "50635ada", "eeda8a6d_abs", "4dfccbf8", "c7dc5443", "5025383b", "gpt4_ec93e27f", "26bdc477", "157a136e", "eac54add", "6a1eabeb", "a96c20ee", "2ebe6c92", "89941a94", "3fe836c9", "0bb5a684", "eace081b", "681a1674", "gpt4_213fd887", "22d2cb42", "91b15a6e", "f0853d11"]
+}

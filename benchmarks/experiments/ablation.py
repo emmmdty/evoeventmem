@@ -498,13 +498,32 @@ def _resolved_from_provider(identity: Any, role: str) -> ResolvedModelConfig:
         kind = ProviderKind(identity.kind)
     except ValueError:
         kind = ProviderKind.DETERMINISTIC_FAKE
+    api_key_env = _api_key_env_for(role)
     return ResolvedModelConfig(
         role=role,
         kind=kind,
         provider=identity.provider,
         model_id=identity.model_id,
         base_url=None if identity.endpoint == "n/a" else identity.endpoint,
+        api_key_env=api_key_env,
     )
+
+
+def _api_key_env_for(role: str) -> str | None:
+    """Resolve the API-key environment variable for a live base-run role.
+
+    Base-run manifests record provider identity without ``api_key_env``; the
+    executor resolves it from the same env overrides as
+    :func:`benchmarks.common.providers.resolve_provider_config` (role-specific
+    ``EEM_{ROLE}_API_KEY_ENV`` first, then the shared ``EEM_LLM_API_KEY_ENV``).
+    """
+    import os
+
+    role_prefix = role.upper()
+    role_env = os.environ.get(f"EEM_{role_prefix}_API_KEY_ENV")
+    if role_env:
+        return role_env
+    return os.environ.get("EEM_LLM_API_KEY_ENV")
 
 
 def _fake_resolved(role: str) -> ResolvedModelConfig:

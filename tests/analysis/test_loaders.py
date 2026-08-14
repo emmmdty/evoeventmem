@@ -219,6 +219,51 @@ def test_dataset_hash_drift_rejected(tmp_path) -> None:
     assert "dataset_drift" in _codes(result)
 
 
+def test_repo_root_relative_dataset_path_resolved(tmp_path) -> None:
+    run = build_synthetic_run(
+        tmp_path / "repo" / "runs" / "publication" / "run",
+        dataset="longmemeval",
+        dataset_path_rel="data/raw/longmemeval/longmemeval_s_cleaned.json",
+    )
+    (tmp_path / "repo" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    dataset = run["run_dir"] / "data" / "raw" / "longmemeval" / "longmemeval_s_cleaned.json"
+    repo_dataset = tmp_path / "repo" / "data" / "raw" / "longmemeval" / "longmemeval_s_cleaned.json"
+    repo_dataset.parent.mkdir(parents=True)
+    dataset.replace(repo_dataset)
+    loaded = load_base_run(run["run_dir"])
+    assert loaded.dataset == "longmemeval"
+    full_rows = [row for row in loaded.rows if row.method == "full"]
+    assert len(full_rows) == len(loaded.manifest.expected_question_ids)
+
+
+def test_repo_root_relative_dataset_path_missing_rejected(tmp_path) -> None:
+    run = build_synthetic_run(
+        tmp_path / "repo" / "runs" / "publication" / "run",
+        dataset="longmemeval",
+        dataset_path_rel="data/raw/longmemeval/longmemeval_s_cleaned.json",
+    )
+    (tmp_path / "repo" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (run["run_dir"] / "data").rename(tmp_path / "repo" / "stray-data")
+    with pytest.raises(LoadError, match="does not exist"):
+        load_base_run(run["run_dir"])
+
+
+def test_run_relative_dataset_path_still_preferred(tmp_path) -> None:
+    run = build_synthetic_run(
+        tmp_path / "repo" / "runs" / "publication" / "run",
+        dataset="locomo",
+        dataset_path_rel="data/synthetic/dataset.json",
+    )
+    (tmp_path / "repo" / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    repo_dataset = tmp_path / "repo" / "data" / "synthetic" / "dataset.json"
+    repo_dataset.parent.mkdir(parents=True)
+    repo_dataset.write_text("stray", encoding="utf-8")
+    loaded = load_base_run(run["run_dir"])
+    full_rows = [row for row in loaded.rows if row.method == "full"]
+    assert len(full_rows) == len(loaded.manifest.expected_question_ids)
+    assert full_rows[0].gold_answer in ("blue house", "red car", "green truck", None)
+
+
 def test_legacy_report_input_rejected(tmp_path) -> None:
     report_dir = tmp_path / "runs" / "main" / "report"
     report_dir.mkdir(parents=True)

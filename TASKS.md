@@ -23,7 +23,7 @@
 | M14 | [LoCoMo main experiment](tasks/mainline/M14_locomo.md) | DONE |
 | M15 | [Ablations, statistics, and error analysis](tasks/mainline/M15_analysis.md) | DONE |
 | M16 | [Production API, persistence, and observability](tasks/mainline/M16_production_api.md) | DONE |
-| M17 | [OpenCode MCP adapter](tasks/mainline/M17_opencode_mcp.md) | TODO |
+| M17 | [OpenCode MCP adapter](tasks/mainline/M17_opencode_mcp.md) | DONE |
 | M18 | [Reproduction, demo, and resume release](tasks/mainline/M18_release.md) | TODO |
 
 

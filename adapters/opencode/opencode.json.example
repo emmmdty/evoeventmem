@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "evoeventmem": {
+      "type": "local",
+      "command": ["uv", "run", "--extra", "mcp", "python", "-m", "adapters.opencode.mcp_server"],
+      "enabled": true
+    }
+  }
+}

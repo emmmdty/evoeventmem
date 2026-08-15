@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx2>=2.9,<3",
+  "mcp>=1.2,<2",
   "mypy>=1.15,<2",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
@@ -35,6 +36,9 @@ bench = [
   "pandas>=2.2,<4",
   "scikit-learn>=1.6,<2",
   "tqdm>=4.67,<5",
+]
+mcp = [
+    "mcp>=1.2,<2",
 ]
 
 [project.scripts]

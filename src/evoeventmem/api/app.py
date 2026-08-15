@@ -12,17 +12,9 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from evoeventmem.core.ports import (
-    AsyncEmbeddingModel,
-    RequestScope,
-    SearchHit,
-)
+from evoeventmem.core.ports import RequestScope, SearchHit
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemorySearchHit
-from evoeventmem.infra.async_embedding import (
-    DeterministicAsyncEmbeddingModel,
-    EmbeddingModelError,
-    build_embedding_model,
-)
+from evoeventmem.infra.async_embedding import EmbeddingModelError
 from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
 from evoeventmem.infra.config import Settings, redact_dsn
 from evoeventmem.infra.failures import (
@@ -39,6 +31,11 @@ from evoeventmem.infra.metrics import MetricsRegistry
 from evoeventmem.infra.postgres_repository import (
     AsyncPostgresMemoryRepository,
     RepositoryUnavailableError,
+)
+from evoeventmem.infra.service_factory import (
+    build_async_embedding,
+    build_async_repository,
+    build_async_service,
 )
 from evoeventmem.services.async_memory_service import (
     AsyncMemoryService,
@@ -274,20 +271,6 @@ def _embedding_identity(settings: Settings) -> dict[str, str | int]:
     }
 
 
-def _build_embedding(settings: Settings) -> AsyncEmbeddingModel:
-    if settings.embedding_policy == "token_overlap":
-        if settings.embedding_provider != "deterministic":
-            raise ValueError(
-                "token-overlap is a development-only policy and requires "
-                "EEM_EMBEDDING_PROVIDER=deterministic"
-            )
-        return DeterministicAsyncEmbeddingModel(
-            model_id=settings.embedding_model_id,
-            dimension=settings.embedding_dimension,
-        )
-    return build_embedding_model(settings=settings)
-
-
 def _emit_store_fallback(app: FastAPI, reason: str) -> None:
     app.state.store_fallback.inc()
     logger.warning(
@@ -302,43 +285,22 @@ def _emit_store_fallback(app: FastAPI, reason: str) -> None:
     )
 
 
-def _build_async_postgres_repository(settings: Settings) -> AsyncPostgresMemoryRepository:
-    if settings.database_url is None:
-        raise RepositoryUnavailableError("EEM_STORE=postgres but no database URL configured")
-    return AsyncPostgresMemoryRepository(
-        settings.database_url,
-        connect_timeout=settings.db_connect_timeout,
-        operation_timeout=settings.db_operation_timeout,
-        statement_timeout_ms=settings.db_statement_timeout_ms,
-        model_id=settings.embedding_model_id,
-        dimension=settings.embedding_dimension,
-        schema_version=settings.schema_version,
-    )
-
-
-def _new_service(
-    settings: Settings,
-    repository: Any,
-    embedding: AsyncEmbeddingModel,
-) -> AsyncMemoryService:
-    return AsyncMemoryService(
-        repository,
-        embedding=embedding,
-        token_overlap_policy=settings.embedding_policy == "token_overlap",
-    )
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings if settings is not None else Settings.from_env()
     configure_logging(resolved_settings.log_level)
-    embedding = _build_embedding(resolved_settings)
+    embedding = build_async_embedding(resolved_settings)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         repository: AsyncPostgresMemoryRepository | AsyncInMemoryRepository | None = None
         if resolved_settings.store == "postgres":
             try:
-                repository = _build_async_postgres_repository(resolved_settings)
+                candidate = build_async_repository(resolved_settings)
+                if not isinstance(candidate, AsyncPostgresMemoryRepository):
+                    raise RepositoryUnavailableError(
+                        "EEM_STORE=postgres produced a non-postgres repository"
+                    )
+                repository = candidate
                 await repository.connect(run_migrations=True)
             except RepositoryUnavailableError as exc:
                 if resolved_settings.allow_development_fallback:
@@ -388,7 +350,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         if repository is not None:
             app.state.repository = repository
-            app.state.service = _new_service(resolved_settings, repository, embedding)
+            app.state.service = build_async_service(
+                resolved_settings,
+                repository=repository,
+                embedding=embedding,
+            )
         try:
             yield
         finally:
@@ -404,7 +370,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dimension=resolved_settings.embedding_dimension,
         schema_version=resolved_settings.schema_version,
     )
-    app.state.service = _new_service(resolved_settings, app.state.repository, embedding)
+    app.state.service = build_async_service(
+        resolved_settings,
+        repository=app.state.repository,
+        embedding=embedding,
+    )
     app.state.embedding = embedding
     app.state.http_requests = app.state.metrics.counter(
         "evoeventmem_http_requests_total",

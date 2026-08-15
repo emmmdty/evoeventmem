@@ -51,6 +51,9 @@ packages = ["src/evoeventmem"]
 addopts = "-ra --import-mode=importlib"
 pythonpath = ["src", "."]
 testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Field 'lifespan' has an incomplete definition:pydantic_settings.exceptions.IncompleteFieldDefinitionWarning",
+]
 
 [tool.ruff]
 line-length = 100
@@ -72,3 +75,8 @@ follow_imports = "skip"
 [tool.coverage.run]
 source = ["evoeventmem"]
 branch = true
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3,<4",
+]

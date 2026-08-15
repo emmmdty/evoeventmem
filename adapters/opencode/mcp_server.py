@@ -9,6 +9,8 @@ when the underlying service is unavailable.
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol
@@ -19,10 +21,7 @@ from pydantic import Field
 
 from evoeventmem.core.ports import RequestScope, SearchHit
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord
-from evoeventmem.infra.async_embedding import (
-    DeterministicAsyncEmbeddingModel,
-    EmbeddingModelError,
-)
+from evoeventmem.infra.async_embedding import EmbeddingModelError
 from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
 from evoeventmem.infra.config import Settings
 from evoeventmem.infra.failures import (
@@ -34,7 +33,15 @@ from evoeventmem.infra.failures import (
     REASON_SCOPE_MISMATCH,
     REASON_STORE_UNAVAILABLE,
 )
-from evoeventmem.infra.postgres_repository import RepositoryUnavailableError
+from evoeventmem.infra.postgres_repository import (
+    AsyncPostgresMemoryRepository,
+    RepositoryUnavailableError,
+)
+from evoeventmem.infra.service_factory import (
+    build_async_embedding,
+    build_async_repository,
+    build_async_service,
+)
 from evoeventmem.services.async_memory_service import (
     AsyncMemoryService,
     ScopeMismatchError,
@@ -369,29 +376,54 @@ def build_server(service: MemoryServicePort, *, server_name: str = _SERVER_NAME)
     return mcp
 
 
-def _build_default_service() -> AsyncMemoryService:
-    """Dev-mode default for the stdio entry point: deterministic embeddings
-    over the in-memory repository. Production deployments inject a real
-    service via ``build_server`` instead."""
+async def _build_default_service() -> AsyncMemoryService:
+    """Build the stdio default service from ``EEM_*`` settings.
+
+    ``EEM_STORE=postgres`` connects a PostgreSQL repository (migrations
+    included); with ``EEM_ALLOW_DEV_FALLBACK=1`` an unavailable store degrades
+    to in-memory with a warning, otherwise startup fails with a clear error.
+    """
     settings = Settings.from_env()
-    embedding = DeterministicAsyncEmbeddingModel(
-        model_id=settings.embedding_model_id,
-        dimension=settings.embedding_dimension,
-    )
-    repository = AsyncInMemoryRepository(
-        model_id=settings.embedding_model_id,
-        dimension=settings.embedding_dimension,
-        schema_version=settings.schema_version,
-    )
-    return AsyncMemoryService(
-        repository,
+    embedding = build_async_embedding(settings)
+    try:
+        repository = build_async_repository(settings)
+    except RepositoryUnavailableError as exc:
+        if not settings.allow_development_fallback:
+            raise SystemExit(f"EEM_STORE=postgres is unavailable: {exc}") from exc
+        print(f"warning: postgres unavailable ({exc}); serving from in-memory", file=sys.stderr)
+        repository = AsyncInMemoryRepository(
+            model_id=settings.embedding_model_id,
+            dimension=settings.embedding_dimension,
+            schema_version=settings.schema_version,
+        )
+    if isinstance(repository, AsyncPostgresMemoryRepository):
+        try:
+            await repository.connect(run_migrations=True)
+        except RepositoryUnavailableError as exc:
+            if not settings.allow_development_fallback:
+                raise SystemExit(
+                    f"EEM_STORE=postgres is unavailable and "
+                    f"EEM_ALLOW_DEV_FALLBACK is off: {exc}"
+                ) from exc
+            print(
+                f"warning: postgres unavailable ({exc}); serving from in-memory",
+                file=sys.stderr,
+            )
+            repository = AsyncInMemoryRepository(
+                model_id=settings.embedding_model_id,
+                dimension=settings.embedding_dimension,
+                schema_version=settings.schema_version,
+            )
+    return build_async_service(
+        settings,
+        repository=repository,
         embedding=embedding,
-        token_overlap_policy=settings.embedding_policy == "token_overlap",
     )
 
 
 def main() -> None:
-    build_server(_build_default_service()).run(transport="stdio")
+    service = asyncio.run(_build_default_service())
+    build_server(service).run(transport="stdio")
 
 
 if __name__ == "__main__":

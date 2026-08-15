@@ -67,10 +67,21 @@ EvoEventMem 通过 MCP 向 OpenCode 暴露 6 个高层记忆工具。适配器�
    Agent 即可使用 `memory_search` 等工具。默认 `tenant_id="default"`，可通过
    工具参数覆盖；`user_id` 为必填作用域参数。
 
-   默认 stdio 入口（`adapters/opencode/mcp_server.py:main`）是开发模式：内存
-   存储 + 确定性 embedding，策略读取 `EEM_*` 环境变量（默认 `vector`，可设
-   `EEM_EMBEDDING_POLICY=token_overlap` 获得可读的关键词排序）。生产部署通过
-   `build_server(service)` 注入真实服务（如 M16 的 PostgreSQL + 生产 embedding）。
+## 生产接线（EEM_STORE）
+
+stdio 入口（`adapters/opencode/mcp_server.py:main`）通过共享装配工厂
+`src/evoeventmem/infra/service_factory.py` 构建服务——该工厂与 M16 HTTP API
+（`evoeventmem.api.app`）共用同一套装配逻辑，保证两种接入面的行为一致：
+
+- `EEM_STORE=memory`（默认）：内存存储 + 确定性 embedding（开发模式）；
+- `EEM_STORE=postgres` + `EEM_DATABASE_URL`：连接 PostgreSQL 并执行迁移，
+  embedding 读取 `EEM_EMBEDDING_PROVIDER` / `EEM_EMBEDDING_MODEL_ID` /
+  `EEM_EMBEDDING_DIMENSION`（`openai_compatible` 需配置 base URL 与 API key
+  环境变量，见 M16）；
+- PostgreSQL 不可用时默认 fail-closed（启动即退出并输出清晰原因）；
+  设置 `EEM_ALLOW_DEV_FALLBACK=1` 则降级到内存存储，并在 stderr 打印警告；
+- `EEM_EMBEDDING_POLICY=token_overlap` 获得可读的关键词排序（开发策略，
+  命中会带 `fallback=True`）。
 
 4. 验证服务器本身可运行（stdio 握手）：
 
@@ -104,8 +115,15 @@ uv run python -m adapters.opencode.demo --trace-out /tmp/evoeventmem-demo.jsonl
 ## 测试
 
 `tests/adapters/test_mcp.py` 使用 Fake Memory Service（可注入服务故障），通过
-进程内 MCP 会话端到端验证工具 schema、行为与 fallback：
+进程内 MCP 会话端到端验证工具 schema、行为与 fallback；装配行为由
+`tests/infra/test_service_factory.py` 覆盖：
 
 ```bash
 uv run pytest -q tests/adapters/test_mcp.py
+```
+
+全量测试含大数据集 benchmark，可并行加速：
+
+```bash
+uv run pytest -q -n auto
 ```

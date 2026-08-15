@@ -100,6 +100,7 @@ Mem0/Graphiti 可作为外部基线，但不应阻塞主线；版本、模型和
 未达成的门槛（如实记录，不伪装）：
 - 无端到端 QA 增益声明：24 样本 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ −0.1667 为负，且受 run-to-run UUID 平局非确定性影响，见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md` §6）；
 - `etec` vs `event_no_etec` 在 single-session 切片 EM 逐题一致（Δ 0，CI [0,0]）；
-- SUPERSEDE 与 temporal interval 排除尚未在任何切片触发（multi-session 切片仅 2 次 MERGE）。
+- SUPERSEDE 与 temporal interval 排除尚未在任何切片触发（multi-session 切片仅 2 次 MERGE）；
+- stale-memory error 未单独度量（protocol §3 列出但尚无对应产物）。
 
 结论口径：本项目的交付物是"机制证据链 + 可复现产物"，不是绝对分数竞争（竞品见 `docs/COMPETITIVE_ANALYSIS.md`）。

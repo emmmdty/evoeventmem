@@ -130,7 +130,7 @@
 **要点**：
 1. 实现框架无关记忆服务：事件存储（证据+有效区间+合并谱系）、查询自适应混合检索（向量+时序+图）、显式合并决策（ADD/MERGE/SUPERSEDE/REJECT）
 2. 验证"证据约束"的机制价值：溯源覆盖率 100%、merge gate 修复 0 分格 10→4、33/33 失败归因复核（主因 reader 输出精度，非检索失效）
-3. 完整评测工程：LongMemEval/LoCoMo 双基准、统一预算无泄漏、6 因子消融（全部 finalized）、失败分类复核、不可变产物
+3. 完整评测工程：LongMemEval/LoCoMo 双基准（LongMemEval 有 finalized 内容寻址产物，LoCoMo 为 1986 题 legacy 主 run）、统一预算无泄漏、6 因子消融（全部 finalized）、失败分类复核、不可变产物
 4. 效率证据：LoCoMo 记忆方法 142 tokens/query vs full_context 4102（约省 96.5% 输入 token）
 5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）
 6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）

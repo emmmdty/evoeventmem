@@ -32,6 +32,8 @@ Agent Runtime 负责规划、工具调用和执行；本项目负责记忆写入
 - 查询链路：规则路由器、QEMR 查询自适应混合检索（向量+时序+图）、token 预算打包；
 - 提取方法论：分块提取 + 确定性 span 定位（模型无关，LLM 只做语义判断）；
 - 双基准评测工程：LongMemEval / LoCoMo 运行器、统一预算、无 oracle 泄漏、不可变产物（FINALIZED.json）、内容寻址分析；
+  注意：LongMemEval 已有 finalized 内容寻址产物（`runs/publication/` + `runs/analysis/`）；LoCoMo 目前只有 legacy
+  `runs/main` 产物（1986 题主 run，尚未升级到 finalized 管线）；
 - 生产服务：FastAPI + PostgreSQL/pgvector（asyncpg 池）、多租户隔离（tenant/user/session）、fail-closed 降级、可观测性、Docker Compose。
 
 评测结论（当前口径，全部数字可溯源到 `runs/` 产物）：
@@ -131,7 +133,17 @@ docs/                   架构、评测、数据和求职材料
 - 至少 LongMemEval 与 LoCoMo 两个公开基准；
 - No Memory、Full Context、Vector RAG 和完整方法公平对比；
 - ETEC、QEMR 分别有消融；
-- 报告 Accuracy/F1、Evidence F1、stale-memory error、token、延迟；
-- 一条命令可复现实验子集；
-- OpenCode 可通过 MCP 调用记忆检索和证据解释；
+- 报告 Accuracy/F1、Evidence F1、token、延迟；
+- 实验子集可复现（smoke 配置 + finalized 内容寻址产物，见 `docs/EVALUATION.md`）；
 - README 中只填写真实测得的简历指标。
+
+当前状态对照：
+
+| 条目 | 状态 |
+|---|---|
+| 双基准 | ✅ LongMemEval（finalized 内容寻址）；⚠️ LoCoMo 仅有 legacy `runs/main` 产物（M14 run，未升级 finalized 管线） |
+| 方法公平对比 | ✅ 24 样本 6 方法（`runs/publication/longmemeval-test20-6m`）+ LoCoMo 1986 题 |
+| ETEC/QEMR 消融 | ✅ 六因子 `runs/ablation/`（全部 finalized） |
+| 指标报告 | ✅ M15 内容寻址报告（EM/token_f1/evidence_f1/tokens）；⚠️ stale-memory error 未单独度量 |
+| 复现 | ✅ smoke config + 不可变产物 + 内容寻址分析（`--config`/`--resume-dir` 支持断点续跑） |
+| MCP 集成 | ❌ 未实现（M17 TODO，`adapters/opencode/README.md` 仅计划） |

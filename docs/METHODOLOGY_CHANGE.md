@@ -112,10 +112,21 @@
 - **运行器缺陷修复**（commit `7e21dd6`）：`--resume-dir` 对自定义 `--sample-ids` 子集
   run 会因样本集重建自 config sample_limit 而 manifest drift；现从既有 manifest
   恢复 expected ids，新增 `test_resume_custom_sample_subset_restores_manifest_ids`。
-- **重跑进度**：6m（6 方法 × 24 样本，config_hash `6f959d5e…` 与原 run 一致）已跑 21/24
-  样本（`runs/recheck/`，per-sample 不可变），因 opencode 网关**周配额耗尽**
-  （`GoUsageLimitError`，2 天后重置）中断。已完成样本中 etec EM 与旧 run 相当
-  （0.524/21 vs 旧 0.524，无端到端差异声明）。
-- **未决**：修复后的"同代码两次 run 预测一致"复验待配额重置后完成（resume 即可，
-  无需重跑已完成样本）；新旧 run 提取快照不一致（235 vs 263 事件），跨 run 预测
-  对比不能作为非确定性修复的干净证据——确定性验证以回归测试 + 同代码双 run 为准。
+- **重跑进度**：6m（6 方法 × 24 样本，config_hash `6f959d5e…` 与原 run 一致）
+  **已于 2026-08-15 完成并 finalize**（`runs/recheck/m13-longmemeval-test20-20260814T195333507448Z/`，
+  24/24 样本，git `7e21dd6` clean，FINALIZED.json 已封存）。此前两次中断分别为
+  opencode 网关周配额耗尽（`GoUsageLimitError`）与 resume manifest drift；换用新 key +
+  worktree 在 run 绑定 commit 上续跑后一次完成。
+- **新 run 结果（24 样本，EM / token_f1）**：no_memory 0.0000/0.0036、
+  full_context 0.0000/0.0294、vector_rag 0.5833/0.8165、event_no_etec 0.4583/0.7349、
+  etec 0.5000/0.7752、full 0.5417/0.8128（旧 run 对照：vector_rag 0.5833/0.7720、
+  event_no_etec 0.4167/0.7489、etec 0.5000/0.7670、full 0.4167/0.7600）。
+  机制指标保持：证据溯源 exact 100%（6656/6656）、四记忆方法 24/24 满 4096 token 预算。
+- **对比口径（重要）**：新旧 run 之间提取快照不一致（模型输出随机性，如 118b2229
+  235 vs 263 事件），且新 run 代码包含 merge gate/两阶段 packing/interval 过滤三项
+  行为修复——因此**新旧 run 预测差异（13/24 full 不同）不能作为非确定性修复的
+  失效证据**，其中约一半是 reader 输出格式差异（`At Target.` vs `Target.`）。
+- **未决**："同代码两次 run 预测一致"的严格复验仍待办——run 管线每次重新提取
+  （提取含模型随机性），端到端双 run 无法隔离检索确定性；确定性验证以回归测试
+  （`test_retrieval_decisions_are_run_id_independent`、
+  `test_event_index_order_is_run_id_independent`，相同输入不同 UUID 决策一致）为准。

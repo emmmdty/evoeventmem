@@ -115,10 +115,12 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 - **已知限制（如实记录）**：`full` 方法在 6m run 与 r2 的预测 12/24 不同（vector_rag 2/24），
   根因是候选 cap / 链接索引按随机 `memory_id` UUID 打破平局（`retrieval._cap_candidates`、
   `linking._build_request_indexes`）的 run-to-run 非确定性。**该根因已于 2026-08-14 修复**
-  （tie-break 改用内容+证据派生的 `memory_order_key`，新增 run-id 无关回归测试）；
-  修复后的同代码双 run 复验因 opencode 网关周配额耗尽（`GoUsageLimitError`，2026-08-15）
-  待配额重置后继续（`runs/recheck/` 已跑 21/24，resume 即可）。修复前跨 run 数字不可
-  逐位比对；报告内所有比较均为同 run 配对，不受影响。
+  （tie-break 改用内容+证据派生的 `memory_order_key`，新增 run-id 无关回归测试）。
+  2026-08-15 用修复后代码完成 24/24 样本重跑并 finalize（`runs/recheck/`，config_hash
+  与原 run 一致）：EM vector_rag 0.5833 / event_no_etec 0.4583 / etec 0.5000 / full 0.5417，
+  溯源 100%、预算满装保持。新旧 run 提取快照存在模型随机性差异且新 run 含三项行为修复，
+  跨 run 预测对比不作为确定性证据；确定性以回归测试为准。修复前跨 run 数字不可逐位比对；
+  报告内所有比较均为同 run 配对，不受影响。
 
 ## 7. multi-session 切片（ETEC 合并机制验证，2026-08-14）
 

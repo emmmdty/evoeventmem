@@ -39,6 +39,10 @@ Agent Runtime 负责规划、工具调用和执行；本项目负责记忆写入
 评测结论（当前口径，全部数字可溯源到 `runs/` 产物）：
 
 - **机制级强结果（24 样本小样本闭环）**：证据溯源覆盖率 100%、0 分格修复 10→4（merge gate + 预算满装）、LoCoMo 记忆方法省约 96.5% 输入 token、33/33 失败人工复核（主因是 reader 精确输出，真正检索/提取/预算失效仅 7/33）。
+- **O09 机制诊断增量（2026-08-18，见 [`docs/9of10_ACCEPTANCE.md`](docs/9of10_ACCEPTANCE.md)）**：
+  - SUPERSEDE 诊断：真实数据 0/32 触发（R1 提取不写 fact_slot → R1b 不写 valid_from point-interval 不重叠 → R3 LLM 输出形态三层级联屏障），同代码在受控夹具上 4/12 SUPERSEDE（`runs/mechanism/etec_stress/…/summary.json`）→ 真实不可达根因是提取管线 metadata 缺口，非 consolidation 逻辑 bug；interval 算子 500 题确定性预筛 16 例 interval（15 BETWEEN + 1 AT，3.2%），BEFORE/AFTER=0（`runs/mechanism/router_screen/router-screen.json`）。
+  - 大样本一致性：4 个 finalized 24 样本 run（n=96）provenance 100%（Wilson 95% CI 两两重叠于 1.0）+ 记忆方法预算饱和 1.0 + SUPERSEDE=0 全 run + 失败归因分布结构同构（`runs/mechanism/consistency/consistency.json`）；1986-LoCoMo 效率 96.5% 与 r2 复核"reader 主导错误"方向一致。500 run 配额阻断待续（网关 429/403），预注册 §6.3 末段兜底路径 + 功效论证已交付（n=500 最小可检测效应 ±0.018–0.039 > 观测 0.005–0.014，500 run 无显著性是预期内）。
+  - 对照臂口径修正：`etec`=FIXED_VECTOR、`event_no_etec`=QEMR（`benchmarks/longmemeval/run.py:153-158`，9of10 报告原文记作 `run.py:153-158`）→ 既有"etec vs event_no_etec"混入检索策略因素；**ETEC 隔离主对照 = `full` vs `event_no_etec`（同 QEMR，只差 ETEC 存储/整合）**，已写入 spec §3.3/§13 决议 1 与 `docs/EVALUATION.md` §7。
 - **无端到端 QA 增益声明**：`full` vs `vector_rag` 在 24 样本上无正向显著差异；方法论定位是"机制证据链 + 可复现产物"，不是绝对分数竞争。详见 `docs/METHODOLOGY_CHANGE.md`（含大样本一致性验证的定位）。
 
 项目结构、评测协议、部署决策与竞品定位分别见
@@ -143,7 +147,7 @@ docs/                   架构、评测、数据和求职材料
 |---|---|
 | 双基准 | ✅ LongMemEval（finalized 内容寻址）；⚠️ LoCoMo 仅有 legacy `runs/main` 产物（M14 run，未升级 finalized 管线） |
 | 方法公平对比 | ✅ 24 样本 6 方法（`runs/publication/longmemeval-test20-6m`）+ LoCoMo 1986 题 |
-| ETEC/QEMR 消融 | ✅ 六因子 `runs/ablation/`（全部 finalized） |
-| 指标报告 | ✅ M15 内容寻址报告（EM/token_f1/evidence_f1/tokens）；⚠️ stale-memory error 未单独度量 |
-| 复现 | ✅ smoke config + 不可变产物 + 内容寻址分析（`--config`/`--resume-dir` 支持断点续跑） |
+| ETEC/QEMR 消融 | ✅ 六因子 `runs/ablation/`（全部 finalized）；⚠️ ETEC SUPERSEDE 真实数据 0/32（R1+R1b+R3 级联屏障）vs 受控夹具 4/12（`runs/mechanism/etec_stress/`、`runs/mechanism/evala/metrics.partial.json`），机制诊断见 `docs/9of10_ACCEPTANCE.md` §a |
+| 指标报告 | ✅ M15 内容寻址报告（EM/token_f1/evidence_f1/tokens）；⚠️ stale-memory error 机制诊断完成（SUPERSEDE 在真实数据结构性不可达，M2 stale judge 因配额未跑、由诊断隐含无 with/without 差异），见 `docs/9of10_ACCEPTANCE.md` §a/§b 风险 |
+| 复现 | ✅ smoke config + 不可变产物 + 内容寻址分析（`--config`/`--resume-dir` 支持断点续跑）；✅ 4 finalized 24 样本 run（n=96）一致性重算（`runs/mechanism/consistency/consistency.json`，sha256:5764711a…）；⚠️ 500 run `configs/longmemeval/main500.toml` 已入库、网关配额阻断待续 |
 | MCP 集成 | ❌ 未实现（M17 TODO，`adapters/opencode/README.md` 仅计划） |

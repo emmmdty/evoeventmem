@@ -1,0 +1,18 @@
+{
+  "schema_version": "longmemeval.slice-selection.v1",
+  "slice": "mechanism-evala",
+  "seed": 42,
+  "method": "universe = 78 knowledge-update + 133 temporal-reasoning questions; 24 KU = sha256('42'+question_id) ordering over the 70 KU remaining after excluding the 8 KU ids already in the test20-ms slice; 16 TR = sha256('42'+question_id) ordering over all 133 temporal-reasoning questions; no overlap with test20-ms slice (verified); _abs abstention variants retained per test20-ms precedent; runner constrained to --sample-ids only",
+  "question_types": {"knowledge-update": 24, "temporal-reasoning": 16},
+  "excluded_from": "test20-ms slice (8 KU ids: ba61f0b9, 50635ada, c7dc5443, 26bdc477, 6a1eabeb, 89941a94, eace081b, 22d2cb42)",
+  "sample_ids": [
+    "6071bd76", "9ea5eabc", "10e09553", "cf22b7bf", "dad224aa", "9bbe84a2",
+    "6aeb4375", "b01defab", "69fee5aa", "2133c1b5_abs", "ed4ddc30", "6aeb4375_abs",
+    "0977f2af", "f685340e", "01493427", "830ce83f", "603deb26", "42ec0761",
+    "4b24c848", "7e974930", "e61a7584", "06db6396", "07741c45", "cc5ded98",
+    "gpt4_93f6379c", "982b5123", "b46e15ee", "gpt4_4ef30696", "gpt4_e072b769",
+    "gpt4_fe651585_abs", "0bc8ad93", "2a1811e2", "b9cfe692", "982b5123_abs",
+    "gpt4_68e94288", "bcbe585f", "e4e14d04", "gpt4_e414231f", "gpt4_2487a7cb",
+    "gpt4_6dc9b45b"
+  ]
+}

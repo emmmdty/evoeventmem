@@ -1,0 +1,5 @@
+{
+  "schema_version": "mechanism.probes.v1",
+  "note": "Eval B synthetic time-window probe list. Generated and frozen only after gold pair annotation (Phase 3.5, spec §5.2); until then the list is intentionally empty.",
+  "probes": []
+}

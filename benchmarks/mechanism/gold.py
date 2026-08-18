@@ -23,7 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 GOLD_PAIRS_SCHEMA_VERSION = "mechanism.gold-pairs.v1"
 GOLD_REVIEW_SHEET_SCHEMA_VERSION = "mechanism.gold-review-sheet.v1"
@@ -39,12 +39,18 @@ class GoldAction(StrEnum):
 
 
 class GoldPair(BaseModel):
+    # ADD is the no-prior-value update action: when ``gold_action == ADD`` the
+    # ``old_value`` may be empty and ``old_value_turn_ids`` may be an empty
+    # list (the fact is first asserted at t_q, nothing is superseded). The
+    # SUPERSEDE/MERGE actions still require a non-empty old side. This keeps
+    # the schema honest about ADD questions like 22d2cb42 (guitar service
+    # location) whose gold action is genuinely ADD with no old value.
     question_id: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     attribute: str = Field(min_length=1)
-    old_value: str = Field(min_length=1)
+    old_value: str = ""
     new_value: str = Field(min_length=1)
-    old_value_turn_ids: list[str] = Field(min_length=1)
+    old_value_turn_ids: list[str] = Field(default_factory=list)
     new_value_turn_ids: list[str] = Field(min_length=1)
     t_q: datetime
     t_old: datetime
@@ -58,6 +64,21 @@ class GoldPair(BaseModel):
         if value.tzinfo is None:
             raise ValueError("gold timestamps must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def require_old_side_for_supersede_or_merge(self) -> GoldPair:
+        if self.gold_action is not GoldAction.ADD:
+            if not self.old_value.strip():
+                raise ValueError(
+                    f"gold_action={self.gold_action.value} requires a non-empty "
+                    "old_value (only ADD may carry an empty old side)"
+                )
+            if not self.old_value_turn_ids:
+                raise ValueError(
+                    f"gold_action={self.gold_action.value} requires at least one "
+                    "old_value_turn_id (only ADD may carry an empty old side)"
+                )
+        return self
 
 
 class GoldPairs(BaseModel):
@@ -146,7 +167,9 @@ def validate_pairs(pairs: Sequence[GoldPair], dataset_path: Any) -> list[str]:
     Checks (spec §4.2, step 3):
     - required fields non-empty and actions in {SUPERSEDE, MERGE, ADD};
     - ``new_value`` is a normalized-token subset of the official answer;
-    - every turn id resolves inside the question's full haystack sessions;
+    - every turn id resolves inside the question's full haystack sessions
+      (ADD pairs with an empty ``old_value_turn_ids`` skip the old-side
+      resolution, since nothing is superseded);
     - ``t_q >= t_old``, and ``gold_action == SUPERSEDE`` requires ``t_old < t_q``.
     """
     records = record_index(dataset_path)

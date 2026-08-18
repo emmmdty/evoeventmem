@@ -1,5 +1,143 @@
 {
-  "schema_version": "mechanism.probes.v1",
-  "note": "Eval B synthetic time-window probe list. Generated and frozen only after gold pair annotation (Phase 3.5, spec §5.2); until then the list is intentionally empty.",
-  "probes": []
+  "gold_hash": "sha256:ab12f14c3c40127aa8964d990b36bbffeea27bf5208e1bfd239d0707da324bfa",
+  "note": "Eval B synthetic time-window probe list, frozen after gold pair annotation (spec \u00a75.2).",
+  "probes": [
+    {
+      "attribute": "number of women on Rachel's team",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_f377cda7_2:0"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_f377cda7_1:8"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-ba61f0b9",
+      "query": "What is me's number of women on Rachel's team now?",
+      "question_id": "ba61f0b9",
+      "reference_time": "2023-08-03T06:02:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "United Airlines frequent flyer status",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_dcd74827_2:2"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_dcd74827_1:4"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-50635ada",
+      "query": "What is me's United Airlines frequent flyer status now?",
+      "question_id": "50635ada",
+      "reference_time": "2023-06-29T04:09:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "United Airlines frequent flyer status",
+      "expected_operator": "BEFORE",
+      "gold_inside_window_turn_ids": [
+        "answer_dcd74827_1:4"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_dcd74827_2:2"
+      ],
+      "kind": "past",
+      "notes": "past probe: BEFORE operator (spec-expected window (-inf, 2022-12-31]; actual router bound may differ -- see caveats.router_before_year_is_inclusive and router_operator_assertions.temporal_constraint_bounds",
+      "probe_id": "past-50635ada",
+      "query": "What was me's United Airlines frequent flyer status before 2023?",
+      "question_id": "50635ada",
+      "reference_time": "2023-06-29T04:09:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "recreational volleyball league record (Net Ninjas)",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_0cdbca92_2:0"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_0cdbca92_1:0"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-c7dc5443",
+      "query": "What is me's recreational volleyball league record (Net Ninjas) now?",
+      "question_id": "c7dc5443",
+      "reference_time": "2023-07-21T20:30:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "number of trips taken with Canon EOS 80D camera",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_f762ad8d_2:0"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_f762ad8d_1:2"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-26bdc477",
+      "query": "What is me's number of trips taken with Canon EOS 80D camera now?",
+      "question_id": "26bdc477",
+      "reference_time": "2023-06-06T18:27:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "personal best time in charity 5K run",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_a25d4a91_2:0"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_a25d4a91_1:4"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-6a1eabeb",
+      "query": "What is me's personal best time in charity 5K run now?",
+      "question_id": "6a1eabeb",
+      "reference_time": "2023-06-25T13:22:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "number of bikes owned",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_e1403127_2:4"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_e1403127_1:6"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-89941a94",
+      "query": "What is me's number of bikes owned now?",
+      "question_id": "89941a94",
+      "reference_time": "2023-06-21T02:24:00+00:00",
+      "subject": "me"
+    },
+    {
+      "attribute": "island staying at for birthday trip to Hawaii",
+      "expected_operator": "NONE",
+      "gold_inside_window_turn_ids": [
+        "answer_8a791264_2:2"
+      ],
+      "gold_outside_window_turn_ids": [
+        "answer_8a791264_1:0"
+      ],
+      "kind": "now",
+      "notes": "now probe: NONE operator, no temporal window",
+      "probe_id": "now-eace081b",
+      "query": "What is me's island staying at for birthday trip to Hawaii now?",
+      "question_id": "eace081b",
+      "reference_time": "2023-06-06T04:18:00+00:00",
+      "subject": "me"
+    }
+  ],
+  "schema_version": "mechanism.probes.v1"
 }

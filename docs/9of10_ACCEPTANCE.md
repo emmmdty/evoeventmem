@@ -4,7 +4,7 @@
 > 任务：`tasks/optional/O09_mechanism_evaluation.md`
 > 预注册方案：`docs/superpowers/specs/2026-08-17-o09-mechanism-eval-and-500-consistency-design.md`（含 §13 编排者审批决议）
 > 口径：所有数字均可溯源到 `runs/` 不可变产物或 content-addressed 报告；LLM 判断未在本周期产出（配额阻断，见 §b 风险）。
-> 结论：(a) 机制诊断完成（**null 结果：ETEC 在真实数据无可评估面**）、(b) 离线一致性 + 功效论证完成（500 run 配额阻断、已预注册 §6.3 末段兜底路径待续；consistency.json 只含 recheck 结构化数据，4-run 表来自多源手动编译，见 §b.1 标注）、(c) 机理解释报告完成。三项均落到"真实、可解释、机理上成立"的口径；端到端 QA 增益仍如实记录为无（与基线一致）。**独立审计评 8/10（非 9/10），见 `docs/9of10_AUDIT.md`**。
+> 结论：(a) 机制诊断完成（**null 结果：ETEC 在真实数据无可评估面**）、(b) 离线一致性 + 功效论证完成（500 run 配额阻断、已预注册 §6.3 末段兜底路径待续；**consistency.json 现有 4 个 entry，4-run 表由 consistency.py 结构化产出，非多源手动编译**）、(c) 机理解释报告完成。三项均落到"真实、可解释、机理上成立"的口径；端到端 QA 增益仍如实记录为无（与基线一致）。**独立审计评 9/10（续作后，见 `docs/9of10_AUDIT.md` 第六部分）**。
 
 ---
 
@@ -12,8 +12,8 @@
 
 | 维度 | 7/10 状态 | 9/10 增量（本任务） |
 |---|---|---|
-| (a) 机制实证 | SUPERSEDE/interval 从未触发、stale 未度量 | **级联屏障诊断** R1+R1b+R3：实证 SUPERSEDE 在真实数据结构性不可达的根因链；夹具对照 4/12 + v2.1 单测证明 **consolidation 逻辑本身**有效（**不证明 ETEC 在真实数据有价值**——恰恰相反，真实数据 0/8 实测 SUPERSEDE，ETEC 无操作面）；M3 新证据召回 1.0（**new-side-only，非 joint recall**）；router 500 题预筛 interval 算子近零。结论形态 = "机理上成立"（spec §1.2 形态 2，**null 结果**）。SUPERSEDE "0/32" 实为 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）。 |
-| (b) 大样本一致性 | 500 降级为待办 | **离线一致性 + 功效论证**：4 个 finalized 24 样本 run（n=96）+ 1986-LoCoMo 上重算 5 项机制指标不漂移；500 run 配额阻断，预注册 §6.3 末段兜底路径待续。**注意：consistency.json 只含 recheck 1 run 结构化数据，4-run 表来自多源手动编译（见 §b.1 标注）**。 |
+| (a) 机制实证 | SUPERSEDE/interval 从未触发、stale 未度量 | **级联屏障诊断** R1+R1b+R3：实证 SUPERSEDE 在真实数据结构性不可达的根因链；夹具对照 4/12 + v2.1 单测证明 **consolidation 逻辑本身**有效（**不证明 ETEC 在真实数据有价值**——恰恰相反，真实数据 0/8 实测 SUPERSEDE，ETEC 无操作面）；**M3 joint recall（old+new 侧，7 对 gold pair）JERecall@8=1.0（结构性 null，非 ETEC 优势——SUPERSEDE=0 → 旧值 ACTIVE → 总可检索）**；**M4 ExclusionHit=0（router "before {year}" 解析包含该年 → 0 排除，如实记录非凑数字）+ Contamination≈0.11 + ValidRetention=1.0**；router 500 题预筛 interval 算子近零。结论形态 = "机理上成立"（spec §1.2 形态 2，**null 结果**）。SUPERSEDE "0/32" 实为 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）。**M1=1/8（22d2cb42 ADD coincidental match，flagged）**。 |
+| (b) 大样本一致性 | 500 降级为待办 | **离线一致性 + 功效论证**：4 个 finalized 24 样本 run（n=96）+ 1986-LoCoMo 上重算 5 项机制指标不漂移；500 run 配额阻断，预注册 §6.3 末段兜底路径待续。**consistency.json 现有 4 个 entry（r2/6m/ms/recheck），Wilson 95% CI 两两重叠可从 cited artifact 复算（非多源手动编译）**。 |
 | (c) 机理解释 | 缺"为何无增益"机理报告 | **机理报告**：端到端无增益 = 提取管线结构性缺口（无 SUPERSEDE 触发面）+ 基准 judge 容忍陈旧（无计分面）+ reader 主导错误（40-50% 官方、26/33 本仓）；附 LongMemEval-V2/BEAM/Mem0/Zep 文献佐证。 |
 
 ---
@@ -86,17 +86,19 @@ LLM 过度标 `multi_valued=True`（37/270=14% 的事实）、event_time 粒度�
 
 **interval 排除代码路径**（既有单元测试，未改）：`tests/retrieval/test_qemr.py:767,799,831,1074,1433` 断言 `temporal_interval_excluded`；`test_query_router.py:290-377` 算子解析。interval 过滤代码在受控输入下行为正确。
 
-### a.6 M3 新证据召回 + router 预筛（检索侧不是瓶颈）
+### a.6 M3 joint recall + router 预筛（检索侧不是瓶颈）
 
-**M3 new_recall（ms 8 KU，4 方法，finalized retrieval.jsonl）**：
-| 方法 | new_recall_mean |
-|---|---|
-| full | 1.0 |
-| event_no_etec | 1.0 |
-| etec | 1.0 |
-| vector_rag | 1.0 |
+**M3 joint recall（ms 8 KU，7 SUPERSEDE/MERGE gold pair + 1 ADD，4 方法，finalized retrieval.jsonl）**：
+| 方法 | old_recall_mean | new_recall_mean | JERecall@8 |
+|---|---|---|---|
+| full | 1.0 | 1.0 | 1.0 |
+| event_no_etec | 1.0 | 1.0 | 1.0 |
+| etec | 1.0 | 1.0 | 1.0 |
+| vector_rag | 1.0 | 1.0 | 1.0 |
 
-new 侧（answer_session_ids，数据自带）召回 100% → 检索总能找到新证据；old 侧需 gold 标注（SUPERSEDE=0 后 old/new 联合召回的 ETEC 增益无观测面，未标注）。**注意：M3 是 new-side-only recall，不是 joint recall；old 侧未标注故 JERecall 不可算。** 独立审计后 gold 已标注 ms 8 KU（`runs/mechanism/gold/longmemeval-kupairs-ms8.v1.json`，sha256:1392d32f…），但 SUPERSEDE=0 使 old/new 联合召回的 ETEC 增益仍无观测面。产物同 `metrics.partial.json`。
+old+new 侧（gold old_value_turn_ids + answer_session_ids）联合召回 100%。**但这是结构性 null，非 ETEC 优势**：SUPERSEDE=0 → 旧值全 ACTIVE → 旧值总能被检索 → full vs event_no_etec JERecall@8 delta=0.0。22d2cb42（ADD，old 侧空）：old_recall=NA、JERecall@8=NA。产物 `runs/mechanism/evala/m3_joint.json`（content_hash `sha256:1f16ef77…`）。
+
+**M4 Eval B 探针（8 探针 × 4 臂，零 LLM）**：ExclusionHit=0 全臂（past 探针 BEFORE 算子正确触发，但 router "before {year}" 解析包含该年 → upper={year}-12-31 → 0 排除）；Contamination≈0.11-0.24（旧证据泄漏，SUPERSEDE=0 → 旧值可检索）；ValidRetention=1.0（gold 证据总保留）。full vs event_no_etec Contamination delta≈0.004（结构性 null）。产物 `runs/mechanism/evalb/m4.json`（content_hash `sha256:07ba78c3…`）。
 
 **router 全量 500 题确定性预筛（零 LLM，预注册方法 `reference_time=question_date` 解析）**：`none 382 / earliest 42 / latest 23 / duration 26 / between 15 / sequence 11 / at 1`；**BEFORE/AFTER = 0**。interval 算子（触发 `temporal_interval_excluded` 的路径，retrieval.py:797 `_apply_interval_temporal`）在自然 500 题中共 **16 例**（15 BETWEEN + 1 AT，3.2%）——其中 15 BETWEEN 来自 `_RELATIVE_RE` 匹配 "last/next/this/past/previous/coming + week/month/year"（router.py:615-629），需 `reference_time` 才能解析（不传 reference_time 则 BETWEEN=0、latest=29，该口径与 spec §3.1 预注册设计期结果一致但不符合预注册方法；本报告以预注册方法 `reference_time=question_date` 为准）。→ 真实数据 interval 过滤**近零触发**（3.2%），与既有三个切片（72 题仅 1 earliest、0 between）方向一致。产物：`runs/mechanism/router_screen/router-screen.json`（`content_hash` 字段 sha256:74d18a1d…，500/500 question_date 解析成功）。
 
@@ -115,9 +117,9 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 
 ### b.1 离线一致性（4 finalized 24 样本 run + 1986-LoCoMo）
 
-脚本 `benchmarks/mechanism/consistency.py`（入库，733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:5764711ae62ab4b612e5ac69d4c254cb90e624a7f8ab37bce2a065a173cc015e`，确定性可复现）。
+脚本 `benchmarks/mechanism/consistency.py`（入库，733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:85e6b73af9522a632367a1dce8e28fcaad1626894afa33523f34d775291b512c`，确定性可复现）。
 
-**诚实标注（独立审计发现）**：`consistency.json` 的 `runs[]` 数组只含 **1 个 run（recheck）** 结构化数据；`inputs.run_dirs` 也只有 1 个路径。r2/6m/ms 的 ETEC 动作数字只出现在 `cross_run.etec_actions.judgement` **prose 字符串**中。下表 4 行来自**多源手动编译**（各 run 的 M15 报告 + `metrics.partial.json` + prose），非 consistency.py 单一产出。"四 run Wilson 95% CI 全两两重叠于 1.0" 无法从 cited artifact 直接复算（只有 recheck 有结构化 provenance 数据）。
+**续作修复**：`consistency.json` 的 `runs[]` 现有 **4 个 entry**（r2/6m/ms/recheck），`inputs.run_dirs` 有 4 个路径。下表 4 行由 `consistency.py --source-run <4 runs>` 结构化产出，**非多源手动编译**。"四 run Wilson 95% CI 两两重叠"可从 cited artifact 复算（6 对 pairwise overlap 全 True）。
 
 | run | 溯源 raw_turn_id | 预算满装(记忆) | 0-格 | 失败归因(自动) | ETEC actions(A/M/S/R) |
 |---|---|---|---|---|---|
@@ -126,7 +128,7 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 | ms | 6266/6266=100% [99.94,100] | 96/96=100% [96.15,100] | 23/24 | extr55/budget18/absent48 | 5332/2/0/0 |
 | recheck | 6656/6656=100% [99.94,100] | 96/96=100% [96.15,100] | 6/38 | extr27/budget19/absent48 | 5059/335/0/0 |
 
-**稳定**：provenance 100%（**新管线修复了旧管线的 0；非始终 100%**——LoCoMo 1986 legacy provenance=0）；budget 饱和 1.0（记忆四方法每 run 全满装，CI 重叠）；**SUPERSEDE=0 全 run**（R1 在 4-run 规模复现）。**注意：四 run Wilson 95% CI 两两重叠的复算需 consistency.py 处理全部 4 run（当前只处理了 recheck 1 run）。**
+**稳定**：provenance 100%（**新管线修复了旧管线的 0；非始终 100%**——LoCoMo 1986 legacy provenance=0）；budget 饱和 1.0（记忆四方法每 run 全满装，CI 重叠——**非判别性指标：全方法 4096 budget 满装是 budget 设计的预期，不区分方法质量**）；**SUPERSEDE=0 全 run**（R1 在 4-run 规模复现）。
 
 **有差异 + 已解释**：recheck MERGE 5→335 是确定性合并修复（`memory_order_key` tie-break）的预期信号，非指标漂移（METHODOLOGY_CHANGE.md §7）；6m 未持久化 `ingestion.etec.actions`（legacy 字段契约局限，标注 NA）。
 
@@ -183,12 +185,16 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 | 指标 | 数字 | 对照 | 来源 |
 |---|---|---|---|
 | 输入 token 节省 | 96.5%（142.2 vs 4102.3 tokens/query，p<0.001）**vs full_context（trivial 基线）**；**注意：full（200.3）比 vector_rag（142.2）贵 41%，full 的事件图开销使其比真 RAG 基线更贵** | full_context | `runs/main/report`（1986-LoCoMo） |
-| 证据溯源覆盖 | 100% raw_turn_id（4 finalized run，n=96，Wilson CI 重叠 1.0）**— 新管线修复了旧管线的 0（LoCoMo legacy provenance=0），非始终 100%** | 历史缺陷 0/668（legacy LoCoMo） | `runs/mechanism/consistency/consistency.json` |
+| 证据溯源覆盖 | 100% raw_turn_id（4 finalized run，n=96，Wilson CI 重叠 1.0，**可从 consistency.json 复算**）**— 新管线修复了旧管线的 0（LoCoMo legacy provenance=0），非始终 100%** | 历史缺陷 0/668（legacy LoCoMo） | `runs/mechanism/consistency/consistency.json`（sha256:85e6b73a…） |
 | 0 分格修复 | 10 → 4 | 基线 | `runs/publication/longmemeval-test20-r2` + `SUMMARY_24SAMPLE.md` |
 | 失败归因 | 26/33 reader-wrong（33/33 人工复核） | 自动标签一致率 7/33=21.2% | `runs/review/longmemeval-r2.reviewed.jsonl` |
-| 新证据召回 | 1.0（ms 8 KU 四方法）**— new-side-only recall，非 joint recall；old 侧未标注** | — | `runs/mechanism/evala/metrics.partial.json` |
-| SUPERSEDE 诊断 | 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）= "0/32"（R1+R1b+R3 级联） vs 4/12 受控夹具（**证明 consolidation 逻辑，不证明 ETEC 真实价值**） | 同代码 | `runs/mechanism/etec_stress/...summary.json` + `runs/mechanism/evala/m1.json`（M1=0/7，22d2cb42 排除） |
+| 新证据召回 | 1.0（ms 8 KU 四方法）**— joint recall（old+new 侧，7 对 gold pair）；结构性 null：SUPERSEDE=0 → 旧值 ACTIVE → 总可检索 → full vs event_no_etec delta=0.0，非 ETEC 优势** | — | `runs/mechanism/evala/m3_joint.json`（sha256:1f16ef77…） |
+| SUPERSEDE 诊断 | 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）= "0/32"（R1+R1b+R3 级联） vs 4/12 受控夹具（**证明 consolidation 逻辑，不证明 ETEC 真实价值**） | 同代码 | `runs/mechanism/etec_stress/...summary.json` + `runs/mechanism/evala/m1.json`（M1=1/8，22d2cb42 coincidental match flagged，sha256:2afcea42…） |
 | interval 算子 | 500 题 16 例 interval（15 BETWEEN + 1 AT，3.2%），BEFORE/AFTER=0 | — | `runs/mechanism/router_screen/router-screen.json`（content_hash 字段 sha256:74d18a1d…） |
+| M4 探针 | ExclusionHit=0 全臂（router "before {year}" 包含该年 → 0 排除，如实记录）；Contamination≈0.11；ValidRetention=1.0 | — | `runs/mechanism/evalb/m4.json`（sha256:07ba78c3…） |
+| budget 饱和 | 1.0 全方法（**非判别性：全方法 4096 满装是设计预期，不区分方法质量**） | — | `runs/mechanism/consistency/consistency.json` |
+| under_edit | 1.0（**SUPERSEDE=0 的直接推论，非独立测量：旧值从不被标记失效 → 全 ACTIVE**） | — | `runs/mechanism/evala/m5.json` |
+| version_chain_recall | 0.0（**SUPERSEDE=0 的直接推论：无 supersede 则无 superseded_by 链**） | — | `runs/mechanism/evala/m5.json` |
 
 **叙事**：本项目交付"机制证据链 + 可复现产物 + 根因诊断"，不参与绝对分数竞争。端到端无增益有明确机理解释（提取管线结构性缺口 + 基准 judge 容忍陈旧 + reader 主导错误 + 检索已饱和），而非方法失效；ETEC consolidation 机制本身经夹具与单测证明有效，真实数据不可达是提取侧 metadata 缺口。
 
@@ -200,19 +206,21 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 - `tasks/optional/O09_mechanism_evaluation.md`
 - `docs/superpowers/specs/2026-08-17-o09-mechanism-eval-and-500-consistency-design.md`（含 §13 审批）
 - `docs/9of10_ACCEPTANCE.md`（本文件）
-- `benchmarks/mechanism/{__init__,gold,replay,eval_a,consistency}.py`
-- `tests/mechanism/{test_gold,test_replay,test_eval_a,test_consistency}.py`
+- `benchmarks/mechanism/{__init__,gold,replay,eval_a,consistency,probes}.py`
+- `tests/mechanism/{test_gold,test_replay,test_eval_a,test_consistency,test_probes}.py`
 - `scripts/annotate_gold_pairs.py`
 - `configs/longmemeval/{mechanism-evala.selection.json,mechanism-40.toml,main500.toml,mechanism-probes.json}`
 
 ### 不入库（gitignored，`runs/`，哈希进报告）
 - `runs/mechanism/evala/metrics.partial.json`（sha256:0d3c5a2f…）
-- `runs/mechanism/evala/m1.json`（独立审计后产出，M1=0/7，22d2cb42 排除）
+- `runs/mechanism/evala/m1.json`（M1=1/8，22d2cb42 coincidental match flagged，sha256:2afcea42…）
 - `runs/mechanism/evala/m2.json`（NOT_PRODUCED_QUOTA_BLOCKED，无假数字）
+- `runs/mechanism/evala/m3_joint.json`（joint recall，7 对 gold pair，sha256:1f16ef77…）
 - `runs/mechanism/evala/m5.json`（under_edit=1.0, version_chain_recall=0.0）
-- `runs/mechanism/evalb/m4.json`（PARTIAL：router 断言 8/8，M4 指标未算）
-- `runs/mechanism/gold/longmemeval-kupairs-ms8.v1.json`（sha256:1392d32f…，7 对 + 1 排除）
-- `runs/mechanism/consistency/consistency.json` + `.md`（sha256:5764711a…）
+- `runs/mechanism/evalb/m4.json`（FINAL：ExclusionHit/Contamination/ValidRetention per arm，sha256:07ba78c3…）
+- `runs/mechanism/evalb/probes_retrieval.jsonl`（8 探针 × 4 臂 packed_items + exclusions 明细）
+- `runs/mechanism/gold/longmemeval-kupairs-ms8.v1.json`（sha256:ab12f14c…，8 对含 ADD）
+- `runs/mechanism/consistency/consistency.json` + `.md`（sha256:85e6b73a…，4-run 结构化）
 - `runs/mechanism/etec_stress/etec-stress-20260817T093946Z/summary.json`
 - `runs/mechanism/gold/review_sheet.jsonl`（32 行，gold 字段空白，ms 8 KU 已单独标注到 v1.json）
 - `runs/mechanism/diagnostics/v2-v21-gap-closure-experiment.diff`（930 行，v2/v2.1 实验存档）
@@ -228,12 +236,12 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 ## 未竟事项与风险
 
 1. **500 run 未跑**：网关配额中断（429/403）。`main500.toml` 已入库，待配额恢复后台 `--resume-dir` 续跑（spec §6.3 L0/L1）。届时对 78 KU + 全 500 重算 (b) checklist 同口径。
-2. **M1/M2/M5 状态更新（独立审计后）**：
-   - **M1 已产出**：`runs/mechanism/evala/m1.json`，M1=0/7（非 0/8；22d2cb42 gold_action=ADD 但 schema 要求 old_value → 排除；若含则 M1=1/8）。全部 R1 根因。
+2. **M1/M2/M5 状态更新（续作后）**：
+   - **M1 已产出**：`runs/mechanism/evala/m1.json`（sha256:2afcea42…），**M1=1/8**（22d2cb42 ADD coincidental match — ETEC did ADD due to R1 default, gold is also ADD; match flagged as coincidental, not a genuine correct SUPERSEDE decision）。全部 R1 根因。可复现：`python -m benchmarks.mechanism.eval_a --source-run <ms> --dataset <ds> --ms-selection <sel> --gold <gold> --m1-from-online <out> --out <metrics>`。
    - **M2 未产出（配额阻断）**：`runs/mechanism/evala/m2.json`（status=NOT_PRODUCED_QUOTA_BLOCKED），无假数字。SUPERSEDE=0 隐含 full vs event_no_etec stale_rate Δ≈0（结构性 null）。
-   - **M5 已产出**：`runs/mechanism/evala/m5.json`，under_edit_rate=1.0、version_chain_recall=0.0（4/7 replay cache hit，3/7 逻辑推断）。over_edit 需 Eval B 探针未算。
-   - **gold 已标注 ms 8 KU**：`runs/mechanism/gold/longmemeval-kupairs-ms8.v1.json`（sha256:1392d32f…，7 对 + 1 排除）。
-3. **gold 标注状态更新**：ms 8 KU 已标注（7 对 + 1 排除，见上 #2）。新 24 KU 仍需 mechanism40 run finalize 后标注。
+   - **M5 已产出**：`runs/mechanism/evala/m5.json`，under_edit_rate=1.0（**SUPERSEDE=0 的直接推论，非独立测量**）、version_chain_recall=0.0（**同上，SUPERSEDE=0 的直接推论**）。over_edit 需 Eval B 探针，M4 Contamination≈0.11 部分量化（旧证据泄漏）。
+   - **gold 已标注 ms 8 KU**：`runs/mechanism/gold/longmemeval-kupairs-ms8.v1.json`（sha256:ab12f14c…，**8 对含 ADD**）。新 24 KU 仍需 mechanism40 run finalize 后标注。
+3. **gold 标注状态更新**：ms 8 KU 已标注（**8 对含 ADD**，见上 #2）。新 24 KU 仍需 mechanism40 run finalize 后标注。
 4. **retrieval 离线 replay 与 online 不一致**：`benchmarks/mechanism/replay.py` 对 ms run 重放时 LinkCandidateGenerator embedding 路径 cache-miss + 候选池分歧（4dfccbf8 重放 ADD 210/MERGE 14 vs online ADD 223/MERGE 1）。M1 改用 online 持久化 `ingestion.etec.actions`（动作计数可信），per-decision 明细需 500 run 持久化字段补全。
 5. **6m ETEC actions NA**：6m run 未持久化 `samples/<id>.json → ingestion.etec.actions`（字段契约局限）；r2/recheck 已覆盖同 24 题 pre/post-fix 对照。
 6. **LoCoMo provenance=0**：legacy 管线历史缺陷，不可从 legacy 重算，标注 `legacy_defect`；不影响 LongMemEval finalized 侧的 100% 结论。
@@ -243,6 +251,8 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 ---
 
 ## Phase 6 三轮独立验收结论
+
+> **注**：以下三验收记录的是 8→9 续作**之前**的 Phase 6 验证（当时 consistency.json 只处理 1 run，hash 为 `5764711a…`）。续作后 consistency.json 已升级为 4-run 结构化产出（hash `85e6b73a…`，见 §b.1 + `docs/9of10_AUDIT.md` 闭环 1）。以下 hash 引用保留作历史记录，不作当前复算依据。
 
 三轮验收子代理（互不共享上下文）独立运行，各自重跑验证命令并输出"通过/不通过 + 证据路径"。**第一轮 A/B/C：A 不通过（router 数字 + 产物缺失）、B 不通过（eval_a.py schema 不匹配 + 入库口径）、C 通过（含 minor）**。修复后**第二轮 A/B/C：A 通过、B 通过、C 不通过（router-screen hash 不可复现 + L3 术语未传播到 consistency 产物）**。再修复后**第三轮 C 再复审：通过**。三轮全过，验收完成。
 

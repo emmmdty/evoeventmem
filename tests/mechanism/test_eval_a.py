@@ -6,6 +6,7 @@ from pathlib import Path
 
 from benchmarks.mechanism.eval_a import (
     bucket_decision,
+    compute_m1_from_online,
     compute_m3,
     compute_metrics_from_online,
     has_fact_slot,
@@ -505,3 +506,114 @@ def test_compute_metrics_from_online_question_scope_with_mechanism40_selection(
     assert scope["total_32"] == 5
     assert metrics["etec_actions"]["new_24"]["status"].startswith("pending")
     assert metrics["m3"]["new_24"]["status"].startswith("pending")
+
+
+def test_compute_m1_from_online_flags_coincidental_add_match(tmp_path: Path) -> None:
+    """M1 from online actions: ADD gold pair matches ADD ETEC action coincidentally.
+
+    Reproduces the 22d2cb42 case: when the sample is ADD-only (R1 default) and
+    the gold action is also ADD, the match is flagged coincidental. A SUPERSEDE
+    gold pair on an ADD-only sample is counted wrong with the R1 root cause.
+    """
+    run_dir = tmp_path / "ms-run"
+    run_dir.mkdir()
+    samples_dir = run_dir / "samples"
+    samples_dir.mkdir()
+    # Two ADD-only samples (mirrors ms 8 KU where every sample is ADD-only).
+    for sid, n in [("add-q1", 5), ("supersede-q1", 8)]:
+        (samples_dir / f"{sid}.json").write_text(
+            json.dumps(
+                {
+                    "sample_id": sid,
+                    "question_id": sid,
+                    "ingestion": {"etec": {"actions": {"ADD": n}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    gold_pairs = [
+        GoldPair(
+            question_id="add-q1",
+            subject="me",
+            attribute="guitar service location",
+            old_value="",
+            old_value_turn_ids=[],
+            new_value="Seattle",
+            new_value_turn_ids=["s:0"],
+            t_q=datetime(2024, 1, 1, tzinfo=UTC),
+            t_old=datetime(2024, 1, 1, tzinfo=UTC),
+            gold_action=GoldAction.ADD,
+        ),
+        GoldPair(
+            question_id="supersede-q1",
+            subject="me",
+            attribute="city",
+            old_value="Austin",
+            old_value_turn_ids=["s-old:0"],
+            new_value="Seattle",
+            new_value_turn_ids=["s-new:0"],
+            t_q=datetime(2024, 2, 1, tzinfo=UTC),
+            t_old=datetime(2024, 1, 1, tzinfo=UTC),
+            gold_action=GoldAction.SUPERSEDE,
+        ),
+    ]
+    out_path = tmp_path / "m1.json"
+    report = compute_m1_from_online(run_dir, gold_pairs, out_path=out_path)
+
+    assert report["n_found"] == 2
+    assert report["n_correct"] == 1
+    assert report["m1_accuracy"] == 0.5
+    assert report["coincidental_correct_question_ids"] == ["add-q1"]
+    add_row = report["per_question"]["add-q1"]
+    assert add_row["etec_action"] == "ADD"
+    assert add_row["gold_action"] == "ADD"
+    assert add_row["correct"] is True
+    assert add_row["coincidental_match"] is True
+    sup_row = report["per_question"]["supersede-q1"]
+    assert sup_row["etec_action"] == "ADD"
+    assert sup_row["gold_action"] == "SUPERSEDE"
+    assert sup_row["correct"] is False
+    assert "R1_structural_fact_slot_absent" in sup_row["root_cause"]
+    # Artifact written and reloads to the same hash.
+    written = json.loads(out_path.read_text(encoding="utf-8"))
+    assert written["content_hash"] == report["content_hash"]
+
+
+def test_compute_m1_from_online_flags_indeterminable_on_mixed_actions(
+    tmp_path: Path,
+) -> None:
+    """A sample with non-ADD actions cannot have its per-memory action resolved offline."""
+    run_dir = tmp_path / "ms-run"
+    run_dir.mkdir()
+    samples_dir = run_dir / "samples"
+    samples_dir.mkdir()
+    (samples_dir / "mixed-q1.json").write_text(
+        json.dumps(
+            {
+                "sample_id": "mixed-q1",
+                "question_id": "mixed-q1",
+                "ingestion": {"etec": {"actions": {"ADD": 10, "MERGE": 2}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    gold_pairs = [
+        GoldPair(
+            question_id="mixed-q1",
+            subject="me",
+            attribute="city",
+            old_value="Austin",
+            old_value_turn_ids=["s-old:0"],
+            new_value="Seattle",
+            new_value_turn_ids=["s-new:0"],
+            t_q=datetime(2024, 2, 1, tzinfo=UTC),
+            t_old=datetime(2024, 1, 1, tzinfo=UTC),
+            gold_action=GoldAction.SUPERSEDE,
+        ),
+    ]
+    report = compute_m1_from_online(run_dir, gold_pairs)
+    assert report["n_found"] == 0
+    assert report["n_indeterminable_offline"] == 1
+    assert report["indeterminable_question_ids"] == ["mixed-q1"]
+    assert report["m1_accuracy"] is None

@@ -36,6 +36,7 @@ from typing import Any
 
 from benchmarks.common.artifacts import canonical_json_hash
 from benchmarks.mechanism.gold import (
+    GoldAction,
     GoldPair,
     canonical_tokens,
     record_index,
@@ -331,6 +332,138 @@ def compute_m1(
         },
         "per_question": rows,
     }
+
+
+def compute_m1_from_online(
+    source_run: Path,
+    gold_pairs: Sequence[GoldPair],
+    *,
+    out_path: Path | None = None,
+) -> dict[str, Any]:
+    """Reproduce ``m1.json`` from online-persisted ``ingestion.etec.actions``.
+
+    The ms run ``model_cache`` has cache-miss divergence on the linking
+    embedding path (see ``replay.py`` docstring), so the replay-based
+    :func:`compute_m1` cannot match the online decisions for ms 8 KU. This
+    function reads the trusted online action counts instead and deduces the
+    per-question ETEC action for the gold new-value memory:
+
+    - When the sample's actions are ADD-only (the R1 case: extraction never
+      emits ``fact_slot`` -> ``contradiction_score==0`` -> SUPERSEDE
+      structurally unreachable -> every memory gets ADD), the per-memory ETEC
+      action is ADD. This covers all ms 8 KU samples.
+    - When the sample carries non-ADD actions, the per-memory action for the
+      specific gold new-value memory cannot be determined without replay
+      (which action a specific memory received is not persisted online). The
+      question is then flagged ``action_indeterminable_offline`` and excluded
+      from the M1 denominator (``n_found``) to avoid guessing. (No ms 8 KU
+      sample triggers this branch as of the finalized ms run.)
+
+    Honesty note: for an ADD gold pair (e.g. 22d2cb42) the ETEC action is ADD
+    because R1 defaults every decision to ADD, which coincidentally matches
+    the gold ADD. The ``coincidental_match`` flag is set on such pairs so the
+    report cannot claim ETEC "correctly decided" ADD -- ETEC would have done
+    ADD regardless of the gold action.
+    """
+    per_sample = _load_sample_actions(
+        source_run, [pair.question_id for pair in gold_pairs]
+    )
+    per_question: dict[str, Any] = {}
+    correct = 0
+    found = 0
+    indeterminable: list[str] = []
+    coincidental: list[str] = []
+    for pair in gold_pairs:
+        actions = per_sample.get(pair.question_id, {})
+        non_add = {
+            k: int(v) for k, v in actions.items() if k != "ADD" and int(v) > 0
+        }
+        if non_add:
+            per_question[pair.question_id] = {
+                "etec_action": "indeterminable_offline",
+                "gold_action": pair.gold_action.value,
+                "non_add_actions": non_add,
+                "sample_actions": dict(actions),
+                "correct": None,
+                "root_cause": (
+                    "indeterminable: sample carries non-ADD actions; per-memory "
+                    "action for the gold new-value memory needs replay"
+                ),
+            }
+            indeterminable.append(pair.question_id)
+            continue
+        # ADD-only sample: every memory (including the gold new-value memory)
+        # received ADD by the R1 default. The matched action is ADD.
+        etec_action = "ADD"
+        is_correct = etec_action == pair.gold_action.value
+        found += 1
+        correct += int(is_correct)
+        row: dict[str, Any] = {
+            "etec_action": etec_action,
+            "gold_action": pair.gold_action.value,
+            "new_value": pair.new_value,
+            "old_value": pair.old_value,
+            "non_add_actions": {},
+            "sample_actions": dict(actions),
+            "correct": is_correct,
+        }
+        if is_correct and pair.gold_action is GoldAction.ADD:
+            coincidental.append(pair.question_id)
+            row["coincidental_match"] = True
+            row["root_cause"] = (
+                "correct_by_r1_default: ETEC did ADD because R1 "
+                "(fact_slot absent -> contradiction==0 -> SUPERSEDE "
+                "unreachable -> default ADD); gold is also ADD (no prior "
+                "value). The match is coincidental -- ETEC would do ADD "
+                "regardless of the gold action."
+            )
+        elif not is_correct:
+            row["root_cause"] = (
+                "R1_structural_fact_slot_absent"
+                if pair.gold_action is not GoldAction.MERGE
+                else (
+                    "R1_structural_fact_slot_absent (gold_action=MERGE also "
+                    "unreachable: MERGE requires temporal overlap, point "
+                    "intervals (t,t) for same event_time REJECT, different "
+                    "event_time disjoint)"
+                )
+            )
+        per_question[pair.question_id] = row
+    report: dict[str, Any] = {
+        "schema_version": "mechanism.evala.m1.v1",
+        "scope": f"ms {len(gold_pairs)} KU gold pairs (online actions)",
+        "data_source": (
+            "online ingestion.etec.actions (trusted; replay has cache-miss "
+            "divergence, see eval_a.py docstring)"
+        ),
+        "n_questions": len(gold_pairs),
+        "n_found": found,
+        "n_indeterminable_offline": len(indeterminable),
+        "indeterminable_question_ids": indeterminable,
+        "n_correct": correct,
+        "m1_accuracy": correct / found if found else None,
+        "coincidental_correct_question_ids": coincidental,
+        "honesty_note": (
+            "ADD gold pairs (e.g. 22d2cb42) are 'correct' only because ETEC "
+            "defaults to ADD under R1; the match is coincidental, not a "
+            "genuine correct SUPERSEDE decision. Flagged in "
+            "coincidental_correct_question_ids."
+        ),
+        "per_question": per_question,
+        "root_cause_distribution": {
+            qid: row.get("root_cause", "correct")
+            for qid, row in per_question.items()
+        },
+    }
+    report["content_hash"] = canonical_json_hash(
+        {k: v for k, v in report.items() if k != "content_hash"}
+    )
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    return report
 
 
 def compute_m5(
@@ -738,6 +871,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--retrieval-runs", type=Path, nargs="+", default=None)
     parser.add_argument("--gold", type=Path, default=None)
+    parser.add_argument("--m1-from-online", type=Path, default=None,
+                        help="When set with --source-run and --gold, write the "
+                             "M1 report (online actions + gold pairs) to this path. "
+                             "Does not touch the partial metrics artifact.")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -755,6 +892,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--source-run is mutually exclusive with --ms-run, "
                 "--mechanism40-run, --retrieval-runs"
             )
+        if args.m1_from_online is not None and args.gold is None:
+            parser.error("--m1-from-online requires --gold")
         metrics = compute_metrics_from_online(
             source_run=args.source_run,
             out_path=args.out,
@@ -763,6 +902,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             stress_summary=args.stress_summary,
             mechanism40_selection=args.mechanism40_selection,
         )
+        if args.m1_from_online is not None:
+            from benchmarks.mechanism.gold import load_gold_pairs
+
+            gold_pairs = load_gold_pairs(args.gold).pairs
+            m1_report = compute_m1_from_online(
+                args.source_run, gold_pairs, out_path=args.m1_from_online
+            )
+            print(json.dumps(m1_report, indent=2, sort_keys=True)[:2000])
         print(json.dumps(metrics, indent=2, sort_keys=True)[:2000])
         return 0
 

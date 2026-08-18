@@ -151,7 +151,7 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 
 来源：`docs/9of10_ACCEPTANCE.md` §a.2/§a.3/§a.4/§a.5。
 
-- **R1 屏障（提取不写 fact_slot）**：ms 8 KU finalized run（`runs/publication/longmemeval-test20-ms`）提取事件总数 1821；带 `fact_slot`/`fact_value`/`multi_valued` 的 events 全 = 0；metadata keys 全集 = `{extractor_prompt_version, source_dataset, source_sample_id}`（仅 3 个）。ETEC 动作计数（online `samples/<id>.json → ingestion.etec.actions`）：ADD 1821 / MERGE 0 / **SUPERSEDE 0** / REJECT 0。**注意："0/32" 实为 0/8 实测 + 0/24 结构外推（mechanism40 未 finalize）；M1=0/7（非 0/8，22d2cb42 排除，见 `runs/mechanism/evala/m1.json`）。**
+- **R1 屏障（提取不写 fact_slot）**：ms 8 KU finalized run（`runs/publication/longmemeval-test20-ms`）提取事件总数 1821；带 `fact_slot`/`fact_value`/`multi_valued` 的 events 全 = 0；metadata keys 全集 = `{extractor_prompt_version, source_dataset, source_sample_id}`（仅 3 个）。ETEC 动作计数（online `samples/<id>.json → ingestion.etec.actions`）：ADD 1821 / MERGE 0 / **SUPERSEDE 0** / REJECT 0。**注意："0/32" 实为 0/8 实测 + 0/24 结构外推（mechanism40 未 finalize）；M1=1/8（22d2cb42 ADD coincidental match — ETEC did ADD due to R1 default, gold is also ADD; flagged as coincidental, not a genuine correct SUPERSEDE decision；见 `runs/mechanism/evala/m1.json`，sha256:2afcea42…）。**
   代码链（git `e521e31`，亲自核实）：`_contradiction_score`（`consolidation.py:876`）在 `multi_valued or not _same_fact_slot(...) or _same_fact_value(...)` 时短路返回 0.0；`_same_fact_slot`（:943-946）要求 `metadata["fact_slot"]` 存在；提取管线 `_build_memory`（`extraction.py:998-1003`）只写三个 metadata 字段、从不写 fact_slot → SUPERSEDE 分支（`consolidation.py:398-427` 需 `contradiction_score >= 0.7`，:399）结构上不可达。
   产物：`runs/mechanism/evala/metrics.partial.json`（content_hash `sha256:0d3c5a2f…`）。
 - **R1b 屏障（point-interval 不重叠）**：v2 微验证（6a1eabeb，真实 LLM 提取）events 282（v1 225，+25.3% 未退化）、fact_slot 覆盖率 270/282 = 95.74%、SUPERSEDE 仍 = 0。根因：`_contradiction_score`（`consolidation.py:880-885`）在 `0.6 + ...` 公式（:886）之前检查 interval overlap；提取只设 `event_time`（point interval `(t,t)`），从不设 `valid_from`（finalized snapshot 确认全 null）→ 同一 fact 在不同时间有不同值时两个 point interval 不重叠 → contradiction=0 → SUPERSEDE 不可达；同 `event_time` 的 pair 会重叠但触发 `equal_fact_effective_time` → REJECT。
@@ -163,12 +163,12 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 
 来源：`docs/9of10_ACCEPTANCE.md` §a.6；产物 `runs/mechanism/evala/metrics.partial.json`（sha256:0d3c5a2f…）。
 
-- **M3 new_recall（ms 8 KU，4 方法，finalized retrieval.jsonl）**：full / event_no_etec / etec / vector_rag 四方法 new_recall_mean 均 = **1.0**。new 侧（answer_session_ids，数据自带）召回 100% → 检索总能找到新证据；old 侧需 gold 标注（SUPERSEDE=0 后 old/new 联合召回的 ETEC 增益无观测面，未标注）。
+- **M3 joint recall（ms 8 KU，7 SUPERSEDE/MERGE gold pair + 1 ADD，4 方法，finalized retrieval.jsonl）**：full / event_no_etec / etec / vector_rag 四方法 old_recall_mean 均 = **1.0**、new_recall_mean 均 = **1.0**、JERecall@8 均 = **1.0**。old+new 侧联合召回 100% → 检索总能找到新旧证据。**结构性 null：SUPERSEDE=0 → 旧值全 ACTIVE → 旧值总可检索 → full vs event_no_etec JERecall@8 delta=0.0，非 ETEC 优势。** 22d2cb42（ADD，old 侧空）：old_recall=NA、JERecall@8=NA。产物 `runs/mechanism/evala/m3_joint.json`（sha256:1f16ef77…）。**M4 探针（8 探针 × 4 臂，零 LLM）**：ExclusionHit=0 全臂（router "before {year}" 解析包含该年 → 0 排除，如实记录）；Contamination≈0.11-0.24；ValidRetention=1.0（`runs/mechanism/evalb/m4.json`，sha256:07ba78c3…）。
 - **router 全量 500 题确定性预筛（零 LLM，预注册方法 `reference_time=question_date` 解析）**：`none 382 / earliest 42 / latest 23 / duration 26 / between 15 / sequence 11 / at 1`；**BEFORE/AFTER = 0**。interval 算子（触发 `temporal_interval_excluded` 的路径，`retrieval.py:797`）在自然 500 题中共 **16 例**（15 BETWEEN + 1 AT，3.2%）——15 BETWEEN 来自 `_RELATIVE_RE` 匹配 "last/next/this/past/previous/coming + week/month/year"（`router.py:615-629`），需 `reference_time` 才能解析（不传 reference_time 则 BETWEEN=0、latest=29，与 spec §3.1 预注册设计期结果一致但不符合预注册方法；本报告以预注册方法为准）。→ 真实数据 interval 过滤**近零触发**（3.2%），与既有三个切片（72 题仅 1 earliest、0 between）方向一致。产物 `runs/mechanism/router_screen/router-screen.json`（`content_hash` 字段 sha256:74d18a1d…，500/500 解析成功）。interval 排除代码路径由既有单元测试覆盖（`tests/retrieval/test_qemr.py:767,799,831,1074,1433` 断言 `temporal_interval_excluded`；`test_query_router.py:290-377` 算子解析）。
 
 ### 8.3 4-run 一致性（n=96，离线重算）
 
-来源：`docs/9of10_ACCEPTANCE.md` §b.1；产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:5764711a…`，确定性可复现）；脚本 `benchmarks/mechanism/consistency.py`（733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。
+来源：`docs/9of10_ACCEPTANCE.md` §b.1；产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:85e6b73a…`，确定性可复现，**4-run 结构化产出非多源手动编译**）；脚本 `benchmarks/mechanism/consistency.py`（733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。
 
 | run | 溯源 raw_turn_id | 预算满装(记忆) | 0-格 | 失败归因(自动) | ETEC actions(A/M/S/R) |
 |---|---|---|---|---|---|
@@ -177,7 +177,7 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 | ms | 6266/6266=100% [99.94,100] | 96/96=100% [96.15,100] | 23/24 | extr55/budget18/absent48 | 5332/2/0/0 |
 | recheck | 6656/6656=100% [99.94,100] | 96/96=100% [96.15,100] | 6/38 | extr27/budget19/absent48 | 5059/335/0/0 |
 
-- **稳定**：provenance 100%（四 run Wilson 95% CI 全两两重叠于 1.0）；budget 饱和 1.0（记忆四方法每 run 全满装，CI 重叠）；**SUPERSEDE=0 全 run**（R1 在 4-run 规模复现）。
+- **稳定**：provenance 100%（四 run Wilson 95% CI 全两两重叠于 1.0，**可从 consistency.json 复算**）；budget 饱和 1.0（记忆四方法每 run 全满装，CI 重叠——**非判别性指标：全方法 4096 满装是 budget 设计预期，不区分方法质量**）；**SUPERSEDE=0 全 run**（R1 在 4-run 规模复现）。
 - **有差异 + 已解释**：recheck MERGE 5→335 是确定性合并修复（`memory_order_key` tie-break）的预期信号，非指标漂移（`docs/METHODOLOGY_CHANGE.md` §7）；6m 未持久化 `ingestion.etec.actions`（legacy 字段契约局限，标注 NA）。
 - **失败归因**：自动 taxonomy 四 run 结构同构（extr+budget 主导，baselines 加 absent=48）；但 r2 33/33 人工复核口径显示自动标签仅为假设（auto-vs-reviewer 一致率 7/33=21.2%，复核把 26/33 重判为 `answer_present_reader_wrong`）——自动分布是 reader-error 的稳定下界，真值以复核为准（`runs/review/longmemeval-r2.reviewed.jsonl`）。
 - **1986-LoCoMo 大样本侧证（legacy，只读）**：`runs/main/report/` token 效率 vector_rag 142.2 / etec 142.4 / full 200.3 / event_no_etec 200.4 / session_summary 2947.2 / full_context 4102.3 tokens/query（配对 Δ −3959.9，p<0.001，约省 96.5%）；失败分布 `error_review.jsonl`（12890 行）answer_not_recoverable 4423 / adversarial_no_gold 2664 / recoverable_wrong 2454 / no_memory 1940 / budget_truncation 1409；provenance=0（legacy 历史缺陷，M15 C09：0/668 事件带 verbatim turn span，不可从 legacy 重算，标注 `legacy_defect`）。

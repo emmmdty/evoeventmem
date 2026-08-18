@@ -129,6 +129,46 @@ def test_add_action_without_temporal_order_is_allowed() -> None:
     assert validate_pairs([pair], FIXTURE) == []
 
 
+def test_add_action_allows_empty_old_side() -> None:
+    """ADD is the no-prior-value update action (e.g. 22d2cb42 guitar service).
+
+    The schema must accept ``old_value=""`` and ``old_value_turn_ids=[]`` when
+    ``gold_action == ADD``; the gold pair then records only the first
+    assertion of the fact (no supersession). SUPERSEDE/MERGE still require a
+    non-empty old side, enforced by the model_validator.
+    """
+    pair = _pair(
+        gold_action=GoldAction.ADD,
+        old_value="",
+        old_value_turn_ids=[],
+        t_q=datetime(2024, 1, 1, tzinfo=UTC),
+        t_old=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    assert pair.old_value == ""
+    assert pair.old_value_turn_ids == []
+    assert validate_pairs([pair], FIXTURE) == []
+
+
+def test_supersede_rejects_empty_old_side() -> None:
+    """SUPERSEDE requires a non-empty old side; empty old_value must fail."""
+    with pytest.raises(ValueError, match="requires a non-empty old_value"):
+        _pair(
+            gold_action=GoldAction.SUPERSEDE,
+            old_value="",
+            old_value_turn_ids=[],
+        )
+
+
+def test_merge_rejects_empty_old_turn_ids() -> None:
+    """MERGE requires at least one old_value_turn_id; empty list must fail."""
+    with pytest.raises(ValueError, match="requires at least one old_value_turn_id"):
+        _pair(
+            gold_action=GoldAction.MERGE,
+            old_value="Austin",
+            old_value_turn_ids=[],
+        )
+
+
 def test_naive_datetimes_are_rejected_by_schema() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         _pair(t_q=datetime(2024, 2, 3), t_old=datetime(2024, 1, 1))

@@ -53,34 +53,71 @@ class CachedEmbeddingModel:
         self.model_id = wrapped.model_id
 
     def embed_texts(self, texts: Sequence[str]) -> list[EmbeddingResponse]:
-        responses: list[EmbeddingResponse] = []
-        for text in texts:
+        # S4b: batch all cache misses into a single ``wrapped.embed_texts``
+        # call. The previous implementation iterated per-text and made one
+        # HTTP request per text; for ``vector_rag`` that meant ~200 sequential
+        # tunneled HTTP calls per query, producing the observed ~437s p50
+        # search latency on the v1 test50-mimo run. Batched calls collapse
+        # that to a single request per query for the unique uncached texts.
+        #
+        # Contract preserved:
+        # - Per-text content-addressed cache file (``{"model_id", "text"}``),
+        #   so cache entries remain reusable across queries regardless of
+        #   which texts travel together in any one batch.
+        # - One ``EmbeddingResponse`` per input position, in input order.
+        # - ``cache_key`` on every returned response points at the per-text
+        #   cache file, so downstream artifacts (retrieval records) can still
+        #   cite a single cache entry per memory chunk.
+        if not texts:
+            return []
+
+        results: list[EmbeddingResponse | None] = [None] * len(texts)
+        unique_miss_texts: list[str] = []
+        seen_miss: set[str] = set()
+
+        for index, text in enumerate(texts):
             payload = {"model_id": self.model_id, "text": text}
             cached = self._cache.get("embeddings", payload)
             if cached is None:
-                response = self._wrapped.embed_texts([text])[0]
+                if text not in seen_miss:
+                    seen_miss.add(text)
+                    unique_miss_texts.append(text)
+                continue
+            output = cached.get("output", cached)
+            results[index] = EmbeddingResponse(
+                vector=tuple(float(value) for value in output["vector"]),
+                model_id=str(output["model_id"]),
+                cache_key=self._cache.key_for("embeddings", payload),
+            )
+
+        if unique_miss_texts:
+            batched = self._wrapped.embed_texts(unique_miss_texts)
+            if len(batched) != len(unique_miss_texts):
+                raise ValueError(
+                    f"batched embed returned {len(batched)} responses for "
+                    f"{len(unique_miss_texts)} unique uncached texts; wrapped "
+                    f"model {self._wrapped.model_id!r} violates the "
+                    "EmbeddingModel port contract (input length must equal "
+                    "output length)"
+                )
+            text_to_response: dict[str, EmbeddingResponse] = {}
+            for text, response in zip(unique_miss_texts, batched, strict=True):
+                payload = {"model_id": self.model_id, "text": text}
                 key = self._cache.set(
                     "embeddings",
                     payload,
                     {"model_id": response.model_id, "vector": list(response.vector)},
                 )
-                responses.append(
-                    EmbeddingResponse(
-                        vector=response.vector,
-                        model_id=response.model_id,
-                        cache_key=key,
-                    )
+                text_to_response[text] = EmbeddingResponse(
+                    vector=response.vector,
+                    model_id=response.model_id,
+                    cache_key=key,
                 )
-            else:
-                output = cached.get("output", cached)
-                responses.append(
-                    EmbeddingResponse(
-                        vector=tuple(float(value) for value in output["vector"]),
-                        model_id=str(output["model_id"]),
-                        cache_key=self._cache.key_for("embeddings", payload),
-                    )
-                )
-        return responses
+            for index, text in enumerate(texts):
+                if results[index] is None:
+                    results[index] = text_to_response[text]
+
+        return [response for response in results if response is not None]
 
 
 class CachedChatModel:

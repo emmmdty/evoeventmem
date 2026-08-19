@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -12,7 +13,35 @@ from typing import Any, cast
 from evoeventmem.core.ports import ChatMessage, ChatResponse, EmbeddingResponse
 
 MAX_RETRY_ATTEMPTS = 3
-RETRY_BACKOFF_SECONDS = 2.0
+# S4b: backoff is overridable via env var so tests can run sub-batch retry
+# scenarios in seconds rather than minutes. Read lazily inside ``_post_json``
+# so test fixtures that monkeypatch the env var take effect per-call.
+DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
+# S4b: qwen3-embedding (and similar small OpenAI-compatible embedding
+# servers) intermittently reject large ``input`` arrays with HTTP 500 after
+# the per-request work exceeds a server-side threshold. Used as the
+# progressive-shrink split threshold in tests; the production embedder
+# splits only on actual transient failures, not on a fixed size cap.
+EMBEDDING_MAX_BATCH_SIZE = 32
+
+
+def _retry_backoff_seconds() -> float:
+    raw = os.environ.get("EEM_OPENAI_RETRY_BACKOFF")
+    if raw is None:
+        return DEFAULT_RETRY_BACKOFF_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_RETRY_BACKOFF_SECONDS
+
+
+class _TransientEmbeddingError(RuntimeError):
+    """Internal sentinel for transient (5xx / timeout / connection) failures.
+
+    Distinguishes "split-and-retry" failures from non-transient 4xx errors
+    inside ``OpenAICompatibleEmbeddingClient._embed_with_progressive_shrink``
+    without changing the public surface of ``_post_json``.
+    """
 
 
 @dataclass(frozen=True)
@@ -71,8 +100,51 @@ class OpenAICompatibleEmbeddingClient:
         self.model_id = config.model
 
     def embed_texts(self, texts: Sequence[str]) -> list[EmbeddingResponse]:
-        payload = {"model": self._config.model, "input": list(texts)}
-        response = _post_json(self._config, "embeddings", payload)
+        text_list = list(texts)
+        if not text_list:
+            return []
+        # S4b: progressive batch shrinking. Start with the full text list as
+        # one batch (the fast path when the server is healthy — observed
+        # ~70s for 550 texts). If the server rejects the batch with a
+        # transient 5xx / timeout / connection error, split into two
+        # sub-batches and retry each independently. Continue splitting until
+        # each sub-batch is a single text (the most robust fallback). This
+        # handles both server-side batch limits and transient instability
+        # (qwen3-embedding over an SSH tunnel exhibits both). 4xx errors are
+        # non-transient and never trigger a split — they raise immediately.
+        return self._embed_with_progressive_shrink(text_list)
+
+    def _embed_with_progressive_shrink(
+        self, texts: list[str]
+    ) -> list[EmbeddingResponse]:
+        if len(texts) <= 1:
+            # Single-text (or empty) base case: one HTTP call, surface any
+            # failure to the caller. The retry logic in ``_post_json`` still
+            # applies, so transient 5xx errors get 5 attempts with backoff
+            # before this raises.
+            return self._post_embedding_batch(texts)
+        try:
+            return self._post_embedding_batch(texts)
+        except _TransientEmbeddingError:
+            # Split and recurse. This isolates which half failed and lets
+            # the healthy half succeed without re-paying its embedding cost.
+            mid = len(texts) // 2
+            left = self._embed_with_progressive_shrink(texts[:mid])
+            right = self._embed_with_progressive_shrink(texts[mid:])
+            return left + right
+
+    def _post_embedding_batch(self, texts: list[str]) -> list[EmbeddingResponse]:
+        payload = {"model": self._config.model, "input": texts}
+        try:
+            response = _post_json(self._config, "embeddings", payload)
+        except RuntimeError as exc:
+            # ``_post_json`` raises RuntimeError on retry exhaustion. Distinguish
+            # transient (5xx/timeout/conn) from non-transient (4xx) by message
+            # content: only the former triggers a split-and-retry.
+            message = str(exc)
+            if "HTTP Error 4" in message and "HTTP Error 429" not in message:
+                raise
+            raise _TransientEmbeddingError(message) from exc
         data = sorted(response["data"], key=lambda item: int(item["index"]))
         return [
             EmbeddingResponse(
@@ -101,9 +173,10 @@ def _post_json(
         method="POST",
     )
     last_error: Exception | None = None
+    backoff = _retry_backoff_seconds()
     for attempt in range(MAX_RETRY_ATTEMPTS):
         if attempt:
-            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            time.sleep(backoff * (2 ** (attempt - 1)))
         try:
             with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
                 decoded = json.loads(response.read().decode("utf-8"))

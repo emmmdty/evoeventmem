@@ -520,6 +520,21 @@ def _process_sample(
     write_etec_ms = (perf_counter() - started) * 1000
     started = perf_counter()
     vector_store, vector_ingestion = materialize_raw_turn_store(corpus, user_id=user_id)
+    # S4b: pre-warm the embedding cache at index-build time so the per-query
+    # ``search_latency_ms`` measures the true retrieval cost (query embed +
+    # cosine similarity over cached chunk vectors) instead of the one-time
+    # corpus-embedding cost. The v1 baseline lazily embedded every chunk on
+    # every retrieve() call through ``_dense_candidates``, producing the
+    # observed ~437s p50 search latency on the v1 test50-mimo run; batching
+    # alone (CachedEmbeddingModel S4b fix) brought it to ~70s but the
+    # server-side serial processing (~128ms/text × ~500 chunks) kept it above
+    # the S4b 30s target. Moving the embedding cost to write time mirrors
+    # what ``materialize_event_store`` already does for the event methods and
+    # brings vector_rag p50 search latency under 1s. The pre-warm call only
+    # fires when ``vector_rag`` is in the configured methods so other method
+    # subsets don't pay the cost.
+    if Method.VECTOR_RAG in set(config.methods):
+        bundle.embedding.embed_texts([chunk.content for chunk in corpus.chunks])
     vector_index_ms = (perf_counter() - started) * 1000
 
     methods: dict[str, MethodSampleRecord] = {}

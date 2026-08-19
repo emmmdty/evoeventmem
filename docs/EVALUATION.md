@@ -160,50 +160,69 @@ O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_
 
 **理由**：(1) 控制变量法要求消融臂只差被消融因子，避免方法混杂（AGENTS.md 代码评审规则："Reject changes that mix benchmark methods under unequal model, context-budget, or retrieval-budget settings"）；(2) 在 ETEC 真实不可达的诊断结论下（`docs/8of10_ACCEPTANCE.md` §a.7），`full` vs `event_no_etec` 是 ETEC 隔离的唯一可用纯净对照，既有 multi-session 切片该对照 EM 逐题一致（Δ 0）与机制诊断（SUPERSEDE 不触发则 ETEC 在检索侧无操作面）相互佐证；(3) `etec` vs `event_no_etec` 对照不丢弃，但定位为"检索策略 + ETEC 两因素联合对照"，不作 ETEC 单因素结论。
 
-## test50-mimo-v2-factslot (n=50, mimo-v2.5, v3 prompt, 2026-08-19) — S2 in-progress, results pending
+## test50-mimo-v2-factslot (n=50, mimo-v2.5, v3 prompt, 2026-08-19)
 
-**Status**: S2 v2-factslot 50-question run launched in background (PID 674612). The run uses the S4b-fixed embedding pipeline (CachedEmbeddingModel batching + OpenAICompatibleEmbeddingClient progressive-shrink + pre-warm at write time → p50 search latency 2,367 ms on the S4b 5-question verification, well under the 30,000 ms target). Results will be filled in by `uv run python -m benchmarks.mechanism.s2_diagnostics` once the run finalizes.
-
-**Pre-registered expectations**: None. Per `METHODOLOGY_CHANGE.md`'s negative-result framework, S2 does not pre-declare an expected SUPERSEDE count or EM delta. The run measures; the report states.
+**Status**: S2 v2-factslot 50-question run complete and finalized. Results below are empirical measurements; no pre-declared expectation.
 
 **Same-model comparison**: v1 and v2 both use mimo-v2.5 as reader and extractor. v1 vs v2 EM comparison is permitted. Cross-model comparison against the 24-question deepseek-v4-flash run is forbidden (N8).
 
-**S4b vector_rag latency fix**: applied (see `src/evoeventmem/models/cache.py`, `src/evoeventmem/infra/openai_compatible.py`, `benchmarks/longmemeval/run.py`). The S4b fix moves the corpus-embedding cost from `search_latency_ms` (per-query) to `vector_index_ms` (per-sample write). The v2 search latency will therefore be directly comparable to v1 only if v1 used the same pre-warm (it did not — v1 ran on the un-pre-warmed code). The v2 `search_latency_ms` will be near-zero; the v2 `vector_index_ms` will be ~70-80s per sample. **This means v1 vs v2 search latency is NOT directly comparable; v1 vs v2 EM IS directly comparable (latency does not affect EM).**
+**S4b vector_rag latency fix applied**: the S4b fix (commit 46b7b38) moves the corpus-embedding cost from `search_latency_ms` (per-query) to `vector_index_ms` (per-sample write). v2 `search_latency_ms` is therefore near-zero (2,333 ms p50); v2 `vector_index_ms` is ~68,623 ms p50 (the embedding cost moved to write time). **v1 vs v2 search latency is NOT directly comparable** (v1 lazily embedded at search time; v2 pre-warms at write time). **v1 vs v2 EM IS directly comparable** (latency does not affect EM).
 
-### v1 vs v2 EM comparison (filled in after run completes)
+### v1 vs v2 EM comparison (same model: mimo-v2.5)
 
-| method         | v1 EM | v2 EM | Δ    |
+| method         | v1 EM | v2 EM | Δ     |
 |----------------|-------|-------|------|
-| no_memory      | 0.00  | TBD   | TBD  |
-| full_context   | 0.00  | TBD   | TBD  |
-| vector_rag     | 0.56  | TBD   | TBD  |
-| event_no_etec  | 0.54  | TBD   | TBD  |
-| etec           | 0.52  | TBD   | TBD  |
-| full (flagship)| 0.46  | TBD   | TBD  |
+| no_memory      | 0.00  | 0.00  | +0.00 |
+| full_context   | 0.00  | 0.00  | +0.00 |
+| vector_rag     | 0.56  | 0.56  | +0.00 |
+| event_no_etec  | 0.54  | 0.48  | -0.06 |
+| etec           | 0.52  | 0.46  | -0.06 |
+| full (flagship)| 0.46  | 0.48  | +0.02 |
 
 _No pre-declared expectation. Same model (mimo-v2.5). Cross-model comparison forbidden (N8)._
 
-### ETEC actions distribution (filled in after run completes)
+**Read**: `full` improved +0.02 EM (0.46 → 0.48) — a slight improvement but not a翻盘. `event_no_etec` and `etec` both dropped 0.06. The `full` vs `event_no_etec` gap closed from -0.08 (v1) to 0.00 (v2) — ETEC went from harmful to neutral. But the absolute `full` EM (0.48) is still below `vector_rag` (0.56), so the flagship is still not the best method.
+
+### ETEC actions distribution
 
 - v1 baseline (test50-mimo): SUPERSEDE = 0 (ETEC structurally unreachable on v1's v2-prompt extraction output).
-- v2 S2 measurement: SUPERSEDE = TBD (the S2 spec routes: 0 → S5 path A (negative-result paper); >0 → S3 (QEMR diagnosis + M2 stale-judge)).
+- **v2 S2 measurement: SUPERSEDE = 109 across 40/50 samples** (first time SUPERSEDE fires on real data).
 
-### fact_slot / valid_from / sentinel rates (filled in after run completes)
+| action    | v2 count |
+|-----------|----------|
+| ADD       | 7,188    |
+| MERGE     | 1,770    |
+| REJECT    | 352      |
+| SUPERSEDE | 109      |
 
-- S1c 5-question baseline: effective fact_slot rate 60.3%, sentinel rate 39.7% (CONDITIONAL PASS — sentinel > 20% triggers spec fallback).
-- S2 50-question v2 measurement:
-  - fact_slot effective rate: TBD (spec floor: 50%; soft gate)
-  - valid_from non-empty rate: TBD (spec floor: 50%; soft gate)
-  - sentinel rate: TBD (spec ceiling: 20%; soft gate — ≥20% routes to S3/S5 decision, NOT back to S1c for prompt tweak #3)
+**Routing**: SUPERSEDE > 0 → S3 (QEMR diagnosis + M2 stale-judge). The 109 SUPERSEDE count is a necessary condition for the positive thesis, NOT sufficient — S3 still needs to verify QEMR uses the superseded memories correctly and the reader benefits.
 
-### Per-sample breakdown (filled in after run completes)
+### fact_slot / valid_from / sentinel rates (50 questions, v3 prompt)
 
-_To be filled by `uv run python -m benchmarks.mechanism.s2_diagnostics --output ...`._
+| metric                          | v2 S2 (n=50) | S1c baseline (n=5) | spec floor / ceiling |
+|---------------------------------|--------------|--------------------|----------------------|
+| fact_slot effective rate (excl. sentinel) | 66.8% (6295/9419) | 60.3% (625/1036) | ≥ 50% ✅ |
+| valid_from non-empty rate       | 66.8% (6294/9419) | 60.3% (625/1036) | ≥ 50% ✅ |
+| valid_until non-empty rate      | 0.7% (63/9419) | 1.6% (17/1036)    | no spec floor (informational) |
+| sentinel rate ("none")          | 33.2% (3124/9419) | 39.7% (411/1036) | < 20% ⚠️ (xfail) |
+
+**Routing**: sentinel rate 33.2% ≥ 20% ceiling → **do NOT re-tune the prompt in S2** (AGENTS.md anti-fishing rule). The 33.2% is a documented weakness; S3/S5 will decide whether to redesign the contrast-pair example or pivot the SUPERSEDE basis away from `fact_slot`.
+
+The sentinel rate dropped from S1c's 5-question 39.7% to S2's 50-question 33.2% (-6.5pp), but still well above the 20% ceiling. The 5-question slice over-estimated the rate; the 50-question measurement is more stable but still fails the prompt-health threshold.
+
+### Reachability test
+
+- S1c 5-question baseline: 107 four-gate pairs satisfy all four SUPERSEDE gates.
+- **S2 50-question v2: reachability test PASSES** (not XFAIL) — at least one within-sample pair on the v2 snapshot satisfies `not multi_valued` AND `_same_fact_slot` AND `not _same_fact_value` AND `_intervals_overlap`.
+
+### Per-sample breakdown
+
+Run `uv run python -m benchmarks.mechanism.s2_diagnostics` for the full per-sample table (50 rows × events / real / sentinel / valid_from / effective_rate / sentinel_rate / valid_from_rate / valid_until_rate).
 
 ### Routing after S2
 
-- If SUPERSEDE > 0 + EM翻盘 → S3 (QEMR diagnosis + M2 stale-judge; positive thesis).
-- If SUPERSEDE > 0 + EM不翻盘 → S3 (QEMR root cause; middle-route thesis).
-- If SUPERSEDE = 0 → S5 path A (negative-result paper framing). S3 still runs to explain QEMR failure.
-- If sentinel rate ≥ 20% on 50 questions → do NOT re-tune prompt in S2; route to S3/S5 (AGENTS.md anti-fishing rule).
-- If fact_slot effective rate < 50% on 50 questions → spec fallback (re-evaluate 50% threshold on 50 questions, route to S3).
+- ✅ **SUPERSEDE > 0 (109)** → S3 (QEMR diagnosis + M2 stale-judge; positive thesis path).
+- ⚠️ **sentinel rate ≥ 20% (33.2%)** → do NOT re-tune prompt in S2; route to S3/S5 (AGENTS.md anti-fishing rule). Documented as known weakness.
+- ✅ **fact_slot effective rate ≥ 50% (66.8%)** → S1c v3 prompt effective on 50 questions.
+- ⚠️ **`full` EM not翻盘 (+0.02 only)** → S3 must verify QEMR uses the 109 SUPERSEDE memories correctly. The gap closed (`full` vs `event_no_etec` from -0.08 to 0.00) but absolute EM still below `vector_rag`.
+- v1 vs v2 latency NOT directly comparable (S4b moved embedding cost from search to write). v1 vs v2 EM IS comparable.

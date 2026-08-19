@@ -642,8 +642,10 @@ def test_s2_scope_diff_stat_touches_only_expected_files() -> None:
     offending: list[str] = []
     s4b_pending: list[str] = []
     for line in out.strip().splitlines():
-        # Skip the trailing "N files changed, ..." summary line.
-        if line.endswith("changed") or "files changed" in line:
+        # Skip the trailing "N files changed, ..." or "1 file changed, ..."
+        # summary line (singular form ends with "file changed", not
+        # "files changed"; both must be handled).
+        if "file" in line and "changed" in line and "|" not in line:
             continue
         path = line.split(maxsplit=1)[0]
         if path.startswith(s2_allowed):

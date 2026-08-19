@@ -1,0 +1,34 @@
+schema_version = "longmemeval.config.v1"
+run_id_prefix = "m13-longmemeval-smoke5-mimo"
+dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"
+methods = ["no_memory", "full_context", "vector_rag", "event_no_etec", "etec", "full"]
+provider = "openai_compatible"
+max_input_tokens = 4096
+max_extraction_tokens = 262144
+max_candidates_per_source = 128
+max_items_per_source = 8
+sample_limit = 5
+
+[reader]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 120
+thinking = "disabled"
+
+[extractor]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 180
+thinking = "disabled"
+max_tokens = 65536
+
+[embedding]
+provider = "openai_compatible"
+model_id = "qwen3-embedding-0.6b"
+base_url = "http://127.0.0.1:11436/v1"
+api_key_env = "EMBEDDING_API_KEY"
+timeout_s = 60

@@ -305,6 +305,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--resume-dir", type=Path, default=None)
     parser.add_argument("--sample-ids", nargs="*", default=None)
     parser.add_argument("--validate-config", action="store_true")
+    parser.add_argument(
+        "--extraction-only",
+        action="store_true",
+        help=(
+            "Stop after writing per-sample extraction snapshots; skip "
+            "materialization/retrieval/reader. Used for reachability smoke "
+            "runs that only need the extraction_snapshot.json artifact."
+        ),
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -313,7 +322,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     run_dir = _resolve_run_dir(args)
-    summary = run_experiment(config, run_dir, sample_ids=args.sample_ids)
+    summary = run_experiment(
+        config,
+        run_dir,
+        sample_ids=args.sample_ids,
+        extraction_only=args.extraction_only,
+    )
+    if args.extraction_only:
+        print(
+            "extraction-only: per-sample snapshots and extraction_snapshot.json "
+            "written; retrieval/reader/finalize skipped."
+        )
     print(json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True))
     return 0
 
@@ -347,12 +366,19 @@ def run_experiment(
     *,
     sample_ids: Sequence[str] | None = None,
     extractor: Any | None = None,
+    extraction_only: bool = False,
 ) -> LongMemEvalSummary:
     """Run (or resume) an experiment and finalize it once complete.
 
     A first run and an identical resume address the same directory. Completed
     samples are immutable; a finalized run is validated and returned without
     mutation; manifest drift refuses the run.
+
+    When ``extraction_only`` is set, each sample stops after the extraction
+    snapshot is written; materialization, retrieval, reader, and the finalize
+    marker are skipped. The returned summary still reports the snapshot IDs and
+    the run root still receives ``extraction_snapshot.json`` so that downstream
+    reachability/stat tools can read it.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     existing_manifest = (
@@ -385,14 +411,22 @@ def run_experiment(
     bundle = build_model_bundle(config.providers, cache_for_run(run_dir))
     extractor_impl = extractor if extractor is not None else build_extractor(bundle)
     for record in records:
-        _process_sample(record, config, bundle, extractor_impl, run_dir)
+        _process_sample(
+            record,
+            config,
+            bundle,
+            extractor_impl,
+            run_dir,
+            extraction_only=extraction_only,
+        )
 
     summary = _write_summary(config, run_dir, manifest, expected_sample_ids, bundle)
     completion_counts = {
         "samples": len(records),
         "extraction_snapshots": len(summary.extraction_snapshot_ids),
     }
-    finalize_run(run_dir, manifest, completion_counts=completion_counts)
+    if not extraction_only:
+        finalize_run(run_dir, manifest, completion_counts=completion_counts)
     return summary
 
 
@@ -402,6 +436,8 @@ def _process_sample(
     bundle: ModelBundle,
     extractor: Any,
     run_dir: Path,
+    *,
+    extraction_only: bool = False,
 ) -> SampleResult:
     sample_path = _sample_path(run_dir, record.sample_id)
     if sample_path.exists():
@@ -426,6 +462,49 @@ def _process_sample(
     )
     extraction_ms = (perf_counter() - started) * 1000
 
+    snapshot_path = _snapshot_path(run_dir, record.sample_id)
+    if not snapshot_path.exists():
+        write_per_sample(
+            run_dir,
+            f"samples/{snapshot_path.name}",
+            snapshot,
+        )
+
+    if extraction_only:
+        # Stop after writing the per-sample extraction snapshot. Skip
+        # materialization, retrieval, and the reader. The minimal SampleResult
+        # keeps the snapshot metadata that ``_write_summary`` and
+        # ``_write_run_root_artifacts`` rely on (sample_id + ingestion.event)
+        # so the combined ``extraction_snapshot.json`` is still assembled.
+        result = SampleResult(
+            dataset=record.dataset,
+            sample_id=record.sample_id,
+            question_id=question.question_id,
+            question_type=question.category,
+            category=_category_for(question.category),
+            session_count=len(ordered_record.sessions),
+            turn_count=sum(len(session.turns) for session in ordered_record.sessions),
+            construction=ConstructionCosts(
+                extraction_ms=extraction_ms,
+                extraction_calls=1,
+            ),
+            ingestion={
+                "event": {
+                    "input_kind": EVENT_INPUT_KIND,
+                    "snapshot_id": snapshot.snapshot_id,
+                    "snapshot_file": f"samples/{snapshot_path.name}",
+                    "snapshot_hash": required_hash(snapshot_path),
+                    "raw_turn_count": snapshot.raw_turn_count,
+                    "event_count": snapshot.event_count,
+                    "rejection_count": len(snapshot.rejections),
+                    "extractor_model": snapshot.extractor.model_id,
+                },
+            },
+            methods={},
+        )
+        write_json_write_once(sample_path, result)
+        return result
+
     started = perf_counter()
     raw_store, raw_ingestion = materialize_event_store(
         snapshot, apply_etec=False, user_id=user_id
@@ -442,14 +521,6 @@ def _process_sample(
     started = perf_counter()
     vector_store, vector_ingestion = materialize_raw_turn_store(corpus, user_id=user_id)
     vector_index_ms = (perf_counter() - started) * 1000
-
-    snapshot_path = _snapshot_path(run_dir, record.sample_id)
-    if not snapshot_path.exists():
-        write_per_sample(
-            run_dir,
-            f"samples/{snapshot_path.name}",
-            snapshot,
-        )
 
     methods: dict[str, MethodSampleRecord] = {}
     for method in config.methods:

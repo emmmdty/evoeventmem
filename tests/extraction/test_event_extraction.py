@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from benchmarks.common.normalization import iter_locomo_records
 from evoeventmem.core.ports import ChatMessage, ChatResponse
 from evoeventmem.domain.models import MemoryKind
@@ -651,3 +653,460 @@ def test_llm_extractor_require_turn_evidence_rejects_unresolvable_evidence() -> 
     assert result.candidates == []
     assert len(result.rejections) == 1
     assert result.rejections[0].code == "unknown_turn_id"
+
+
+def test_v2_prompt_version_is_incremented() -> None:
+    assert LLMEventExtractor.PROMPT_VERSION == "event-extraction.v2"
+
+
+def test_v2_prompt_advertises_fact_slot_schema_and_rules() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice lives in Seattle.",
+            )
+        ],
+    )
+    model = StaticJSONChatModel({"events": []})
+    LLMEventExtractor(model).extract(request)
+    prompt = json.loads(model.requests[0][1].content)
+
+    event_schema = prompt["schema"]["events"][0]
+    assert "fact_slot" in event_schema
+    assert "fact_value" in event_schema
+    assert "valid_from" in event_schema
+    assert "valid_until" in event_schema
+
+    assert "fact_slot_rules" in prompt
+    rules_text = " ".join(prompt["fact_slot_rules"])
+    assert "profile.city" in rules_text
+    assert "EXACT same fact_slot string" in rules_text
+    assert "valid_from" in rules_text
+    assert "valid_until" in rules_text
+
+    assert "fact_slot_examples" in prompt
+    examples = prompt["fact_slot_examples"]
+    assert len(examples) >= 2
+    move_example = next(
+        (ex for ex in examples if "city" in ex["scenario"] or "move" in ex["scenario"]),
+        None,
+    )
+    assert move_example is not None
+    assert move_example["turn_1_event"]["fact_slot"] == move_example["turn_2_event"]["fact_slot"]
+    assert move_example["turn_1_event"]["fact_value"] != move_example["turn_2_event"]["fact_value"]
+    assert move_example["turn_1_event"]["valid_until"] is not None
+    assert move_example["turn_2_event"]["valid_from"] is not None
+    assert move_example["turn_2_event"]["valid_until"] is None
+
+    transient_example = next(
+        (ex for ex in examples if ex["turn_1_event"]["fact_slot"] is None),
+        None,
+    )
+    assert transient_example is not None
+
+
+def test_event_draft_normalizes_empty_fact_fields_to_none() -> None:
+    from evoeventmem.extraction import _EventDraft
+
+    draft_stripped = _EventDraft(
+        content="x",
+        fact_slot="  profile.city  ",
+        fact_value="  Portland  ",
+        valid_from="2023-06-01T00:00:00+00:00",
+    )
+    assert draft_stripped.fact_slot == "profile.city"
+    assert draft_stripped.fact_value == "Portland"
+    assert draft_stripped.valid_from == datetime(2023, 6, 1, tzinfo=UTC)
+    assert draft_stripped.valid_until is None
+
+    draft_blank = _EventDraft(content="x", fact_slot="", fact_value="")
+    assert draft_blank.fact_slot is None
+    assert draft_blank.fact_value is None
+    assert draft_blank.valid_from is None
+    assert draft_blank.valid_until is None
+
+    draft_absent = _EventDraft(content="x")
+    assert draft_absent.fact_slot is None
+    assert draft_absent.fact_value is None
+    assert draft_absent.valid_from is None
+    assert draft_absent.valid_until is None
+
+
+def test_event_draft_enforces_fact_contract_invariants() -> None:
+    from pydantic import ValidationError
+
+    from evoeventmem.extraction import _EventDraft
+
+    # fact_slot set without fact_value -> invalid
+    with pytest.raises(ValidationError, match="fact_value must be set"):
+        _EventDraft(content="x", fact_slot="profile.city")
+
+    # valid_until set without valid_from -> invalid
+    with pytest.raises(ValidationError, match="valid_from must be set"):
+        _EventDraft(
+            content="x",
+            fact_slot="profile.city",
+            fact_value="Seattle",
+            valid_until="2023-06-01T00:00:00+00:00",
+        )
+
+    # fact_value set without fact_slot -> invalid
+    with pytest.raises(ValidationError, match="fact_slot must be set"):
+        _EventDraft(content="x", fact_value="Portland")
+
+    # valid_from set without fact_slot -> invalid
+    with pytest.raises(ValidationError, match="fact_slot must be set"):
+        _EventDraft(
+            content="x",
+            valid_from="2023-06-01T00:00:00+00:00",
+        )
+
+    # Full state-change pair (old value end) is valid
+    end_draft = _EventDraft(
+        content="x",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from="2023-01-15T00:00:00+00:00",
+        valid_until="2023-06-01T00:00:00+00:00",
+    )
+    assert end_draft.fact_slot == "profile.city"
+    assert end_draft.valid_until == datetime(2023, 6, 1, tzinfo=UTC)
+
+
+def test_llm_extractor_propagates_fact_slot_metadata_and_validity_bounds() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        dataset="dataset-a",
+        sample_id="sample-a",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice lives in Portland now.",
+            )
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice lives in Portland.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-06-01T10:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice lives",
+                        }
+                    ],
+                    "fact_slot": "profile.city",
+                    "fact_value": "Portland",
+                    "valid_from": "2023-06-01T00:00:00+00:00",
+                    "valid_until": None,
+                }
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    assert len(result.candidates) == 1
+    memory = result.candidates[0].memory
+
+    assert memory.metadata["fact_slot"] == "profile.city"
+    assert memory.metadata["fact_value"] == "Portland"
+    assert memory.metadata["valid_from"] == "2023-06-01T00:00:00+00:00"
+    assert "valid_until" not in memory.metadata
+    assert memory.valid_from == datetime(2023, 6, 1, tzinfo=UTC)
+    assert memory.valid_to is None
+    assert memory.event_time == datetime(2023, 6, 1, 10, 0, tzinfo=UTC)
+    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v2"
+    assert memory.metadata["source_dataset"] == "dataset-a"
+    assert memory.metadata["source_sample_id"] == "sample-a"
+
+
+def test_llm_extractor_propagates_state_change_end_event_valid_until() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice used to live in Seattle.",
+            )
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice lived in Seattle.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-01-15T10:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice used",
+                        }
+                    ],
+                    "fact_slot": "profile.city",
+                    "fact_value": "Seattle",
+                    "valid_from": "2023-01-15T00:00:00+00:00",
+                    "valid_until": "2023-06-01T00:00:00+00:00",
+                }
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    memory = result.candidates[0].memory
+
+    assert memory.metadata["fact_slot"] == "profile.city"
+    assert memory.metadata["fact_value"] == "Seattle"
+    assert memory.metadata["valid_from"] == "2023-01-15T00:00:00+00:00"
+    assert memory.metadata["valid_until"] == "2023-06-01T00:00:00+00:00"
+    assert memory.valid_from == datetime(2023, 1, 15, tzinfo=UTC)
+    assert memory.valid_to == datetime(2023, 6, 1, tzinfo=UTC)
+
+
+def test_llm_extractor_omits_fact_metadata_when_absent() -> None:
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice shipped the release.",
+            )
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice shipped the release.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice ship",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    memory = result.candidates[0].memory
+
+    assert "fact_slot" not in memory.metadata
+    assert "fact_value" not in memory.metadata
+    assert "valid_from" not in memory.metadata
+    assert "valid_until" not in memory.metadata
+    assert memory.valid_from is None
+    assert memory.valid_to is None
+    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v2"
+
+
+def test_fact_extraction_chain_reaches_supersede_on_real_extraction_output() -> None:
+    """End-to-end: v2 LLM output with fact_slot + valid_from makes SUPERSEDE
+    logically reachable through the public consolidator API.
+
+    This verifies that the v2 extraction schema lands (fact_slot/fact_value/
+    valid_from propagated into MemoryRecord + metadata) AND that the existing
+    consolidation decision tree can reach SUPERSEDE on real extraction
+    output (closing R1b). It does NOT measure empirical SUPERSEDE trigger
+    rate on LongMemEval data, which is the S2 stage.
+    """
+    from evoeventmem.consolidation import ConsolidationAction, ETECConsolidator
+    from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
+    from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
+
+    repository = InMemoryMemoryRepository()
+
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice lives in Seattle.",
+            ),
+            ExtractionTurn(
+                turn_id="turn-2",
+                session_id="session-2",
+                speaker="Alice",
+                content="Alice moved to Portland.",
+            ),
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice lives in Seattle.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-01-01T00:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice live",
+                        }
+                    ],
+                    "fact_slot": "profile.city",
+                    "fact_value": "Seattle",
+                    "valid_from": "2023-01-01T00:00:00+00:00",
+                    "valid_until": None,
+                },
+                {
+                    "content": "Alice lives in Portland.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-06-01T00:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-2",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice move",
+                        }
+                    ],
+                    "fact_slot": "profile.city",
+                    "fact_value": "Portland",
+                    "valid_from": "2023-06-01T00:00:00+00:00",
+                    "valid_until": None,
+                },
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    assert len(result.candidates) == 2
+
+    old_memory, new_memory = (
+        result.candidates[0].memory,
+        result.candidates[1].memory,
+    )
+    assert old_memory.metadata["fact_slot"] == "profile.city"
+    assert new_memory.metadata["fact_slot"] == "profile.city"
+    assert old_memory.metadata["fact_value"] != new_memory.metadata["fact_value"]
+    # R1b closure: fact events now carry valid_from, yielding an open
+    # interval (valid_from, +inf) so two same-slot facts asserted at
+    # different event_times temporally overlap and the contradiction
+    # score formula at consolidation.py:886 can reach >=0.7.
+    assert old_memory.valid_from is not None
+    assert new_memory.valid_from is not None
+
+    consolidator = ETECConsolidator(embedding_model=DeterministicFakeEmbeddingModel())
+    first_decision = consolidator.apply(repository, old_memory)
+    assert first_decision.decision.action is ConsolidationAction.ADD
+    second_decision = consolidator.apply(repository, new_memory)
+
+    assert second_decision.decision.action is ConsolidationAction.SUPERSEDE
+    assert second_decision.decision.features.contradiction_score >= 0.7
+    assert second_decision.decision.target_memory_id == old_memory.memory_id
+
+
+def test_extraction_without_fact_slot_does_not_supersede() -> None:
+    """Negative control: v1-style outputs (no fact_slot) keep SUPERSEDE
+    unreachable, preserving the structural R1 finding that the v2 schema
+    change does not create spurious SUPERSEDE decisions on events that
+    omit fact metadata.
+    """
+    from evoeventmem.consolidation import ConsolidationAction, ETECConsolidator
+    from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
+    from evoeventmem.models.fakes import DeterministicFakeEmbeddingModel
+
+    repository = InMemoryMemoryRepository()
+
+    request = ExtractionInput(
+        user_id="u1",
+        turns=[
+            ExtractionTurn(
+                turn_id="turn-1",
+                session_id="session-1",
+                speaker="Alice",
+                content="Alice lives in Seattle.",
+            ),
+            ExtractionTurn(
+                turn_id="turn-2",
+                session_id="session-2",
+                speaker="Alice",
+                content="Alice moved to Portland.",
+            ),
+        ],
+    )
+    model = StaticJSONChatModel(
+        {
+            "events": [
+                {
+                    "content": "Alice lives in Seattle.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-01-01T00:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-1",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice live",
+                        }
+                    ],
+                },
+                {
+                    "content": "Alice lives in Portland.",
+                    "speaker": "Alice",
+                    "entities": ["Alice"],
+                    "event_time": "2023-06-01T00:00:00+00:00",
+                    "evidence": [
+                        {
+                            "source_turn_id": "turn-2",
+                            "start_char": 0,
+                            "end_char": 10,
+                            "quote": "Alice move",
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+
+    result = LLMEventExtractor(model).extract(request)
+    assert len(result.candidates) == 2
+
+    for candidate in result.candidates:
+        assert "fact_slot" not in candidate.memory.metadata
+        assert "fact_value" not in candidate.memory.metadata
+        assert candidate.memory.valid_from is None
+
+    old_memory, new_memory = (
+        result.candidates[0].memory,
+        result.candidates[1].memory,
+    )
+
+    consolidator = ETECConsolidator(embedding_model=DeterministicFakeEmbeddingModel())
+    consolidator.apply(repository, old_memory)
+    second_decision = consolidator.apply(repository, new_memory)
+
+    assert second_decision.decision.action is not ConsolidationAction.SUPERSEDE
+    assert second_decision.decision.features.contradiction_score == 0.0

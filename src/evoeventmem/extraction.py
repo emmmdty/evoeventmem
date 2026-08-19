@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from evoeventmem.core.ports import ChatMessage, ChatModel
 from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryKind, MemoryRecord
@@ -237,13 +237,47 @@ class _EvidenceDraft(BaseModel):
 
 
 class _EventDraft(BaseModel):
+    """LLM-extracted event draft, optionally carrying ETEC fact metadata.
+
+    The four optional fact fields (``fact_slot``, ``fact_value``,
+    ``valid_from``, ``valid_until``) implement the ETEC SUPERSEDE first
+    gate (``_same_fact_slot``) and the temporal-validity gate (R1b
+    point-interval non-overlap). They are populated only for durable,
+    updatable user facts; transient activity/conversation events leave
+    them null so the existing ADD/MERGE path is unchanged.
+
+    Semantic contract (must be mirrored in the v2 extraction prompt):
+
+    - ``fact_slot``: lowercase dotted ``domain.attribute`` string (e.g.
+      ``profile.city``, ``preference.frequent_flyer_status``). Same slot
+      string across turns means same durable attribute; the consolidator
+      keys SUPERSEDE on this.
+    - ``fact_value``: normalized current value of the slot stated in
+      this event (e.g. ``Seattle``, ``Premier Silver``). Two events with
+      the same ``fact_slot`` and different ``fact_value`` are the
+      contradiction signal once temporal intervals overlap.
+    - ``valid_from`` / ``valid_until``: ISO-8601 open-interval bounds
+      during which ``fact_value`` is the current value of ``fact_slot``.
+      For non-state facts (preferences, one-shot events), set
+      ``valid_from = event_time`` and leave ``valid_until`` null.
+      For a state-change fact stated as a single event, set
+      ``valid_from`` to the change time and leave ``valid_until`` null
+      (the older value's separate end-event, when emitted, carries
+      ``valid_until`` at the same boundary). ``valid_until`` must be
+      non-null only when ``valid_from`` is also non-null.
+    """
+
     content: str = Field(min_length=1)
     speaker: str | None = None
     entities: list[str] = Field(default_factory=list)
     event_time: datetime | None = None
     evidence: list[_EvidenceDraft] = Field(default_factory=list)
+    fact_slot: str | None = None
+    fact_value: str | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
-    @field_validator("event_time", mode="before")
+    @field_validator("event_time", "valid_from", "valid_until", mode="before")
     @classmethod
     def parse_event_time(cls, value: object) -> object:
         if value in (None, ""):
@@ -255,6 +289,37 @@ class _EventDraft(BaseModel):
             except ValueError:
                 return None
         return value
+
+    @field_validator("fact_slot", "fact_value", mode="before")
+    @classmethod
+    def _normalize_fact_field(cls, value: object) -> object:
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @model_validator(mode="after")
+    def _enforce_fact_contract(self) -> _EventDraft:
+        if self.fact_slot is not None and self.fact_value is None:
+            raise ValueError(
+                "fact_value must be set when fact_slot is set"
+            )
+        if self.valid_until is not None and self.valid_from is None:
+            raise ValueError(
+                "valid_from must be set when valid_until is set"
+            )
+        if self.fact_slot is None and (
+            self.fact_value is not None
+            or self.valid_from is not None
+            or self.valid_until is not None
+        ):
+            raise ValueError(
+                "fact_slot must be set when any fact_value/valid_from/"
+                "valid_until field is set"
+            )
+        return self
 
 
 class _LLMExtractionPayload(BaseModel):
@@ -638,7 +703,7 @@ class LLMEventExtractor:
     cached. This extractor deliberately does not add a second caching layer.
     """
 
-    PROMPT_VERSION = "event-extraction.v1"
+    PROMPT_VERSION = "event-extraction.v2"
     CHUNK_TURNS = 30
 
     def __init__(self, model: ChatModel) -> None:
@@ -739,6 +804,10 @@ class LLMEventExtractor:
                         event_time=draft.event_time,
                         session_id=session_id,
                         prompt_version=self.PROMPT_VERSION,
+                        fact_slot=draft.fact_slot,
+                        fact_value=draft.fact_value,
+                        valid_from=draft.valid_from,
+                        valid_until=draft.valid_until,
                     ),
                     prompt_version=self.PROMPT_VERSION,
                 )
@@ -771,9 +840,146 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
                             "quote": "exact substring of the turn text",
                         }
                     ],
+                    "fact_slot": (
+                        "lowercase dotted 'domain.attribute' string or null; "
+                        "fill only for durable, updatable user facts (residence, "
+                        "job, employer, manager, frequent-flyer status, personal "
+                        "bests, recurring activities, possessions, named-state "
+                        "attributes); null for transient activity/conversation/"
+                        "emotion events."
+                    ),
+                    "fact_value": (
+                        "normalized current canonical value of the fact stated "
+                        "in this event (e.g. 'Portland', 'Software Engineer @ "
+                        "Acme', 'Premier Silver'); null when fact_slot is null."
+                    ),
+                    "valid_from": (
+                        "ISO-8601 timestamp marking when fact_value became the "
+                        "current value of fact_slot; for a durable fact without "
+                        "an explicit change time, set valid_from = event_time; "
+                        "null when fact_slot is null."
+                    ),
+                    "valid_until": (
+                        "ISO-8601 timestamp marking when fact_value stopped "
+                        "being the current value of fact_slot (the older value "
+                        "of a state change carries valid_until at the change "
+                        "time); null when the value is still current or when "
+                        "fact_slot is null. Must be null when valid_from is null."
+                    ),
                 }
             ]
         },
+        "fact_slot_rules": [
+            "fact_slot format = lowercase dotted 'domain.attribute', e.g. "
+            "'profile.city', 'profile.job', 'profile.employer', 'profile.manager', "
+            "'preference.frequent_flyer_status', 'hobby.running_pb', "
+            "'possession.camera', 'plan.birthday_trip_destination', "
+            "'health.weight'.",
+            "Use the EXACT same fact_slot string across turns when describing "
+            "the same attribute. This is required so the consolidator can "
+            "detect value changes (SUPERSEDE).",
+            "fact_value = the current canonical value of the fact stated in "
+            "this event, normalized to a stable string. When the value changes "
+            "between turns, the new event uses the new fact_value (e.g. turn 1 "
+            "profile.city=Seattle, turn 2 profile.city=Portland).",
+            "For a state-change fact stated as two events, emit BOTH events: "
+            "(a) an end-event for the older value with fact_slot, fact_value "
+            "=old value, valid_until=<change time>, valid_from=<when the old "
+            "value started, or event_time when unknown>; and (b) a start-event "
+            "for the new value with the SAME fact_slot, fact_value=new value, "
+            "valid_from=<change time>, valid_until=null. The two events share "
+            "the change time as the boundary between valid_until and valid_from.",
+            "For a non-state fact (preference, one-shot event, or a state "
+            "change simplified to a single event), set valid_from = event_time "
+            "and leave valid_until null.",
+            "Leave fact_slot=null (and fact_value/valid_from/valid_until=null) "
+            "for transient activity, conversation, emotion, and dialogue-process "
+            "events (e.g. 'the user asked about', 'the assistant explained'). "
+            "Only fill fact_slot when the event states a durable, updatable "
+            "user fact.",
+        ],
+        "fact_slot_examples": [
+            {
+                "scenario": (
+                    "user moves between cities (state change emitted as two "
+                    "events at the change boundary)"
+                ),
+                "turn_1_event": {
+                    "content": "User lives in Seattle.",
+                    "fact_slot": "profile.city",
+                    "fact_value": "Seattle",
+                    "valid_from": "2023-01-15T00:00:00+00:00",
+                    "valid_until": "2023-06-01T00:00:00+00:00",
+                },
+                "turn_2_event": {
+                    "content": "User moved to Portland; current residence is Portland.",
+                    "fact_slot": "profile.city",
+                    "fact_value": "Portland",
+                    "valid_from": "2023-06-01T00:00:00+00:00",
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Same slot string 'profile.city', different fact_value; "
+                    "old value carries valid_until at the change time and new "
+                    "value carries valid_from at the same change time. The "
+                    "consolidator marks the older Seattle fact SUPERSEDED."
+                ),
+            },
+            {
+                "scenario": "user changes employer and role",
+                "turn_1_event": {
+                    "content": "User is a Software Engineer at Acme.",
+                    "fact_slot": "profile.job",
+                    "fact_value": "Software Engineer @ Acme",
+                    "valid_from": "2022-09-01T00:00:00+00:00",
+                    "valid_until": "2024-03-01T00:00:00+00:00",
+                },
+                "turn_2_event": {
+                    "content": "User is now a Senior Engineer at Globex.",
+                    "fact_slot": "profile.job",
+                    "fact_value": "Senior Engineer @ Globex",
+                    "valid_from": "2024-03-01T00:00:00+00:00",
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Same slot 'profile.job', value updated; SUPERSEDE."
+                ),
+            },
+            {
+                "scenario": (
+                    "non-state preference fact (no valid_until; valid_from = "
+                    "event_time)"
+                ),
+                "turn_1_event": {
+                    "content": "User prefers window seats on long flights.",
+                    "fact_slot": "preference.seat",
+                    "fact_value": "window",
+                    "valid_from": "2023-05-20T15:58:00+00:00",
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Preference fact; valid_from = event_time, valid_until = "
+                    "null because no end is stated."
+                ),
+            },
+            {
+                "scenario": (
+                    "transient activity event (no fact metadata; ordinary ADD "
+                    "path)"
+                ),
+                "turn_1_event": {
+                    "content": "User asked the assistant to summarize the trip.",
+                    "fact_slot": None,
+                    "fact_value": None,
+                    "valid_from": None,
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Dialogue-process / transient activity; fact_slot=null so "
+                    "the consolidator's SUPERSEDE gate is not entered."
+                ),
+            },
+        ],
         "constraints": [
             "Return only JSON.",
             "Every evidence reference must use one of the provided turn_id values.",
@@ -781,8 +987,9 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "Every quote must be an exact substring of the referenced turn text.",
             "In every string value, use single quotes for quoted speech and never "
             "write an unescaped double quote inside a string.",
-            "Write event_time as a complete ISO-8601 timestamp with zero-padded "
-            "seconds and offset, e.g. 2023-05-20T15:58:00+00:00.",
+            "Write event_time, valid_from, and valid_until as complete ISO-8601 "
+            "timestamps with zero-padded seconds and offset, e.g. "
+            "2023-05-20T15:58:00+00:00.",
             "Extract concrete facts stated by the user: times, durations, "
             "locations, preferences, decisions, and named entities. A fact like "
             "\"the commute takes 45 minutes each way\" must be extracted as its "
@@ -793,6 +1000,12 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "explained\", or \"the user thanked\". Extract only durable facts: "
             "the user's attributes, preferences, decisions, activities, "
             "locations, and time-bound events.",
+            "Only fill fact_slot/fact_value/valid_from/valid_until for durable, "
+            "updatable user facts. Leave all four null for transient activity "
+            "and dialogue-process events.",
+            "When fact_slot is set, fact_value and valid_from must also be set. "
+            "valid_until may be set only when valid_from is set. When the value "
+            "is still current, leave valid_until null.",
         ] + (
             [
                 "Every event MUST reference at least one raw turn; summary-only "
@@ -982,9 +1195,32 @@ def _build_memory(
     event_time: datetime | None,
     session_id: str | None,
     prompt_version: str,
+    fact_slot: str | None = None,
+    fact_value: str | None = None,
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
 ) -> MemoryRecord:
     entities = _entities(entity_names, speaker)
     roles = {speaker: "speaker"} if speaker else {}
+    metadata: dict[str, Any] = {
+        "extractor_prompt_version": prompt_version,
+        "source_dataset": request.dataset,
+        "source_sample_id": request.sample_id,
+    }
+    # Mirror fact metadata into ``metadata`` for auditability and write the
+    # temporal bounds onto the record's ``valid_from``/``valid_to`` so the
+    # consolidator's existing ``_fact_effective_time``/``_interval``
+    # (consolidation.py:770, :917) close R1b without any consolidation
+    # change. ``multi_valued`` is intentionally NOT populated here; R3
+    # (multi_valued over-flagging) is out of scope for S1a.
+    if fact_slot is not None:
+        metadata["fact_slot"] = fact_slot
+    if fact_value is not None:
+        metadata["fact_value"] = fact_value
+    if valid_from is not None:
+        metadata["valid_from"] = valid_from.isoformat()
+    if valid_until is not None:
+        metadata["valid_until"] = valid_until.isoformat()
     return MemoryRecord(
         tenant_id=request.tenant_id,
         user_id=request.user_id,
@@ -995,11 +1231,9 @@ def _build_memory(
         roles=roles,
         evidence_refs=list(evidence_refs),
         event_time=event_time,
-        metadata={
-            "extractor_prompt_version": prompt_version,
-            "source_dataset": request.dataset,
-            "source_sample_id": request.sample_id,
-        },
+        valid_from=valid_from,
+        valid_to=valid_until,
+        metadata=metadata,
     )
 
 

@@ -242,6 +242,10 @@ def test_llm_extractor_caches_requests_and_raw_outputs(tmp_path: Path) -> None:
                             "quote": "I went to an LGBTQ support group yesterday.",
                         }
                     ],
+                    "fact_slot": "activity.support_group_attendance",
+                    "fact_value": "LGBTQ support group on 7 May 2023",
+                    "valid_from": "2023-05-07T00:00:00+00:00",
+                    "valid_until": None,
                 }
             ]
         }
@@ -655,11 +659,11 @@ def test_llm_extractor_require_turn_evidence_rejects_unresolvable_evidence() -> 
     assert result.rejections[0].code == "unknown_turn_id"
 
 
-def test_v2_prompt_version_is_incremented() -> None:
-    assert LLMEventExtractor.PROMPT_VERSION == "event-extraction.v2"
+def test_v3_prompt_version_is_incremented() -> None:
+    assert LLMEventExtractor.PROMPT_VERSION == "event-extraction.v3"
 
 
-def test_v2_prompt_advertises_fact_slot_schema_and_rules() -> None:
+def test_v3_prompt_advertises_fact_slot_schema_and_rules() -> None:
     request = ExtractionInput(
         user_id="u1",
         turns=[
@@ -680,6 +684,11 @@ def test_v2_prompt_advertises_fact_slot_schema_and_rules() -> None:
     assert "fact_value" in event_schema
     assert "valid_from" in event_schema
     assert "valid_until" in event_schema
+    # v3 prompt must advertise that fact_slot is REQUIRED and that the
+    # "none" sentinel is the legitimate way to mark non-fact events.
+    fact_slot_desc = event_schema["fact_slot"]
+    assert "REQUIRED" in fact_slot_desc
+    assert "none" in fact_slot_desc
 
     assert "fact_slot_rules" in prompt
     rules_text = " ".join(prompt["fact_slot_rules"])
@@ -687,6 +696,9 @@ def test_v2_prompt_advertises_fact_slot_schema_and_rules() -> None:
     assert "EXACT same fact_slot string" in rules_text
     assert "valid_from" in rules_text
     assert "valid_until" in rules_text
+    # v3 rule must instruct the LLM to use "none" sentinel (not null)
+    # for transient activity.
+    assert "fact_slot='none'" in rules_text or "fact_slot = 'none'" in rules_text
 
     assert "fact_slot_examples" in prompt
     examples = prompt["fact_slot_examples"]
@@ -702,16 +714,26 @@ def test_v2_prompt_advertises_fact_slot_schema_and_rules() -> None:
     assert move_example["turn_2_event"]["valid_from"] is not None
     assert move_example["turn_2_event"]["valid_until"] is None
 
-    transient_example = next(
-        (ex for ex in examples if ex["turn_1_event"]["fact_slot"] is None),
+    # v3 sentinel example: a non-fact event must use fact_slot="none"
+    # (not None). At least one such example must exist so the LLM learns
+    # the sentinel pattern for transient activity.
+    sentinel_example = next(
+        (ex for ex in examples if ex["turn_1_event"]["fact_slot"] == "none"),
         None,
     )
-    assert transient_example is not None
+    assert sentinel_example is not None
+    assert sentinel_example["turn_1_event"]["fact_value"] == "none"
+    assert sentinel_example["turn_1_event"]["valid_from"] is None
+    assert sentinel_example["turn_1_event"]["valid_until"] is None
 
 
-def test_event_draft_normalizes_empty_fact_fields_to_none() -> None:
-    from evoeventmem.extraction import _EventDraft
+def test_event_draft_requires_fact_slot_and_accepts_none_sentinel() -> None:
+    from pydantic import ValidationError
 
+    from evoeventmem.extraction import _FACT_SLOT_NONE_SENTINEL, _EventDraft
+
+    # Real fact_slot strings are stripped of surrounding whitespace and
+    # paired with fact_value + valid_from as before.
     draft_stripped = _EventDraft(
         content="x",
         fact_slot="  profile.city  ",
@@ -723,17 +745,31 @@ def test_event_draft_normalizes_empty_fact_fields_to_none() -> None:
     assert draft_stripped.valid_from == datetime(2023, 6, 1, tzinfo=UTC)
     assert draft_stripped.valid_until is None
 
-    draft_blank = _EventDraft(content="x", fact_slot="", fact_value="")
-    assert draft_blank.fact_slot is None
-    assert draft_blank.fact_value is None
-    assert draft_blank.valid_from is None
-    assert draft_blank.valid_until is None
+    # v3: fact_slot is REQUIRED. Empty string / whitespace-only / missing
+    # all raise ValidationError so the LLMEventExtractor retry framework
+    # can re-prompt the model.
+    with pytest.raises(ValidationError, match="fact_slot"):
+        _EventDraft(content="x", fact_slot="")
+    with pytest.raises(ValidationError, match="fact_slot"):
+        _EventDraft(content="x", fact_slot="   ")
+    with pytest.raises(ValidationError, match="fact_slot"):
+        _EventDraft(content="x")  # fact_slot absent entirely
 
-    draft_absent = _EventDraft(content="x")
-    assert draft_absent.fact_slot is None
-    assert draft_absent.fact_value is None
-    assert draft_absent.valid_from is None
-    assert draft_absent.valid_until is None
+    # v3 sentinel: fact_slot="none" is the legitimate marker for
+    # non-fact events. fact_value is auto-filled to "none" when missing
+    # so the model_validator's "fact_value must be set" rule is satisfied.
+    sentinel_draft = _EventDraft(content="x", fact_slot="none")
+    assert sentinel_draft.fact_slot == _FACT_SLOT_NONE_SENTINEL
+    assert sentinel_draft.fact_value == _FACT_SLOT_NONE_SENTINEL
+    assert sentinel_draft.valid_from is None
+    assert sentinel_draft.valid_until is None
+
+    # Explicit fact_slot="none" + fact_value="none" is also accepted.
+    explicit_sentinel = _EventDraft(
+        content="x", fact_slot="none", fact_value="none"
+    )
+    assert explicit_sentinel.fact_slot == "none"
+    assert explicit_sentinel.fact_value == "none"
 
 
 def test_event_draft_enforces_fact_contract_invariants() -> None:
@@ -741,11 +777,13 @@ def test_event_draft_enforces_fact_contract_invariants() -> None:
 
     from evoeventmem.extraction import _EventDraft
 
-    # fact_slot set without fact_value -> invalid
+    # fact_slot set without fact_value -> invalid (existing v2 rule
+    # preserved in v3).
     with pytest.raises(ValidationError, match="fact_value must be set"):
         _EventDraft(content="x", fact_slot="profile.city")
 
-    # valid_until set without valid_from -> invalid
+    # valid_until set without valid_from -> invalid (existing v2 rule
+    # preserved in v3).
     with pytest.raises(ValidationError, match="valid_from must be set"):
         _EventDraft(
             content="x",
@@ -754,14 +792,34 @@ def test_event_draft_enforces_fact_contract_invariants() -> None:
             valid_until="2023-06-01T00:00:00+00:00",
         )
 
-    # fact_value set without fact_slot -> invalid
-    with pytest.raises(ValidationError, match="fact_slot must be set"):
+    # v3: fact_value set without fact_slot now raises "Field required"
+    # on fact_slot FIRST (the v2 "fact_slot must be set" rule is gone
+    # because fact_slot is no longer Optional — it's required at the
+    # schema level).
+    with pytest.raises(ValidationError, match="fact_slot"):
         _EventDraft(content="x", fact_value="Portland")
 
-    # valid_from set without fact_slot -> invalid
-    with pytest.raises(ValidationError, match="fact_slot must be set"):
+    # v3: valid_from set without fact_slot raises "Field required" on
+    # fact_slot FIRST.
+    with pytest.raises(ValidationError, match="fact_slot"):
         _EventDraft(
             content="x",
+            valid_from="2023-06-01T00:00:00+00:00",
+        )
+
+    # v3 sentinel invariants: fact_slot="none" forbids a real fact_value
+    # and forbids temporal bounds (no SUPERSEDE keying on sentinel events).
+    with pytest.raises(ValidationError, match="fact_value must be 'none'"):
+        _EventDraft(
+            content="x",
+            fact_slot="none",
+            fact_value="Seattle",
+        )
+    with pytest.raises(ValidationError, match="valid_from / valid_until"):
+        _EventDraft(
+            content="x",
+            fact_slot="none",
+            fact_value="none",
             valid_from="2023-06-01T00:00:00+00:00",
         )
 
@@ -827,7 +885,7 @@ def test_llm_extractor_propagates_fact_slot_metadata_and_validity_bounds() -> No
     assert memory.valid_from == datetime(2023, 6, 1, tzinfo=UTC)
     assert memory.valid_to is None
     assert memory.event_time == datetime(2023, 6, 1, 10, 0, tzinfo=UTC)
-    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v2"
+    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v3"
     assert memory.metadata["source_dataset"] == "dataset-a"
     assert memory.metadata["source_sample_id"] == "sample-a"
 
@@ -880,7 +938,19 @@ def test_llm_extractor_propagates_state_change_end_event_valid_until() -> None:
     assert memory.valid_to == datetime(2023, 6, 1, tzinfo=UTC)
 
 
-def test_llm_extractor_omits_fact_metadata_when_absent() -> None:
+def test_llm_extractor_salvages_missing_fact_slot_as_none_sentinel() -> None:
+    """v3 salvage path: when the LLM emits events without fact_slot (or with
+    null/empty fact_slot) and 3 retries fail to fix it, the extractor falls
+    back to setting ``fact_slot="none"`` on the offending events so they are
+    still recorded (preserving evidence provenance) rather than dropping the
+    whole chunk.
+
+    The salvaged events carry ``metadata.fact_slot == "none"`` and
+    ``metadata.fact_value == "none"``, signalling 'no durable fact' to the
+    consolidator. The stats script counts them as non-empty ``fact_slot``
+    (since "none" is a non-null string); the S1c review reports the sentinel
+    rate separately so reviewers can detect prompt regressions.
+    """
     request = ExtractionInput(
         user_id="u1",
         turns=[
@@ -892,6 +962,9 @@ def test_llm_extractor_omits_fact_metadata_when_absent() -> None:
             )
         ],
     )
+    # Payload omits fact_slot entirely. The v3 schema rejects this on
+    # every retry; the salvage path on the 3rd attempt substitutes
+    # fact_slot="none" so the event is still recorded.
     model = StaticJSONChatModel(
         {
             "events": [
@@ -913,15 +986,21 @@ def test_llm_extractor_omits_fact_metadata_when_absent() -> None:
     )
 
     result = LLMEventExtractor(model).extract(request)
+    # Salvage should have produced 1 candidate from the otherwise-invalid
+    # chunk; without salvage, the chunk would have been dropped entirely.
+    assert len(result.candidates) == 1
     memory = result.candidates[0].memory
 
-    assert "fact_slot" not in memory.metadata
-    assert "fact_value" not in memory.metadata
+    assert memory.metadata["fact_slot"] == "none"
+    assert memory.metadata["fact_value"] == "none"
+    # Salvage clears temporal bounds -> _build_memory omits the keys.
     assert "valid_from" not in memory.metadata
     assert "valid_until" not in memory.metadata
     assert memory.valid_from is None
     assert memory.valid_to is None
-    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v2"
+    assert memory.metadata["extractor_prompt_version"] == "event-extraction.v3"
+    # 3 retries were attempted before salvage kicked in.
+    assert model.calls == 3
 
 
 def test_fact_extraction_chain_reaches_supersede_on_real_extraction_output() -> None:
@@ -1027,11 +1106,15 @@ def test_fact_extraction_chain_reaches_supersede_on_real_extraction_output() -> 
     assert second_decision.decision.target_memory_id == old_memory.memory_id
 
 
-def test_extraction_without_fact_slot_does_not_supersede() -> None:
-    """Negative control: v1-style outputs (no fact_slot) keep SUPERSEDE
-    unreachable, preserving the structural R1 finding that the v2 schema
-    change does not create spurious SUPERSEDE decisions on events that
-    omit fact metadata.
+def test_extraction_with_none_sentinel_fact_slot_does_not_supersede() -> None:
+    """Negative control: v3 outputs where both events carry the
+    ``fact_slot="none"`` sentinel (e.g. two transient activity events) do
+    not trigger SUPERSEDE, because the consolidator's first gate
+    (``_same_fact_slot``) requires the same slot AND the third gate
+    (``not _same_fact_value``) requires distinct values — two sentinel
+    events share slot AND value, so the third gate fails. This preserves
+    the structural R1 finding that the v3 schema change does not create
+    spurious SUPERSEDE decisions on events that carry no durable fact.
     """
     from evoeventmem.consolidation import ConsolidationAction, ETECConsolidator
     from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
@@ -1056,11 +1139,13 @@ def test_extraction_without_fact_slot_does_not_supersede() -> None:
             ),
         ],
     )
+    # v3 payload: both events are non-facts (transient dialogue) so they
+    # carry the "none" sentinel instead of null fact_slot.
     model = StaticJSONChatModel(
         {
             "events": [
                 {
-                    "content": "Alice lives in Seattle.",
+                    "content": "Alice asked the assistant about Seattle.",
                     "speaker": "Alice",
                     "entities": ["Alice"],
                     "event_time": "2023-01-01T00:00:00+00:00",
@@ -1072,9 +1157,13 @@ def test_extraction_without_fact_slot_does_not_supersede() -> None:
                             "quote": "Alice live",
                         }
                     ],
+                    "fact_slot": "none",
+                    "fact_value": "none",
+                    "valid_from": None,
+                    "valid_until": None,
                 },
                 {
-                    "content": "Alice lives in Portland.",
+                    "content": "Alice asked the assistant about Portland.",
                     "speaker": "Alice",
                     "entities": ["Alice"],
                     "event_time": "2023-06-01T00:00:00+00:00",
@@ -1086,6 +1175,10 @@ def test_extraction_without_fact_slot_does_not_supersede() -> None:
                             "quote": "Alice move",
                         }
                     ],
+                    "fact_slot": "none",
+                    "fact_value": "none",
+                    "valid_from": None,
+                    "valid_until": None,
                 },
             ]
         }
@@ -1095,9 +1188,10 @@ def test_extraction_without_fact_slot_does_not_supersede() -> None:
     assert len(result.candidates) == 2
 
     for candidate in result.candidates:
-        assert "fact_slot" not in candidate.memory.metadata
-        assert "fact_value" not in candidate.memory.metadata
+        assert candidate.memory.metadata["fact_slot"] == "none"
+        assert candidate.memory.metadata["fact_value"] == "none"
         assert candidate.memory.valid_from is None
+        assert candidate.memory.valid_to is None
 
     old_memory, new_memory = (
         result.candidates[0].memory,
@@ -1110,3 +1204,76 @@ def test_extraction_without_fact_slot_does_not_supersede() -> None:
 
     assert second_decision.decision.action is not ConsolidationAction.SUPERSEDE
     assert second_decision.decision.features.contradiction_score == 0.0
+
+
+def test_salvage_missing_fact_slot_replaces_null_and_empty_with_none_sentinel() -> None:
+    """v3 salvage function: when 3 retries have failed, the salvage path
+    re-parses the LLM response and replaces missing/null/empty ``fact_slot``
+    with the ``"none"`` sentinel so the chunk's events are still recorded
+    (preserving evidence provenance) rather than dropping the whole chunk.
+
+    The salvage is conservative: it only repairs ``fact_slot`` missingness.
+    Other validation errors (bad evidence, malformed datetimes, real
+    fact_slot with missing fact_value, etc.) cause salvage to return ``None``,
+    letting the caller drop the chunk as before.
+    """
+    from evoeventmem.extraction import (
+        _FACT_SLOT_NONE_SENTINEL,
+        _LLMExtractionPayload,
+        _salvage_missing_fact_slot,
+    )
+
+    # Case 1: events with missing / null / empty / whitespace fact_slot
+    # all get salvaged to the "none" sentinel with fact_value aligned.
+    raw_with_mixed = json.dumps(
+        {
+            "events": [
+                {"content": "evt-1", "fact_slot": None},
+                {"content": "evt-2", "fact_slot": ""},
+                {"content": "evt-3", "fact_slot": "   "},
+                {
+                    "content": "evt-4",
+                    "fact_slot": "profile.city",
+                    "fact_value": "Portland",
+                    "valid_from": "2023-06-01T00:00:00+00:00",
+                },
+            ]
+        }
+    )
+    salvaged = _salvage_missing_fact_slot(raw_with_mixed)
+    assert salvaged is not None
+    assert isinstance(salvaged, _LLMExtractionPayload)
+    assert salvaged.events[0].fact_slot == _FACT_SLOT_NONE_SENTINEL
+    assert salvaged.events[0].fact_value == _FACT_SLOT_NONE_SENTINEL
+    assert salvaged.events[0].valid_from is None
+    assert salvaged.events[0].valid_until is None
+    assert salvaged.events[1].fact_slot == _FACT_SLOT_NONE_SENTINEL
+    assert salvaged.events[2].fact_slot == _FACT_SLOT_NONE_SENTINEL
+    # Real fact_slot events are untouched by salvage.
+    assert salvaged.events[3].fact_slot == "profile.city"
+    assert salvaged.events[3].fact_value == "Portland"
+
+    # Case 2: malformed JSON returns None (caller drops chunk as before).
+    assert _salvage_missing_fact_slot("not json at all") is None
+    assert _salvage_missing_fact_slot("") is None
+
+    # Case 3: payload missing the "events" key returns None.
+    assert _salvage_missing_fact_slot(json.dumps({"other": 1})) is None
+
+    # Case 4: real fact_slot with missing fact_value cannot be salvaged —
+    # the salvage only fixes fact_slot missingness, not other contract
+    # violations. Returns None so the caller drops the chunk.
+    raw_bad_contract = json.dumps(
+        {
+            "events": [
+                {"content": "evt-1", "fact_slot": "profile.city"},
+            ]
+        }
+    )
+    assert _salvage_missing_fact_slot(raw_bad_contract) is None
+
+    # Case 5: a JSON-fenced response is also salvageable.
+    fenced = "```json\n" + raw_with_mixed + "\n```"
+    salvaged_fenced = _salvage_missing_fact_slot(fenced)
+    assert salvaged_fenced is not None
+    assert salvaged_fenced.events[0].fact_slot == _FACT_SLOT_NONE_SENTINEL

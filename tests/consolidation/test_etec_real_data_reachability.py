@@ -26,6 +26,7 @@ reachability (does any pair satisfy all four gates?).
 from __future__ import annotations
 
 import json
+import os
 from itertools import combinations
 from pathlib import Path
 
@@ -40,7 +41,16 @@ from evoeventmem.consolidation import (
 )
 from evoeventmem.domain.models import MemoryRecord
 
-SNAPSHOT_PATH = Path("runs/s1b/smoke5/extraction_snapshot.json")
+# S1c: snapshot path is parameterized via the EEM_S1B_SNAPSHOT_PATH env
+# var so S1c can point the same reachability test at the v3 snapshot
+# (`runs/s1c/smoke5/extraction_snapshot.json`) without modifying the
+# reachability logic. Defaults to the S1b path for backwards compat.
+SNAPSHOT_PATH = Path(
+    os.environ.get(
+        "EEM_S1B_SNAPSHOT_PATH",
+        "runs/s1b/smoke5/extraction_snapshot.json",
+    )
+)
 
 
 def _load_real_events() -> list[tuple[str, list[MemoryRecord]]]:
@@ -52,10 +62,13 @@ def _load_real_events() -> list[tuple[str, list[MemoryRecord]]]:
     """
     if not SNAPSHOT_PATH.exists():
         pytest.skip(
-            "S1b smoke snapshot not generated; run "
+            f"smoke snapshot not generated at {SNAPSHOT_PATH}; run "
             "`uv run python -m benchmarks.longmemeval.run --config "
             "configs/longmemeval/smoke5-mimo.toml --sample-ids e47becba 118b2229 "
-            "51a45a95 58bf7951 1e043500 --extraction-only --run-dir runs/s1b/smoke5`"
+            "51a45a95 58bf7951 1e043500 --extraction-only --run-dir "
+            "runs/s1b/smoke5` (S1b) or `runs/s1c/smoke5` (S1c). To point "
+            "this test at a non-default snapshot, set "
+            "EEM_S1B_SNAPSHOT_PATH=<path>."
         )
     payload = json.loads(SNAPSHOT_PATH.read_bytes())
     if not isinstance(payload, list):

@@ -236,35 +236,58 @@ class _EvidenceDraft(BaseModel):
     quote: str | None = None
 
 
+_FACT_SLOT_NONE_SENTINEL = "none"
+"""Literal sentinel string emitted by the v3 prompt for transient activity,
+conversation, emotion, and dialogue-process events (events that carry no
+durable, updatable user fact).
+
+The v3 schema makes ``fact_slot`` required (non-null, non-empty). To avoid
+silently dropping chunks where the LLM emits ``fact_slot=null`` on non-fact
+events, the prompt instructs the LLM to use the literal ``"none"`` sentinel
+instead of null. The salvage path in ``LLMEventExtractor._extract_attempt``
+also falls back to this sentinel after 3 retries fail (preserving evidence
+provenance at the cost of marking the event as non-fact).
+
+Stats scripts count ``"none"`` as a non-empty ``fact_slot`` (it is a non-null
+string); the S1c review reports the sentinel rate separately so reviewers can
+detect prompt regressions where the LLM over-emits the sentinel on real facts.
+"""
+
+
 class _EventDraft(BaseModel):
     """LLM-extracted event draft, optionally carrying ETEC fact metadata.
 
-    The four optional fact fields (``fact_slot``, ``fact_value``,
+    The four fact fields (``fact_slot`` (required since v3), ``fact_value``,
     ``valid_from``, ``valid_until``) implement the ETEC SUPERSEDE first
     gate (``_same_fact_slot``) and the temporal-validity gate (R1b
-    point-interval non-overlap). They are populated only for durable,
-    updatable user facts; transient activity/conversation events leave
-    them null so the existing ADD/MERGE path is unchanged.
+    point-interval non-overlap). Real durable user facts populate all four
+    with concrete values; transient activity/conversation events use the
+    ``"none"`` sentinel on ``fact_slot`` / ``fact_value`` and leave the
+    temporal bounds null so the existing ADD/MERGE path is unchanged.
 
-    Semantic contract (must be mirrored in the v2 extraction prompt):
+    Semantic contract (must be mirrored in the v3 extraction prompt):
 
-    - ``fact_slot``: lowercase dotted ``domain.attribute`` string (e.g.
-      ``profile.city``, ``preference.frequent_flyer_status``). Same slot
-      string across turns means same durable attribute; the consolidator
-      keys SUPERSEDE on this.
-    - ``fact_value``: normalized current value of the slot stated in
-      this event (e.g. ``Seattle``, ``Premier Silver``). Two events with
-      the same ``fact_slot`` and different ``fact_value`` are the
-      contradiction signal once temporal intervals overlap.
+    - ``fact_slot``: REQUIRED non-empty string. Either (a) a lowercase
+      dotted ``domain.attribute`` string (e.g. ``profile.city``,
+      ``preference.frequent_flyer_status``) for durable, updatable user
+      facts; or (b) the literal sentinel ``"none"`` for transient activity
+      / conversation / emotion / dialogue-process events. Same slot string
+      across turns means same durable attribute; the consolidator keys
+      SUPERSEDE on this.
+    - ``fact_value``: normalized current value of the slot stated in this
+      event (e.g. ``Seattle``, ``Premier Silver``). Must be the literal
+      sentinel ``"none"`` when ``fact_slot`` is ``"none"``. Two events
+      with the same non-sentinel ``fact_slot`` and different ``fact_value``
+      are the contradiction signal once temporal intervals overlap.
     - ``valid_from`` / ``valid_until``: ISO-8601 open-interval bounds
       during which ``fact_value`` is the current value of ``fact_slot``.
-      For non-state facts (preferences, one-shot events), set
-      ``valid_from = event_time`` and leave ``valid_until`` null.
-      For a state-change fact stated as a single event, set
-      ``valid_from`` to the change time and leave ``valid_until`` null
-      (the older value's separate end-event, when emitted, carries
-      ``valid_until`` at the same boundary). ``valid_until`` must be
-      non-null only when ``valid_from`` is also non-null.
+      Must both be null when ``fact_slot`` is ``"none"``. For non-state
+      facts (preferences, one-shot events), set ``valid_from = event_time``
+      and leave ``valid_until`` null. For a state-change fact stated as a
+      single event, set ``valid_from`` to the change time and leave
+      ``valid_until`` null (the older value's separate end-event, when
+      emitted, carries ``valid_until`` at the same boundary). ``valid_until``
+      must be non-null only when ``valid_from`` is also non-null.
     """
 
     content: str = Field(min_length=1)
@@ -272,7 +295,7 @@ class _EventDraft(BaseModel):
     entities: list[str] = Field(default_factory=list)
     event_time: datetime | None = None
     evidence: list[_EvidenceDraft] = Field(default_factory=list)
-    fact_slot: str | None = None
+    fact_slot: str = Field(min_length=1, max_length=128)
     fact_value: str | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
@@ -290,9 +313,36 @@ class _EventDraft(BaseModel):
                 return None
         return value
 
-    @field_validator("fact_slot", "fact_value", mode="before")
+    @field_validator("fact_slot", mode="before")
     @classmethod
-    def _normalize_fact_field(cls, value: object) -> object:
+    def _normalize_fact_slot(cls, value: object) -> object:
+        # S1c v3: fact_slot is REQUIRED (non-null, non-empty). The literal
+        # "none" sentinel is accepted as a legitimate marker for non-fact
+        # events. Null / empty / whitespace-only values raise ValidationError
+        # so the LLMEventExtractor retry framework can re-prompt the model;
+        # after 3 retries the salvage path in _extract_attempt falls back
+        # to the "none" sentinel (preserving evidence provenance).
+        if value is None:
+            raise ValueError(
+                "fact_slot is required; emit a lowercase 'domain.attribute' "
+                "string for durable facts, or the literal 'none' sentinel "
+                "for transient activity / conversation / dialogue-process events"
+            )
+        if not isinstance(value, str):
+            raise TypeError("fact_slot must be a string")
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(
+                "fact_slot must not be empty; emit a lowercase "
+                "'domain.attribute' string for durable facts, or the literal "
+                "'none' sentinel for transient activity / conversation / "
+                "dialogue-process events"
+            )
+        return stripped
+
+    @field_validator("fact_value", mode="before")
+    @classmethod
+    def _normalize_fact_value(cls, value: object) -> object:
         if value in (None, ""):
             return None
         if isinstance(value, str):
@@ -302,22 +352,33 @@ class _EventDraft(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_fact_contract(self) -> _EventDraft:
-        if self.fact_slot is not None and self.fact_value is None:
+        if self.fact_slot == _FACT_SLOT_NONE_SENTINEL:
+            # Sentinel path: fact_value must be the sentinel (auto-fill if
+            # missing) and the temporal bounds must be null so the
+            # consolidator's SUPERSEDE gate is not entered on sentinel
+            # events (two "none" events share slot+value -> no contradiction).
+            if self.fact_value is None:
+                self.fact_value = _FACT_SLOT_NONE_SENTINEL
+            elif self.fact_value != _FACT_SLOT_NONE_SENTINEL:
+                raise ValueError(
+                    "fact_value must be 'none' or null when fact_slot is 'none'"
+                )
+            if self.valid_from is not None or self.valid_until is not None:
+                raise ValueError(
+                    "valid_from / valid_until must be null when fact_slot is "
+                    "'none' (sentinel events carry no temporal bounds)"
+                )
+            return self
+
+        # Real fact_slot path: fact_value must be set; valid_until may be
+        # set only when valid_from is set.
+        if self.fact_value is None:
             raise ValueError(
                 "fact_value must be set when fact_slot is set"
             )
         if self.valid_until is not None and self.valid_from is None:
             raise ValueError(
                 "valid_from must be set when valid_until is set"
-            )
-        if self.fact_slot is None and (
-            self.fact_value is not None
-            or self.valid_from is not None
-            or self.valid_until is not None
-        ):
-            raise ValueError(
-                "fact_slot must be set when any fact_value/valid_from/"
-                "valid_until field is set"
             )
         return self
 
@@ -372,6 +433,60 @@ def _repair_json_text(text: str) -> str:
     legal decimal form ``: X`` inside the JSON body.
     """
     return re.sub(r"(:\s*)0+([0-9]+)\b", r"\g<1>\g<2>", text)
+
+
+def _salvage_missing_fact_slot(raw_text: str) -> _LLMExtractionPayload | None:
+    """S1c v3 last-resort salvage: re-parse an LLM response and replace any
+    missing/null/empty ``fact_slot`` with the ``"none"`` sentinel so the
+    chunk's events are still recorded when 3 retries have failed to produce
+    schema-valid JSON.
+
+    Salvaged events have ``fact_slot="none"``, ``fact_value="none"``, and
+    ``valid_from / valid_until`` cleared, signalling 'no durable fact' to the
+    consolidator (the SUPERSEDE gate does not fire on two sentinel events
+    because they share slot AND value). The stats script counts ``"none"`` as
+    a non-empty ``fact_slot`` (it is a non-null string); the S1c review
+    reports the sentinel rate separately so reviewers can detect prompt
+    regressions where the LLM over-emits the sentinel on real facts.
+
+    The salvage is conservative: it only repairs ``fact_slot`` missingness.
+    Other validation errors (bad evidence spans, malformed datetimes, real
+    fact_slot with missing fact_value, etc.) cause salvage to return ``None``,
+    letting the caller drop the chunk as before.
+
+    Returns ``None`` when the raw text is not parseable JSON, does not
+    contain an ``events`` list, or fails re-validation after the fact_slot
+    substitution.
+    """
+    candidate: Any = None
+    try:
+        candidate = json.loads(_strip_json_fences(raw_text))
+    except (json.JSONDecodeError, TypeError):
+        try:
+            candidate = json.loads(_repair_json_text(_strip_json_fences(raw_text)))
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(candidate, dict):
+        return None
+    events = candidate.get("events")
+    if not isinstance(events, list):
+        return None
+    for event_dict in events:
+        if not isinstance(event_dict, dict):
+            continue
+        slot = event_dict.get("fact_slot")
+        if slot is None or (isinstance(slot, str) and not slot.strip()):
+            # Replace missing/null/empty fact_slot with the sentinel and
+            # align fact_value + temporal bounds so the model_validator
+            # accepts the salvaged event.
+            event_dict["fact_slot"] = _FACT_SLOT_NONE_SENTINEL
+            event_dict["fact_value"] = _FACT_SLOT_NONE_SENTINEL
+            event_dict["valid_from"] = None
+            event_dict["valid_until"] = None
+    try:
+        return _LLMExtractionPayload.model_validate(candidate)
+    except ValidationError:
+        return None
 
 
 def _evidence_scope(request: ExtractionInput, *parts: str) -> str:
@@ -703,7 +818,7 @@ class LLMEventExtractor:
     cached. This extractor deliberately does not add a second caching layer.
     """
 
-    PROMPT_VERSION = "event-extraction.v2"
+    PROMPT_VERSION = "event-extraction.v3"
     CHUNK_TURNS = 30
 
     def __init__(self, model: ChatModel) -> None:
@@ -779,7 +894,26 @@ class LLMEventExtractor:
                     _repair_json_text(_strip_json_fences(response.text))
                 )
             except ValidationError as exc:
-                raise ValueError("LLM extractor returned invalid event JSON") from exc
+                # S1c v3: last-resort salvage. Only fires on the final retry
+                # (attempt >= 2) so the LLM gets 2 earlier chances to fix
+                # itself. Salvage replaces any missing/null/empty fact_slot
+                # with the "none" sentinel and re-validates; on success the
+                # chunk's events are still recorded (preserving evidence
+                # provenance) at the cost of marking non-fact slots as the
+                # sentinel. Salvaged events are observable downstream via
+                # metadata.fact_slot == "none".
+                if attempt >= 2:
+                    salvaged = _salvage_missing_fact_slot(response.text)
+                    if salvaged is not None:
+                        payload = salvaged
+                    else:
+                        raise ValueError(
+                            "LLM extractor returned invalid event JSON"
+                        ) from exc
+                else:
+                    raise ValueError(
+                        "LLM extractor returned invalid event JSON"
+                    ) from exc
 
         candidates: list[ExtractedEventCandidate] = []
         rejections: list[EvidenceReferenceError] = []
@@ -841,30 +975,38 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
                         }
                     ],
                     "fact_slot": (
-                        "lowercase dotted 'domain.attribute' string or null; "
-                        "fill only for durable, updatable user facts (residence, "
-                        "job, employer, manager, frequent-flyer status, personal "
-                        "bests, recurring activities, possessions, named-state "
-                        "attributes); null for transient activity/conversation/"
-                        "emotion events."
+                        "REQUIRED non-empty string. Either (a) a lowercase "
+                        "dotted 'domain.attribute' string for durable, "
+                        "updatable user facts (residence, job, employer, "
+                        "manager, frequent-flyer status, personal bests, "
+                        "recurring activities, possessions, named-state "
+                        "attributes); or (b) the literal sentinel 'none' "
+                        "for transient activity / conversation / emotion / "
+                        "dialogue-process events. Must NEVER be null or "
+                        "empty string — the schema rejects them and the "
+                        "extractor retries. Use the SAME fact_slot string "
+                        "across turns describing the same attribute so the "
+                        "consolidator can detect value changes (SUPERSEDE)."
                     ),
                     "fact_value": (
-                        "normalized current canonical value of the fact stated "
-                        "in this event (e.g. 'Portland', 'Software Engineer @ "
-                        "Acme', 'Premier Silver'); null when fact_slot is null."
+                        "normalized current canonical value of the fact "
+                        "stated in this event (e.g. 'Portland', 'Software "
+                        "Engineer @ Acme', 'Premier Silver'); MUST be the "
+                        "literal sentinel 'none' when fact_slot is 'none'."
                     ),
                     "valid_from": (
-                        "ISO-8601 timestamp marking when fact_value became the "
-                        "current value of fact_slot; for a durable fact without "
-                        "an explicit change time, set valid_from = event_time; "
-                        "null when fact_slot is null."
+                        "ISO-8601 timestamp marking when fact_value became "
+                        "the current value of fact_slot; for a durable fact "
+                        "without an explicit change time, set valid_from = "
+                        "event_time; null when fact_slot is 'none' (sentinel)."
                     ),
                     "valid_until": (
                         "ISO-8601 timestamp marking when fact_value stopped "
-                        "being the current value of fact_slot (the older value "
-                        "of a state change carries valid_until at the change "
-                        "time); null when the value is still current or when "
-                        "fact_slot is null. Must be null when valid_from is null."
+                        "being the current value of fact_slot (the older "
+                        "value of a state change carries valid_until at the "
+                        "change time); null when the value is still current "
+                        "or when fact_slot is 'none' (sentinel). Must be null "
+                        "when valid_from is null."
                     ),
                 }
             ]
@@ -892,11 +1034,14 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "For a non-state fact (preference, one-shot event, or a state "
             "change simplified to a single event), set valid_from = event_time "
             "and leave valid_until null.",
-            "Leave fact_slot=null (and fact_value/valid_from/valid_until=null) "
-            "for transient activity, conversation, emotion, and dialogue-process "
+            "Set fact_slot='none' (the literal sentinel string) AND "
+            "fact_value='none' AND valid_from=null AND valid_until=null for "
+            "transient activity, conversation, emotion, and dialogue-process "
             "events (e.g. 'the user asked about', 'the assistant explained'). "
-            "Only fill fact_slot when the event states a durable, updatable "
-            "user fact.",
+            "NEVER return fact_slot=null or fact_slot='' (empty string) — the "
+            "schema rejects them and forces a retry. Only fill fact_slot with "
+            "a real 'domain.attribute' string when the event states a "
+            "durable, updatable user fact.",
         ],
         "fact_slot_examples": [
             {
@@ -964,19 +1109,94 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             },
             {
                 "scenario": (
-                    "transient activity event (no fact metadata; ordinary ADD "
-                    "path)"
+                    "transient activity event (fact_slot='none' sentinel; "
+                    "ordinary ADD path)"
                 ),
                 "turn_1_event": {
                     "content": "User asked the assistant to summarize the trip.",
-                    "fact_slot": None,
-                    "fact_value": None,
+                    "fact_slot": "none",
+                    "fact_value": "none",
                     "valid_from": None,
                     "valid_until": None,
                 },
                 "rationale": (
-                    "Dialogue-process / transient activity; fact_slot=null so "
-                    "the consolidator's SUPERSEDE gate is not entered."
+                    "Dialogue-process / transient activity; fact_slot='none' "
+                    "sentinel satisfies the schema's required-field constraint "
+                    "while signalling 'no durable fact'. The consolidator's "
+                    "SUPERSEDE gate is not entered because two sentinel "
+                    "events share slot AND value (no contradiction)."
+                ),
+            },
+            {
+                "scenario": (
+                    "greeting / chitchat event (fact_slot='none' sentinel)"
+                ),
+                "turn_1_event": {
+                    "content": "User greeted the assistant and asked how it was doing.",
+                    "fact_slot": "none",
+                    "fact_value": "none",
+                    "valid_from": None,
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Greeting / chitchat carries no durable user fact; "
+                    "fact_slot='none' sentinel. NEVER return null or empty "
+                    "string — the schema rejects them."
+                ),
+            },
+            {
+                "scenario": (
+                    "meta-discussion event (fact_slot='none' sentinel)"
+                ),
+                "turn_1_event": {
+                    "content": "User mentioned they had discussed this topic previously.",
+                    "fact_slot": "none",
+                    "fact_value": "none",
+                    "valid_from": None,
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "Meta-discussion about prior conversation; no durable "
+                    "fact about the user's attributes; fact_slot='none' "
+                    "sentinel so the schema's required-field constraint is "
+                    "satisfied without inventing a fake fact."
+                ),
+            },
+            {
+                "scenario": (
+                    "CONTRAST pair — durable user preference vs. external "
+                    "question (the key v3 distinction)"
+                ),
+                "turn_1_event": {
+                    "content": "User enjoys comedy TV shows and wants new recommendations.",
+                    "fact_slot": "preference.tv_show_genre",
+                    "fact_value": "comedy",
+                    "valid_from": "2023-08-15T19:30:00+00:00",
+                    "valid_until": None,
+                },
+                "turn_2_event": {
+                    "content": "User asked which TV show won the Golden Globe last year.",
+                    "fact_slot": "none",
+                    "fact_value": "none",
+                    "valid_from": None,
+                    "valid_until": None,
+                },
+                "rationale": (
+                    "'User enjoys X' / 'User is interested in X' / "
+                    "'User plans to do X' / 'User has been enjoying X' "
+                    "are DURABLE user preferences/activities — emit a real "
+                    "fact_slot like 'preference.tv_show_genre', "
+                    "'hobby.cocktail_making', 'preference.newsletter_topic', "
+                    "'activity.live_music_attendance' with the specific "
+                    "topic as fact_value and valid_from=event_time. Do NOT "
+                    "mark these as 'none'. By contrast, 'User asked which "
+                    "X won Y' / 'User asked about an external fact' carries "
+                    "no durable user attribute — fact_slot='none' sentinel. "
+                    "The key test: does the event state something STABLE "
+                    "about the USER (preference, possession, activity, "
+                    "attribute)? If yes → real fact_slot. If it only "
+                    "describes a transient question or dialogue move → "
+                    "'none' sentinel."
                 ),
             },
         ],
@@ -1000,12 +1220,16 @@ def _build_llm_prompt(request: ExtractionInput) -> str:
             "explained\", or \"the user thanked\". Extract only durable facts: "
             "the user's attributes, preferences, decisions, activities, "
             "locations, and time-bound events.",
-            "Only fill fact_slot/fact_value/valid_from/valid_until for durable, "
-            "updatable user facts. Leave all four null for transient activity "
-            "and dialogue-process events.",
-            "When fact_slot is set, fact_value and valid_from must also be set. "
-            "valid_until may be set only when valid_from is set. When the value "
-            "is still current, leave valid_until null.",
+            "fact_slot is REQUIRED. For durable, updatable user facts, fill "
+            "fact_slot with a lowercase 'domain.attribute' string AND set "
+            "fact_value AND valid_from (and valid_until when applicable). For "
+            "transient activity and dialogue-process events, set "
+            "fact_slot='none' AND fact_value='none' (with valid_from and "
+            "valid_until null). NEVER return fact_slot=null or fact_slot='' "
+            "(empty) — the schema rejects them and forces a retry.",
+            "When fact_slot is set (non-'none'), fact_value and valid_from must "
+            "also be set. valid_until may be set only when valid_from is set. "
+            "When the value is still current, leave valid_until null.",
         ] + (
             [
                 "Every event MUST reference at least one raw turn; summary-only "

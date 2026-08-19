@@ -5,10 +5,10 @@
 ## 1. 一句话简历版本（30 秒电梯陈述）
 
 **中文版**：
-> 设计并实现了一个框架无关的 Agent 时序事件记忆服务：事件以"证据约束 + 时间有效区间 + 合并谱系"存储，检索采用按查询意图自适应的混合策略（向量+时序+图）。核心主张是"证据约束能防止错误记忆合并"，通过显式 ADD/MERGE/SUPERSEDE/REJECT 决策验证，在 LongMemEval/LoCoMo 基准上完成了全流程评测工程（提取、检索、合并、分析），交付机制级证据链（溯源 100%、0 分修复、token 节省 96.5%、失败归因 33/33 复核）。
+> 设计并实现了一个框架无关的 Agent 时序事件记忆服务：事件以"证据约束 + 时间有效区间 + 合并谱系"存储，检索采用按查询意图自适应的混合策略（向量+时序+图）。核心主张是"证据约束能防止错误记忆合并"，通过显式 ADD/MERGE/SUPERSEDE/REJECT 决策验证，在 LongMemEval/LoCoMo 基准上完成了全流程评测工程。**诚实结果**：vs `vector_rag`（公平 RAG 基线）flagship `full` 比 `vector_rag` 贵 41% 且 EM 更低（test50-mimo n=50：`full`=0.46 vs `vector_rag`=0.56；LoCoMo n=1986：`full`=0.0634 vs `vector_rag`=0.0861，p=0.000）；vs `full_context`（trivial 基线，把全部历史塞进 prompt）省约 96.5% 输入 token（仅供参照）。机制级证据链保留：溯源 100%、0 分修复 10→4、失败归因 33/33 复核。整改方案见 `docs/REMEDIATION_SPEC.md`。
 
 **英文版**：
-> Built a framework-agnostic temporal event-memory service for agents: memories carry enforced evidence provenance, validity intervals, and merge lineage; retrieval adapts per query intent across vector/temporal/graph signals. Core thesis: evidence constraints prevent erroneous memory consolidation — validated via explicit ADD/MERGE/SUPERSEDE/REJECT decisions and a full evaluation pipeline on LongMemEval/LoCoMo delivering mechanism-level evidence (100% provenance coverage, 10→4 zero-score repair, ~96.5% input-token savings, 33/33 reviewed failure attribution).
+> Built a framework-agnostic temporal event-memory service for agents: memories carry enforced evidence provenance, validity intervals, and merge lineage; retrieval adapts per query intent across vector/temporal/graph signals. Core thesis: evidence constraints prevent erroneous memory consolidation — validated via explicit ADD/MERGE/SUPERSEDE/REJECT decisions and a full evaluation pipeline on LongMemEval/LoCoMo. **Honest result**: vs `vector_rag` (fair RAG baseline), flagship `full` is 41% more expensive *and* lower EM (test50-mimo n=50: `full`=0.46 vs `vector_rag`=0.56; LoCoMo n=1986: `full`=0.0634 vs `vector_rag`=0.0861, p=0.000); vs `full_context` (trivial baseline, stuffing full history into prompt) ~96.5% input-token savings (reference only). Mechanism-level evidence retained: 100% provenance coverage, 10→4 zero-score repair, 33/33 reviewed failure attribution. Remediation plan in `docs/REMEDIATION_SPEC.md`.
 
 ## 2. 差异化叙事的三个支柱（都经得起拷问）
 
@@ -56,7 +56,7 @@
 **应对**：
 1. 不回避：承认绝对分数低于 Mem0（Mem0 是 62.8k stars 的商业产品，我们是独立实现）
 2. 转定位：我们的研究主张不是"分数更高"，而是"证据约束能否防止错误合并"——这是一个 Mem0 没有做过的实验（Mem0 是 ADD-only，不做合并决策）
-3. 证据：六因子消融（`runs/ablation/` 全部 finalized，受控夹具六因子全部 active）+ `etec` vs `event_no_etec` 对比（single-session 切片 EM 逐题一致，如实报告）+ 机制级强结果（溯源 100%、0 分修复 10→4、token 节省 96.5%、失败归因 33/33 复核）
+3. 证据：六因子消融（`runs/ablation/` 全部 finalized，受控夹具六因子全部 active）+ `etec` vs `event_no_etec` 对比（single-session 切片 EM 逐题一致，如实报告）+ 机制级强结果（溯源 100%、0 分修复 10→4、失败归因 33/33 复核）。**诚实效率数字**：vs `vector_rag`（公平基线）`full` 贵 41% 且 EM 更低；vs `full_context`（trivial 基线）省 96.5% 输入 token（仅供参照）。
 4. 收尾：如果我要分数，我可以用更强的 reader 模型（Mem0 用生产级模型栈），但我们的目标是机制分析
 
 ### Q2："为什么不用现成的 Mem0/Zep，自己造轮子？"
@@ -104,7 +104,7 @@
 - "六因子消融（证据/时序/图/路由/权重/预算）已全部跑完：受控夹具六因子全部 active，LongMemEval
   切片上均产生检索决策变化（routing 22/24，其余 24/24）。但这是**决策级诊断**，不是 QA 增益；
   报告同时如实披露了 factor_leak 诊断。"
-- "真正的强结果是机制级的：溯源覆盖率 100%、0 分格修复 10→4、token 节省 96.5%、失败归因 33/33 复核。"
+- "真正的强结果是机制级的：溯源覆盖率 100%、0 分格修复 10→4、失败归因 33/33 复核。效率数字诚实标注：vs `vector_rag`（公平基线）`full` 贵 41% 且 EM 更低；vs `full_context`（trivial 基线）省 96.5% 输入 token（仅供参照）。"
 - 用实际数据说话，绝不编造"XX 提升 Y%"。
 
 ## 4. 目前必须补齐的证据（决定叙事是否成立）
@@ -131,7 +131,7 @@
 1. 实现框架无关记忆服务：事件存储（证据+有效区间+合并谱系）、查询自适应混合检索（向量+时序+图）、显式合并决策（ADD/MERGE/SUPERSEDE/REJECT）
 2. 验证"证据约束"的机制价值：溯源覆盖率 100%、merge gate 修复 0 分格 10→4、33/33 失败归因复核（主因 reader 输出精度，非检索失效）
 3. 完整评测工程：LongMemEval/LoCoMo 双基准（LongMemEval 有 finalized 内容寻址产物，LoCoMo 为 1986 题 legacy 主 run）、统一预算无泄漏、6 因子消融（全部 finalized）、失败分类复核、不可变产物
-4. 效率证据：LoCoMo 记忆方法 142 tokens/query vs full_context 4102（约省 96.5% 输入 token）
+4. 效率证据（诚实）：LoCoMo 记忆方法 `full` 200 tokens/query vs `full_context` 4102（vs trivial 基线省约 96.5% 输入 token，仅供参照）；**vs 公平 RAG 基线 `vector_rag` 142 tokens/query，`full` 反而贵 41% 且 EM 更低**（LoCoMo `full`=0.0634 vs `vector_rag`=0.0861，p=0.000；test50-mimo `full`=0.46 vs `vector_rag`=0.56）。
 5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）
 6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）
 

@@ -23,7 +23,7 @@
 | M14 | [LoCoMo main experiment](tasks/mainline/M14_locomo.md) | DONE |
 | M15 | [Ablations, statistics, and error analysis](tasks/mainline/M15_analysis.md) | DONE |
 | M16 | [Production API, persistence, and observability](tasks/mainline/M16_production_api.md) | DONE |
-| M17 | [OpenCode MCP adapter](tasks/mainline/M17_opencode_mcp.md) | DONE |
+| M17 | [OpenCode MCP adapter](tasks/mainline/M17_opencode_mcp.md) | DONE (implemented, not deployed) |
 | M18 | [Reproduction, demo, and resume release](tasks/mainline/M18_release.md) | TODO |
 
 
@@ -41,3 +41,4 @@
 | O06 | [Alternative graph database backend](tasks/optional/O06_graph_backend.md) | TODO |
 | O07 | [Memory inspector dashboard](tasks/optional/O07_dashboard.md) | TODO |
 | O08 | [Privacy and multi-tenant hardening](tasks/optional/O08_privacy.md) | TODO |
+| O09 | [Mechanism evaluation](tasks/optional/O09_mechanism_evaluation.md) | DONE |

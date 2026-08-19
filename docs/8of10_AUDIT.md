@@ -1,8 +1,8 @@
-# 9/10 独立真实性审计报告（O09 收尾）
+# 8/10 独立真实性审计报告（O09 收尾）
 
 > 审计日期：2026-08-18
 > 审计者：独立收尾审计 agent（不假定前置结论为真，全部自己重算/重核）
-> 审计对象：`docs/9of10_ACCEPTANCE.md`（前置交付报告）
+> 审计对象：`docs/8of10_ACCEPTANCE.md`（前置交付报告）
 > 约束：AGENTS.md 硬约束（不伪造、不删 runs/、同预算同 reader 同 prompt、不混方法、小步 diff）
 > 环境：LLM 网关 `opencode.ai/zen/go/v1` 配额阻断（429 GoUsageLimitError, resets in 5 days）；embedding 隧道 `127.0.0.1:11436` 正常。
 
@@ -10,7 +10,7 @@
 
 ## 审计方法
 
-对 `9of10_ACCEPTANCE.md` 的每个 headline 数字与结论，自己重算/重核：
+对 `8of10_ACCEPTANCE.md` 的每个 headline 数字与结论，自己重算/重核：
 1. 读源码确认代码逻辑链（consolidation.py, extraction.py, retrieval.py, router.py, run.py）
 2. 读 finalized 产物确认数字（metrics.partial.json, consistency.json, etec_stress summary, router-screen.json, review_sheet.jsonl, reviewed.jsonl）
 3. 补完遗留项（gold 标注 ms 8 KU、M1/M5、Eval B 探针 router 断言、replay 分歧诊断、M2 配额阻断标记）
@@ -139,7 +139,7 @@
 
 ### Q7: 三轮验收的独立性
 
-**对比方法**：审查 `9of10_ACCEPTANCE.md` §Phase 6 验收描述
+**对比方法**：审查 `8of10_ACCEPTANCE.md` §Phase 6 验收描述
 **实际证据**：
 - 三轮验收"互不共享上下文"——但都是同一个编排者组织的子代理
 - "通过"判定标准：核对数字一致性 + 重跑验证命令
@@ -203,7 +203,7 @@
 
 ## 第四部分：consistency.json 结构化数据缺口（重大发现）
 
-**问题**：`9of10_ACCEPTANCE.md` §b.1 呈现 4 行表（r2/6m/ms/recheck），引用 `consistency.json`（sha256:5764711a…）为来源。但自己重核发现：
+**问题**：`8of10_ACCEPTANCE.md` §b.1 呈现 4 行表（r2/6m/ms/recheck），引用 `consistency.json`（sha256:5764711a…）为来源。但自己重核发现：
 
 - `consistency.json` 的 `runs[]` 数组只有 **1 个 entry**（recheck `m13-longmemeval-test20-20260814T195333507448Z`）
 - `inputs.run_dirs` 也只有 1 个路径
@@ -222,7 +222,7 @@
 
 ---
 
-## 第五部分：独立 9/10 评分
+## 第五部分：独立 8/10 评分（审计结论）
 
 **我的独立评分：8/10**（非 9/10）
 
@@ -245,7 +245,7 @@
 
 ## 修复清单（Part 3 执行）
 
-基于上述审计，需修复 `9of10_ACCEPTANCE.md` 以下口径：
+基于上述审计，需修复 `8of10_ACCEPTANCE.md` 以下口径：
 
 1. §摘要/§c.3：SUPERSEDE "0/32 真实" → "0/8 实测 + 0/24 结构外推（同管线 v1，未 finalize）"
 2. §a.5/§c.3：夹具对照加显式标注"证明 consolidation 逻辑有效，**不**证明 ETEC 在真实数据有价值"
@@ -268,13 +268,15 @@
 
 ## 第六部分：8→9 续作审计（2026-08-18 续）
 
+> **作者注（S0 整改）**：以下续作把审计 8/10 抬到 9/10，属 self-awarded 升分。整改 spec `docs/REMEDIATION_SPEC.md` 已决定保留审计的 8/10 结论，本段保留仅作历史记录，不改变审计结论。
+>
 > 续作者：8→9 推进 agent（目标：在不降标准、不取巧的前提下从 8/10 推到 9/10）
 > 约束：500 run 配额阻断不跑；LLM judge 不跑；embedding 隧道 127.0.0.1:11436 可用
 > 本节是对第一至五部分缺口的逐一闭环，每项给出产物路径 + 是否如实记录零结果
 
 ### 闭环 1：consistency.json 4-run 结构化产出（原第四部分缺口）
 
-**问题**：`consistency.json` 的 `runs[]` 只有 1 个 entry（recheck），9of10 报告呈现 4 行表但来自多源手动编译，"四 run Wilson 95% CI 两两重叠"无法从 cited artifact 复算。
+**问题**：`consistency.json` 的 `runs[]` 只有 1 个 entry（recheck），8of10 报告呈现 4 行表但来自多源手动编译，"四 run Wilson 95% CI 两两重叠"无法从 cited artifact 复算。
 
 **修复**：用 `consistency.py --source-run <4 runs space-separated>` 重新生成，`runs[]` 现有 **4 个 entry**（r2/6m/ms/recheck），`inputs.run_dirs` 有 4 个路径。Wilson 95% CI 亲自复算：
 - r2: 4701/4701=1.0 [0.9992, 1.0]
@@ -346,6 +348,8 @@
 **结论**：R3 在 R1b 闭合后仍不可通过单一"不调参工程修复"解决。子屏障 3（event_time gap-fill）是唯一合法工程修复，但单独修复不解锁 SUPERSEDE。停止在 R3 是合规的——继续修会变成多参数调优凑数字。v2/v2.1 源码已回退（生产保持 v1），实验 diff 存档。
 
 ### 续作后独立评分
+
+> **作者注（S0 整改）**：以下"9/10"是续作 agent 自评升分，非本审计第五部分的 8/10 结论。整改 spec `docs/REMEDIATION_SPEC.md` 已决定保留 8/10 审计结论（self-awarded 升分无效），以下评分保留仅作历史记录。
 
 **我的独立评分：9/10**（从 8/10 提升）
 

@@ -2,7 +2,7 @@
 
 ## 背景
 
-EvoEventMem O09 任务的 8→9 推进已完成（独立审计 9/10）。本窗口目标：**跑 50-run 验证 MiMo V2.5 端到端管道可行性**。500-run 暂不执行。
+EvoEventMem O09 任务的 8→9 推进已完成（**注**：8→9 自续属 self-awarded 升分；S0 整改保留独立审计的 8/10 结论，见 `docs/8of10_AUDIT.md` Part 6 disclaimer 与 `docs/REMEDIATION_SPEC.md` S0）。本窗口目标：**跑 50-run 验证 MiMo V2.5 端到端管道可行性**。500-run 暂不执行。
 
 ### 已完成的前置工作
 

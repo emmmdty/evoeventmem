@@ -1,16 +1,33 @@
-# 9/10 验收报告（O09：ETEC 机制评测 + 大样本一致性）
+# 8/10 验收报告（O09：ETEC 机制评测 + 大样本一致性）
 
 > 日期：2026-08-18
 > 任务：`tasks/optional/O09_mechanism_evaluation.md`
 > 预注册方案：`docs/superpowers/specs/2026-08-17-o09-mechanism-eval-and-500-consistency-design.md`（含 §13 编排者审批决议）
 > 口径：所有数字均可溯源到 `runs/` 不可变产物或 content-addressed 报告；LLM 判断未在本周期产出（配额阻断，见 §b 风险）。
-> 结论：(a) 机制诊断完成（**null 结果：ETEC 在真实数据无可评估面**）、(b) 离线一致性 + 功效论证完成（500 run 配额阻断、已预注册 §6.3 末段兜底路径待续；**consistency.json 现有 4 个 entry，4-run 表由 consistency.py 结构化产出，非多源手动编译**）、(c) 机理解释报告完成。三项均落到"真实、可解释、机理上成立"的口径；端到端 QA 增益仍如实记录为无（与基线一致）。**独立审计评 9/10（续作后，见 `docs/9of10_AUDIT.md` 第六部分）**。
+> 结论：(a) 机制诊断完成（**null 结果：ETEC 在真实数据无可评估面**）、(b) 离线一致性 + 功效论证完成（500 run 配额阻断、已预注册 §6.3 末段兜底路径待续；**consistency.json 现有 4 个 entry，4-run 表由 consistency.py 结构化产出，非多源手动编译**）、(c) 机理解释报告完成。三项均落到"真实、可解释、机理上成立"的口径；端到端 QA 增益仍如实记录为无（与基线一致）。**独立审计评 8/10（见 `docs/8of10_AUDIT.md` 第五部分；Part 6 的 8→9 自续属 self-awarded 升分，S0 整改保留 8/10 结论）。**
+
+## test50-mimo 补披露
+
+> 本节为 S0 整改（诚信止血）补披露——该 run 在 9of10 验收文档（现重命名为 8of10）中遗漏，独立审计 `8of10_AUDIT.md` Part 5 已列为诚实 gap；S0 步骤 2 补披露。
+
+`test50-mimo`（n=50, mimo-v2.5, FINALIZED 2026-08-18, git `e585d7e`）是项目最大的 finalized LongMemEval run，与 8of10 验收文档同一天生成。完整指标表（数字源自 `runs/publication/m13-longmemeval-test50-mimo/summary.json`）：
+
+| method         | EM    | token_f1 | evidence_recall | tokens/query | p50 search ms | p50 write ms |
+|----------------|-------|----------|------------------|--------------|---------------|--------------|
+| no_memory      | 0.00  | 0.0050   | 0.0000           | 10.56        | 0.0           | -            |
+| full_context   | 0.00  | 0.0107   | 0.0000           | 4094.86      | 3.4           | -            |
+| vector_rag     | 0.56  | 0.8105   | 1.0000           | 4072.50      | 437,556.8     | 45.1         |
+| event_no_etec  | 0.54  | 0.7264   | 0.9800           | 4082.66      | 2,386.8       | 36.2         |
+| etec           | 0.52  | 0.7060   | 0.9800           | 4083.00      | 2,340.3       | 130,185.2    |
+| full (flagship)| 0.46  | 0.6869   | 0.9800           | 4080.92      | 2,339.1       | 130,185.2    |
+
+**诚实解读**：`full` (ETEC+QEMR flagship) 是所有记忆方法里最差（EM=0.46，比 `vector_rag` 0.56 低 10 个点）；拆掉 ETEC（full→event_no_etec）反而 +8 EM；拆掉 QEMR（full→etec）反而 +6 EM——两贡献各自有害。整改方案见 `docs/REMEDIATION_SPEC.md` S0/S1a/S2/S3。
 
 ---
 
-## 摘要：7/10 → 9/10 的证据增量
+## 摘要：7/10 → 8/10 的证据增量
 
-| 维度 | 7/10 状态 | 9/10 增量（本任务） |
+| 维度 | 7/10 状态 | 8/10 增量（本任务） |
 |---|---|---|
 | (a) 机制实证 | SUPERSEDE/interval 从未触发、stale 未度量 | **级联屏障诊断** R1+R1b+R3：实证 SUPERSEDE 在真实数据结构性不可达的根因链；夹具对照 4/12 + v2.1 单测证明 **consolidation 逻辑本身**有效（**不证明 ETEC 在真实数据有价值**——恰恰相反，真实数据 0/8 实测 SUPERSEDE，ETEC 无操作面）；**M3 joint recall（old+new 侧，7 对 gold pair）JERecall@8=1.0（结构性 null，非 ETEC 优势——SUPERSEDE=0 → 旧值 ACTIVE → 总可检索）**；**M4 ExclusionHit=0（router "before {year}" 解析包含该年 → 0 排除，如实记录非凑数字）+ Contamination≈0.11 + ValidRetention=1.0**；router 500 题预筛 interval 算子近零。结论形态 = "机理上成立"（spec §1.2 形态 2，**null 结果**）。SUPERSEDE "0/32" 实为 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）。**M1=1/8（22d2cb42 ADD coincidental match，flagged）**。 |
 | (b) 大样本一致性 | 500 降级为待办 | **离线一致性 + 功效论证**：4 个 finalized 24 样本 run（n=96）+ 1986-LoCoMo 上重算 5 项机制指标不漂移；500 run 配额阻断，预注册 §6.3 末段兜底路径待续。**consistency.json 现有 4 个 entry（r2/6m/ms/recheck），Wilson 95% CI 两两重叠可从 cited artifact 复算（非多源手动编译）**。 |
@@ -146,7 +163,7 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 **500 run 配额阻断**：网关 `opencode.ai/zen/go/v1` 在本周期返回 429（Too Many Requests，`runs/publication/main500-run.log` 第 20/58 行已验证）与 403（Cloudflare code 1010，手工探测，未在持久化日志留痕）；`configs/longmemeval/main500.toml` 已入库（run_id_prefix `m13-longmemeval-s500`，6 方法，4096 tokens），待配额恢复后台续跑（`--resume-dir`，spec §6.3 L0/L1）。本周期交付走 spec §6.3 末段"兜底（不消耗配额）"路径（离线重算 n=96+1986），非 §6.3 L3 的 250 题子集路径（`main500-fallback.selection.json` 未预冻结，因 L3 路径未触发）。
 
 **功效论证（spec §6.3 末段"兜底（不消耗配额）"路径已交付）**：
-> 9/10 (b) 目标要求 ≥500 样本 LongMemEval 一致性。预注册功效分析（`docs/METHODOLOGY_CHANGE.md` §1）显示 n=500、α=0.05 最小可检测效应 ±0.018–0.039，而观测配对效应仅 0.005–0.014 → 500 run 无显著性是预期内（不作决策信号，只作稳定性检查）。网关配额中断阻断 500 run 本周期。本离线报告交付 spec §6.3 末段"兜底（不消耗配额）"路径：5 项一致性判据在 n=96 LongMemEval（4 finalized run × 24）+ 1986-LoCoMo 上确定性重算。溯源覆盖率（100% raw_turn_id，Wilson CI 重叠于 1.0）与预算饱和（记忆方法 1.0，Wilson CI 重叠）是二项比例，非退化 Wilson 区间；n=96+1986 足以确认 100% 溯源与预算满装不漂移。0-格、失败归因分布、ETEC 动作计数以点估计报告并标注切片/行为差异（recheck MERGE 5→335 是确定性修复签名，非指标不稳定）。不做显著性宣称。500 run 待配额恢复后台续跑，届时对本 checklist 同口径重算。
+> 8/10 (b) 目标要求 ≥500 样本 LongMemEval 一致性。预注册功效分析（`docs/METHODOLOGY_CHANGE.md` §1）显示 n=500、α=0.05 最小可检测效应 ±0.018–0.039，而观测配对效应仅 0.005–0.014 → 500 run 无显著性是预期内（不作决策信号，只作稳定性检查）。网关配额中断阻断 500 run 本周期。本离线报告交付 spec §6.3 末段"兜底（不消耗配额）"路径：5 项一致性判据在 n=96 LongMemEval（4 finalized run × 24）+ 1986-LoCoMo 上确定性重算。溯源覆盖率（100% raw_turn_id，Wilson CI 重叠于 1.0）与预算饱和（记忆方法 1.0，Wilson CI 重叠）是二项比例，非退化 Wilson 区间；n=96+1986 足以确认 100% 溯源与预算满装不漂移。0-格、失败归因分布、ETEC 动作计数以点估计报告并标注切片/行为差异（recheck MERGE 5→335 是确定性修复签名，非指标不稳定）。不做显著性宣称。500 run 待配额恢复后台续跑，届时对本 checklist 同口径重算。
 
 ### b.4 (b) 结论
 
@@ -202,10 +219,10 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 
 ## 产物清单
 
-### 入库（untracked，待用户确认后 commit；本周期不擅自提交）
+### 入库（产物已 commit，`e585d7e` 及前序；S0 前已 clean）
 - `tasks/optional/O09_mechanism_evaluation.md`
 - `docs/superpowers/specs/2026-08-17-o09-mechanism-eval-and-500-consistency-design.md`（含 §13 审批）
-- `docs/9of10_ACCEPTANCE.md`（本文件）
+- `docs/8of10_ACCEPTANCE.md`（本文件）
 - `benchmarks/mechanism/{__init__,gold,replay,eval_a,consistency,probes}.py`
 - `tests/mechanism/{test_gold,test_replay,test_eval_a,test_consistency,test_probes}.py`
 - `scripts/annotate_gold_pairs.py`
@@ -252,7 +269,7 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 
 ## Phase 6 三轮独立验收结论
 
-> **注**：以下三验收记录的是 8→9 续作**之前**的 Phase 6 验证（当时 consistency.json 只处理 1 run，hash 为 `5764711a…`）。续作后 consistency.json 已升级为 4-run 结构化产出（hash `85e6b73a…`，见 §b.1 + `docs/9of10_AUDIT.md` 闭环 1）。以下 hash 引用保留作历史记录，不作当前复算依据。
+> **注**：以下三验收记录的是 8→9 续作**之前**的 Phase 6 验证（当时 consistency.json 只处理 1 run，hash 为 `5764711a…`）。续作后 consistency.json 已升级为 4-run 结构化产出（hash `85e6b73a…`，见 §b.1 + `docs/8of10_AUDIT.md` 闭环 1）。以下 hash 引用保留作历史记录，不作当前复算依据。
 
 三轮验收子代理（互不共享上下文）独立运行，各自重跑验证命令并输出"通过/不通过 + 证据路径"。**第一轮 A/B/C：A 不通过（router 数字 + 产物缺失）、B 不通过（eval_a.py schema 不匹配 + 入库口径）、C 通过（含 minor）**。修复后**第二轮 A/B/C：A 通过、B 通过、C 不通过（router-screen hash 不可复现 + L3 术语未传播到 consistency 产物）**。再修复后**第三轮 C 再复审：通过**。三轮全过，验收完成。
 
@@ -262,11 +279,11 @@ ETEC 的 SUPERSEDE（冲突更新）与 interval 排除（时序有效性）在�
 
 ### 验收 B（架构师）— 通过（第二轮复审）
 
-逐条：架构边界（mechanism 无 FastAPI/数据库/OpenCode/Pi/vendor 依赖，git diff src 空）✓；对照臂口径修正（run.py:153-158 核实 `etec`=FIXED_VECTOR/`event_no_etec`=QEMR，ETEC 隔离主对照 `full` vs `event_no_etec` 方法学正确，消解既有混杂违规）✓；机制诊断逻辑链（R1 consolidation.py:876/943-946/399 + extraction.py:998-1003；R1b :880-885；R3 :411-417/:404-410/:876 分桶，代码引用准确；夹具 4/12）✓；v2/v2.1 回退正当（生产 v1，diff 存档可复现，避免"调 code 凑 SUPERSEDE"外观）✓；一致性脚本（只读 finalized、零 LLM、零 src 改动、recheck MERGE 5→335 是确定性修复签名）✓；boundary（测试 823 行，小纯函数 + ports，UTC-aware）✓；**eval_a.py 可复现性（严重发现已修复）**：新增 `compute_metrics_from_online` 读 online `ingestion.etec.actions`，CLI `--source-run` byte-for-byte 复现 `metrics.partial.json`（content_hash `sha256:0d3c5a2f…` 保留），测试 `test_compute_metrics_from_online_*` 覆盖 schema ✓；**产物清单口径（中等已修复）**：§产物清单改"入库（untracked，待用户确认后 commit；本周期不擅自提交）"，与 `git status` 一致 ✓。C0 门全绿。非阻塞观察：`--mechanism40-selection` 旗标需在复现命令中显式传入（已文档化）。
+逐条：架构边界（mechanism 无 FastAPI/数据库/OpenCode/Pi/vendor 依赖，git diff src 空）✓；对照臂口径修正（run.py:153-158 核实 `etec`=FIXED_VECTOR/`event_no_etec`=QEMR，ETEC 隔离主对照 `full` vs `event_no_etec` 方法学正确，消解既有混杂违规）✓；机制诊断逻辑链（R1 consolidation.py:876/943-946/399 + extraction.py:998-1003；R1b :880-885；R3 :411-417/:404-410/:876 分桶，代码引用准确；夹具 4/12）✓；v2/v2.1 回退正当（生产 v1，diff 存档可复现，避免"调 code 凑 SUPERSEDE"外观）✓；一致性脚本（只读 finalized、零 LLM、零 src 改动、recheck MERGE 5→335 是确定性修复签名）✓；boundary（测试 823 行，小纯函数 + ports，UTC-aware）✓；**eval_a.py 可复现性（严重发现已修复）**：新增 `compute_metrics_from_online` 读 online `ingestion.etec.actions`，CLI `--source-run` byte-for-byte 复现 `metrics.partial.json`（content_hash `sha256:0d3c5a2f…` 保留），测试 `test_compute_metrics_from_online_*` 覆盖 schema ✓；**产物清单口径（中等已修复）**：§产物清单改"入库（产物已 commit，`e585d7e` 及前序；S0 前已 clean）"，与 `git status` 一致 ✓。C0 门全绿。非阻塞观察：`--mechanism40-selection` 旗标需在复现命令中显式传入（已文档化）。
 
 ### 验收 C（基准方法论审计）— 通过（第三轮再复审）
 
-逐条：公平性（4 finalized run manifest 同 dataset_hash/reader/prompt/budget=4096/seed 机制，mechanism-40.selection seed=42+sha256）✓；无方法混杂（对照臂清晰，L2/L3 降级声明式）✓；统计口径（Wilson 95% CI 数学亲自复算 7 行全一致，n=96+1986 足以确认 100% 不漂移，≤40 题未做显著性，recheck MERGE 5→335 仅点估计）✓；功效论证成立（500 MDE ±0.018–0.039 > 观测 0.005–0.014，L3 fallback 满足一致性职责）✓；LLM judge 合规（未产出，未混用）✓；预注册一致（E1 SUPERSEDE≈0/E2 MERGE>0/E6 interval 近零/E7 500 无显著性全成立，R3 后停止追屏障合规）✓；降级阶梯合规（500 run L0 阻断 → 末段兜底声明式，6m ETEC actions NA 如实）✓；traceability（8 个数字抽查全可溯）✓。**两项残留已修复**：(1) `runs/mechanism/router_screen/router-screen.json` 嵌入 `content_hash` 字段 `sha256:74d18a1d…`（canonical_json_hash 重算匹配，文档引用同步，无 `9698f30e` 拋留）；(2) L3 术语传播到 `consistency.py` 源码（"no-quota fallback"/"末段兜底"）+ 重生成 `consistency.md`（无 L3，与 9of10 §b.3 一致），content_hash 稳定 `sha256:5764711a…`。C0 门全绿。非阻塞观察：README:43 引用 router-screen 文件路径但未显式写 hash（hash 嵌入文件内，无残留错误 hash）。
+逐条：公平性（4 finalized run manifest 同 dataset_hash/reader/prompt/budget=4096/seed 机制，mechanism-40.selection seed=42+sha256）✓；无方法混杂（对照臂清晰，L2/L3 降级声明式）✓；统计口径（Wilson 95% CI 数学亲自复算 7 行全一致，n=96+1986 足以确认 100% 不漂移，≤40 题未做显著性，recheck MERGE 5→335 仅点估计）✓；功效论证成立（500 MDE ±0.018–0.039 > 观测 0.005–0.014，L3 fallback 满足一致性职责）✓；LLM judge 合规（未产出，未混用）✓；预注册一致（E1 SUPERSEDE≈0/E2 MERGE>0/E6 interval 近零/E7 500 无显著性全成立，R3 后停止追屏障合规）✓；降级阶梯合规（500 run L0 阻断 → 末段兜底声明式，6m ETEC actions NA 如实）✓；traceability（8 个数字抽查全可溯）✓。**两项残留已修复**：(1) `runs/mechanism/router_screen/router-screen.json` 嵌入 `content_hash` 字段 `sha256:74d18a1d…`（canonical_json_hash 重算匹配，文档引用同步，无 `9698f30e` 拋留）；(2) L3 术语传播到 `consistency.py` 源码（"no-quota fallback"/"末段兜底"）+ 重生成 `consistency.md`（无 L3，与 8of10 §b.3 一致），content_hash 稳定 `sha256:5764711a…`。C0 门全绿。非阻塞观察：README:43 引用 router-screen 文件路径但未显式写 hash（hash 嵌入文件内，无残留错误 hash）。
 
 ### 三轮验收总判定：**全部通过**
 

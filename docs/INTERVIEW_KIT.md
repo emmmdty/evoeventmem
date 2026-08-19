@@ -12,7 +12,7 @@
 > 我做了一个框架无关的 Agent 长期记忆服务。它解决一个具体问题：Agent 的"记忆"会过期、会冲突、无法溯源。我的核心设计是"证据约束"——每条记忆必须指向精确的原始证据，合并或取代必须显式决策。为了验证这个设计，我在 LongMemEval（Long-term Memory Evaluation benchmark）和 LoCoMo（Long Conversation Memory benchmark）上做了完整评测，并实现了生产级部署（PostgreSQL/pgvector/多租户隔离）。
 
 **英文**（备选）：
-> I built a framework-agnostic long-term memory service for AI agents. It addresses three failure modes of agent memory: staleness, contradiction, and untraceability. The core design is "evidence constraint" — every memory must point to exact source evidence, and consolidation (merge/supersede) requires explicit decisions. I validated the design end-to-end on LongMemEval and LoCoMo benchmarks with production-grade deployment (PostgreSQL/pgvector, multi-tenant isolation).
+> I built a framework-agnostic long-term memory service for AI agents. It addresses three failure modes of agent memory: staleness, contradiction, and untraceability. The core design is "evidence constraint" — every memory must point to exact source evidence, and consolidation (merge/supersede) requires explicit decisions. I evaluated the design end-to-end with null/negative result on flagship config — `full` (ETEC+QEMR) is the worst memory method on LongMemEval 50-question run (EM=0.46, vs `vector_rag` 0.56) and significantly worse than `vector_rag` on LoCoMo 1986 questions (0.0634 vs 0.0861, p=0.000); mechanism-level evidence (100% provenance coverage, 33/33 failure attribution, tamper-proof FINALIZED.json) is the real contribution, but the accuracy thesis is not supported by the data. Production-grade deployment: PostgreSQL/pgvector, multi-tenant isolation.
 
 **记忆要点**：问题（过期/冲突/不可溯源）→ 设计（证据约束+显式决策）→ 验证（双基准+消融）→ 工程（生产部署）。
 
@@ -243,7 +243,7 @@
 
 ### Q7："你的性能数据？"
 
-> 检索路径是纯数据库操作（pgvector HNSW），零 LLM 调用，毫秒级。写入路径的成本在 LLM 提取（可选规则提取器零成本）。效率数字有两组真实数据：LongMemEval 上所有方法都打满 4096 token 预算（等预算可比性成立）；LoCoMo 主 run（1986 题）上记忆方法 142 tokens/query vs full_context 4102 tokens/query（Δ −3959.9，p<0.001，约省 96.5% 输入 token）。诚实地说：精确的 p95 延迟还没测完，这是我要补的数据。**（诚实承认未完成项，不编数据）**
+> 检索路径是纯数据库操作（pgvector HNSW），零 LLM 调用，毫秒级。写入路径的成本在 LLM 提取（可选规则提取器零成本）。效率数字有两组真实数据：LongMemEval 上所有方法都打满 4096 token 预算（等预算可比性成立）；LoCoMo 主 run（1986 题）上**vs 公平 RAG 基线 `vector_rag` 142 tokens/query：flagship `full` 200 tokens/query 反而贵 41% 且 EM 更低（`full`=0.0634 vs `vector_rag`=0.0861，p=0.000）；vs trivial 基线 `full_context` 4102 tokens/query：`full` 省约 96.5% 输入 token（仅供参照，Δ −3959.9，p<0.001）**。诚实地说：精确的 p95 延迟还没测完，这是我要补的数据。**（诚实承认未完成项，不编数据）**
 
 ---
 
@@ -258,12 +258,12 @@
 | 生产部署（pgvector/async/多租户/fail-closed） | ✅ 完成 + Compose/PG 集成测试 | 架构选型、隔离证明 |
 | 评测工程（无泄漏/统一预算/不可变产物） | ✅ 完成 | 公平性控制方法论 |
 | LongMemEval 跑批 | ✅ 完成（24 样本小样本闭环；机制级强结果） | 机制证据链（见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md`） |
-| LoCoMo 跑批 | ✅ 完成（1986 题主 run） | 效率证据（~96.5% token 节省） |
+| LoCoMo 跑批 | ✅ 完成（1986 题主 run） | 效率证据（vs `vector_rag` `full` 贵 41% 且 EM 更低；vs `full_context` trivial 基线省 96.5%，仅供参照） |
 | 6 因子消融 | ✅ 完成（`runs/ablation/` 全部 finalized） | 决策级诊断 + factor_leak 诚实披露 |
 | 最终分析报告 | ✅ 完成（3 份内容寻址 M15 报告，validate valid=true） | 配对 bootstrap、失败归因 33/33 复核 |
 | p95 延迟测量 | ⏳ 未做 | 讲为什么还没做 |
 
-**面试纪律**：任何"提升 X%"的说法，必须来自跑批完成后的真实数据。当前没有端到端 QA 增益声明——24 样本上 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ 为负，且受 run-to-run 非确定性影响）；能讲的是机制级强结果（溯源 100%、0 分修复 10→4、效率 96.5%、归因 33/33）。定位是"机制证据链 + 可复现产物"，不是"分数更高"。
+**面试纪律**：任何"提升 X%"的说法，必须来自跑批完成后的真实数据。当前没有端到端 QA 增益声明——24 样本上 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ 为负，且受 run-to-run 非确定性影响）；50 题 test50-mimo run 上 `full`=0.46 是所有记忆方法里最差（`vector_rag`=0.56，Δ −0.10）；LoCoMo 1986 题上 `full` 显著劣于 `vector_rag`（0.0634 vs 0.0861，p=0.000）。能讲的是机制级强结果（溯源 100%、0 分修复 10→4、归因 33/33）。**效率数字诚实标注**：vs `vector_rag` `full` 贵 41% 且 EM 更低；vs `full_context` trivial 基线省 96.5%（仅供参照）。定位是"机制证据链 + 可复现产物"，不是"分数更高"。
 
 ---
 

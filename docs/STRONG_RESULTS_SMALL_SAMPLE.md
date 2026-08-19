@@ -5,6 +5,23 @@
 > 基线记录 `runs/publication/longmemeval-test20/SUMMARY_24SAMPLE.md`、content-addressed M15 报告
 > `runs/analysis/sha256:6260181f…/report.md` 与本地 `runs/main/report/`（LoCoMo 主 run）。禁止手写数字。
 
+## test50-mimo 补遗 (n=50, mimo-v2.5, 2026-08-18)
+
+> 本节为 S0 整改（诚信止血）补披露——`test50-mimo` run 在 v1.0 spec 中被遗漏，v1.1 spec S0 步骤 2 补披露。本 run 与本文 24-sample r2 切片**不可跨模型对比**（24 题用 deepseek-v4-flash，50 题用 mimo-v2.5；AGENTS.md 禁止不等模型下 benchmark 对比）。
+
+完整指标表（数字源自 `runs/publication/m13-longmemeval-test50-mimo/summary.json`，FINALIZED git `e585d7e`）：
+
+| method         | EM    | token_f1 | evidence_recall | tokens/query | p50 search ms | p50 write ms |
+|----------------|-------|----------|------------------|--------------|---------------|--------------|
+| no_memory      | 0.00  | 0.0050   | 0.0000           | 10.56        | 0.0           | -            |
+| full_context   | 0.00  | 0.0107   | 0.0000           | 4094.86      | 3.4           | -            |
+| vector_rag     | 0.56  | 0.8105   | 1.0000           | 4072.50      | 437,556.8     | 45.1         |
+| event_no_etec  | 0.54  | 0.7264   | 0.9800           | 4082.66      | 2,386.8       | 36.2         |
+| etec           | 0.52  | 0.7060   | 0.9800           | 4083.00      | 2,340.3       | 130,185.2    |
+| full (flagship)| 0.46  | 0.6869   | 0.9800           | 4080.92      | 2,339.1       | 130,185.2    |
+
+**诚实解读**：`full` (ETEC+QEMR flagship) 是所有记忆方法里最差（EM=0.46，比 `vector_rag` 0.56 低 10 个点）；拆掉 ETEC（full→event_no_etec）反而 +8 EM；拆掉 QEMR（full→etec）反而 +6 EM——两贡献各自有害。整改方案见 `docs/REMEDIATION_SPEC.md` S1a/S2/S3。
+
 ## 0. 样本与公平性约束
 
 - 24 题 × 3 方法（`vector_rag` / `etec` / `full`），全部 `single-session-user` 类别。
@@ -40,7 +57,7 @@
 ## 3. 效率
 
 - r2：三方法均满 4096 token 预算（mean 4074–4082），prompt overhead 仅 8 token/查询；等预算可比性成立。
-- LoCoMo 主 run（runs/main/report，1986 题）：vector_rag 142.2 tokens/query vs full_context 4102.3（配对 Δ −3959.9，95% CI [−3961.0, −3958.8]，p<0.001）—— 记忆方法在相近效果下节省约 96.5% 输入 token（**vs full_context trivial 基线**），机制级效率证据。**注意：full（200.3）比 vector_rag（142.2）贵 41%（+58.1 tokens/query），full 的事件图开销使其比真 RAG 基线更贵。**
+- LoCoMo 主 run（runs/main/report，1986 题）：vs 公平 RAG 基线 `vector_rag` 142.2 tokens/query，flagship `full` 200.3 反而贵 41%（+58.1 tokens/query）且 EM 更低（0.0634 vs 0.0861，p=0.000，C01）；vs trivial 基线 `full_context` 4102.3，`full` 省约 96.5% 输入 token（仅供参照，配对 Δ −3959.9，95% CI [−3961.0, −3958.8]，p<0.001），机制级效率证据。**诚实标注：full 的事件图开销使其比真 RAG 基线更贵**。
 
 ## 4. 失败归因
 
@@ -145,11 +162,11 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 
 ## 8. O09 机制诊断 + 一致性（2026-08-18）
 
-> 全部数字来源：`docs/9of10_ACCEPTANCE.md`（§a/§b/§c），可溯源到 `runs/mechanism/` 不可变产物或 content-addressed 报告。本节为 9/10 验收的硬数字摘要，不引入新数字。
+> 全部数字来源：`docs/8of10_ACCEPTANCE.md`（§a/§b/§c），可溯源到 `runs/mechanism/` 不可变产物或 content-addressed 报告。本节为 8/10 验收（独立审计结论，原 9/10 自续已 S0 回滚）的硬数字摘要，不引入新数字。
 
 ### 8.1 SUPERSEDE 三层级联屏障（真实数据 0/32 vs 受控夹具 4/12）
 
-来源：`docs/9of10_ACCEPTANCE.md` §a.2/§a.3/§a.4/§a.5。
+来源：`docs/8of10_ACCEPTANCE.md` §a.2/§a.3/§a.4/§a.5。
 
 - **R1 屏障（提取不写 fact_slot）**：ms 8 KU finalized run（`runs/publication/longmemeval-test20-ms`）提取事件总数 1821；带 `fact_slot`/`fact_value`/`multi_valued` 的 events 全 = 0；metadata keys 全集 = `{extractor_prompt_version, source_dataset, source_sample_id}`（仅 3 个）。ETEC 动作计数（online `samples/<id>.json → ingestion.etec.actions`）：ADD 1821 / MERGE 0 / **SUPERSEDE 0** / REJECT 0。**注意："0/32" 实为 0/8 实测 + 0/24 结构外推（mechanism40 未 finalize）；M1=1/8（22d2cb42 ADD coincidental match — ETEC did ADD due to R1 default, gold is also ADD; flagged as coincidental, not a genuine correct SUPERSEDE decision；见 `runs/mechanism/evala/m1.json`，sha256:2afcea42…）。**
   代码链（git `e521e31`，亲自核实）：`_contradiction_score`（`consolidation.py:876`）在 `multi_valued or not _same_fact_slot(...) or _same_fact_value(...)` 时短路返回 0.0；`_same_fact_slot`（:943-946）要求 `metadata["fact_slot"]` 存在；提取管线 `_build_memory`（`extraction.py:998-1003`）只写三个 metadata 字段、从不写 fact_slot → SUPERSEDE 分支（`consolidation.py:398-427` 需 `contradiction_score >= 0.7`，:399）结构上不可达。
@@ -161,14 +178,14 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 
 ### 8.2 M3 新证据召回 + router 500 题预筛（检索侧不是瓶颈）
 
-来源：`docs/9of10_ACCEPTANCE.md` §a.6；产物 `runs/mechanism/evala/metrics.partial.json`（sha256:0d3c5a2f…）。
+来源：`docs/8of10_ACCEPTANCE.md` §a.6；产物 `runs/mechanism/evala/metrics.partial.json`（sha256:0d3c5a2f…）。
 
 - **M3 joint recall（ms 8 KU，7 SUPERSEDE/MERGE gold pair + 1 ADD，4 方法，finalized retrieval.jsonl）**：full / event_no_etec / etec / vector_rag 四方法 old_recall_mean 均 = **1.0**、new_recall_mean 均 = **1.0**、JERecall@8 均 = **1.0**。old+new 侧联合召回 100% → 检索总能找到新旧证据。**结构性 null：SUPERSEDE=0 → 旧值全 ACTIVE → 旧值总可检索 → full vs event_no_etec JERecall@8 delta=0.0，非 ETEC 优势。** 22d2cb42（ADD，old 侧空）：old_recall=NA、JERecall@8=NA。产物 `runs/mechanism/evala/m3_joint.json`（sha256:1f16ef77…）。**M4 探针（8 探针 × 4 臂，零 LLM）**：ExclusionHit=0 全臂（router "before {year}" 解析包含该年 → 0 排除，如实记录）；Contamination≈0.11-0.24；ValidRetention=1.0（`runs/mechanism/evalb/m4.json`，sha256:07ba78c3…）。
 - **router 全量 500 题确定性预筛（零 LLM，预注册方法 `reference_time=question_date` 解析）**：`none 382 / earliest 42 / latest 23 / duration 26 / between 15 / sequence 11 / at 1`；**BEFORE/AFTER = 0**。interval 算子（触发 `temporal_interval_excluded` 的路径，`retrieval.py:797`）在自然 500 题中共 **16 例**（15 BETWEEN + 1 AT，3.2%）——15 BETWEEN 来自 `_RELATIVE_RE` 匹配 "last/next/this/past/previous/coming + week/month/year"（`router.py:615-629`），需 `reference_time` 才能解析（不传 reference_time 则 BETWEEN=0、latest=29，与 spec §3.1 预注册设计期结果一致但不符合预注册方法；本报告以预注册方法为准）。→ 真实数据 interval 过滤**近零触发**（3.2%），与既有三个切片（72 题仅 1 earliest、0 between）方向一致。产物 `runs/mechanism/router_screen/router-screen.json`（`content_hash` 字段 sha256:74d18a1d…，500/500 解析成功）。interval 排除代码路径由既有单元测试覆盖（`tests/retrieval/test_qemr.py:767,799,831,1074,1433` 断言 `temporal_interval_excluded`；`test_query_router.py:290-377` 算子解析）。
 
 ### 8.3 4-run 一致性（n=96，离线重算）
 
-来源：`docs/9of10_ACCEPTANCE.md` §b.1；产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:85e6b73a…`，确定性可复现，**4-run 结构化产出非多源手动编译**）；脚本 `benchmarks/mechanism/consistency.py`（733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。
+来源：`docs/8of10_ACCEPTANCE.md` §b.1；产物 `runs/mechanism/consistency/consistency.json` + `.md`（content_hash `sha256:85e6b73a…`，确定性可复现，**4-run 结构化产出非多源手动编译**）；脚本 `benchmarks/mechanism/consistency.py`（733 行，零 LLM）+ 测试 `tests/mechanism/test_consistency.py`（13 tests，43 passed/1 skipped）。
 
 | run | 溯源 raw_turn_id | 预算满装(记忆) | 0-格 | 失败归因(自动) | ETEC actions(A/M/S/R) |
 |---|---|---|---|---|---|
@@ -180,20 +197,20 @@ sealed 报告 `runs/analysis/sha256:6260181f…` 未被修改（复核产物写�
 - **稳定**：provenance 100%（四 run Wilson 95% CI 全两两重叠于 1.0，**可从 consistency.json 复算**）；budget 饱和 1.0（记忆四方法每 run 全满装，CI 重叠——**非判别性指标：全方法 4096 满装是 budget 设计预期，不区分方法质量**）；**SUPERSEDE=0 全 run**（R1 在 4-run 规模复现）。
 - **有差异 + 已解释**：recheck MERGE 5→335 是确定性合并修复（`memory_order_key` tie-break）的预期信号，非指标漂移（`docs/METHODOLOGY_CHANGE.md` §7）；6m 未持久化 `ingestion.etec.actions`（legacy 字段契约局限，标注 NA）。
 - **失败归因**：自动 taxonomy 四 run 结构同构（extr+budget 主导，baselines 加 absent=48）；但 r2 33/33 人工复核口径显示自动标签仅为假设（auto-vs-reviewer 一致率 7/33=21.2%，复核把 26/33 重判为 `answer_present_reader_wrong`）——自动分布是 reader-error 的稳定下界，真值以复核为准（`runs/review/longmemeval-r2.reviewed.jsonl`）。
-- **1986-LoCoMo 大样本侧证（legacy，只读）**：`runs/main/report/` token 效率 vector_rag 142.2 / etec 142.4 / full 200.3 / event_no_etec 200.4 / session_summary 2947.2 / full_context 4102.3 tokens/query（配对 Δ −3959.9，p<0.001，约省 96.5%）；失败分布 `error_review.jsonl`（12890 行）answer_not_recoverable 4423 / adversarial_no_gold 2664 / recoverable_wrong 2454 / no_memory 1940 / budget_truncation 1409；provenance=0（legacy 历史缺陷，M15 C09：0/668 事件带 verbatim turn span，不可从 legacy 重算，标注 `legacy_defect`）。
+- **1986-LoCoMo 大样本侧证（legacy，只读）**：`runs/main/report/` token 效率 vector_rag 142.2 / etec 142.4 / full 200.3 / event_no_etec 200.4 / session_summary 2947.2 / full_context 4102.3 tokens/query（**vs 公平基线 `vector_rag`：`full` 贵 41% 且 EM 更低（0.0634 vs 0.0861，p=0.000）；vs trivial 基线 `full_context`：`full` 省约 96.5% 输入 token（仅供参照，配对 Δ −3959.9，p<0.001）**）；失败分布 `error_review.jsonl`（12890 行）answer_not_recoverable 4423 / adversarial_no_gold 2664 / recoverable_wrong 2454 / no_memory 1940 / budget_truncation 1409；provenance=0（legacy 历史缺陷，M15 C09：0/668 事件带 verbatim turn span，不可从 legacy 重算，标注 `legacy_defect`）。
 
 ### 8.4 500 run 配额阻断 + 功效论证
 
-来源：`docs/9of10_ACCEPTANCE.md` §b.3。
+来源：`docs/8of10_ACCEPTANCE.md` §b.3。
 
 - **500 run 配额阻断**：网关 `opencode.ai/zen/go/v1` 在本周期返回 429（Too Many Requests）与 403（Cloudflare code 1010）；`configs/longmemeval/main500.toml` 已入库（run_id_prefix `m13-longmemeval-s500`，6 方法，4096 tokens），待配额恢复后台续跑（`--resume-dir`，spec §6.3 L0/L1）。
-- **功效论证（spec §6.3 末段"兜底（不消耗配额）"路径已交付）**：9/10 (b) 目标要求 ≥500 样本 LongMemEval 一致性。预注册功效分析（`docs/METHODOLOGY_CHANGE.md` §1）显示 n=500、α=0.05 最小可检测效应 ±0.018–0.039，而观测配对效应仅 0.005–0.014 → 500 run 无显著性是预期内（不作决策信号，只作稳定性检查）。本离线报告交付 spec §6.3 末段"兜底（不消耗配额）"路径：5 项一致性判据在 n=96 LongMemEval（4 finalized run × 24）+ 1986-LoCoMo 上确定性重算。溯源覆盖率（100% raw_turn_id，Wilson CI 重叠于 1.0）与预算饱和（记忆方法 1.0，Wilson CI 重叠）是二项比例，非退化 Wilson 区间；n=96+1986 足以确认 100% 溯源与预算满装不漂移。0-格、失败归因分布、ETEC 动作计数以点估计报告并标注切片/行为差异。不做显著性宣称。500 run 待配额恢复后台续跑，届时对本 checklist 同口径重算。
+- **功效论证（spec §6.3 末段"兜底（不消耗配额）"路径已交付）**：8/10 (b) 目标要求 ≥500 样本 LongMemEval 一致性。预注册功效分析（`docs/METHODOLOGY_CHANGE.md` §1）显示 n=500、α=0.05 最小可检测效应 ±0.018–0.039，而观测配对效应仅 0.005–0.014 → 500 run 无显著性是预期内（不作决策信号，只作稳定性检查）。本离线报告交付 spec §6.3 末段"兜底（不消耗配额）"路径：5 项一致性判据在 n=96 LongMemEval（4 finalized run × 24）+ 1986-LoCoMo 上确定性重算。溯源覆盖率（100% raw_turn_id，Wilson CI 重叠于 1.0）与预算饱和（记忆方法 1.0，Wilson CI 重叠）是二项比例，非退化 Wilson 区间；n=96+1986 足以确认 100% 溯源与预算满装不漂移。0-格、失败归因分布、ETEC 动作计数以点估计报告并标注切片/行为差异。不做显著性宣称。500 run 待配额恢复后台续跑，届时对本 checklist 同口径重算。
 
-### 8.5 对照臂口径修正（同 9of10 §c.2 / EVALUATION.md §7）
+### 8.5 对照臂口径修正（同 8of10 §c.2 / EVALUATION.md §7）
 
-来源：`docs/9of10_ACCEPTANCE.md` §a.1/§c.2；详见 `docs/EVALUATION.md` §7。
+来源：`docs/8of10_ACCEPTANCE.md` §a.1/§c.2；详见 `docs/EVALUATION.md` §7。
 
-- `etec`=FIXED_VECTOR、`event_no_etec`=QEMR（`benchmarks/longmemeval/run.py:153-158`，9of10 报告原文记作 `run.py:153-158`）→ 既有"etec vs event_no_etec"对照同时混入"ETEC 开/关"与"检索策略 QEMR/FIXED_VECTOR"两因素，不构成"只差 ETEC"的消融。
+- `etec`=FIXED_VECTOR、`event_no_etec`=QEMR（`benchmarks/longmemeval/run.py:153-158`，8of10 报告原文记作 `run.py:153-158`）→ 既有"etec vs event_no_etec"对照同时混入"ETEC 开/关"与"检索策略 QEMR/FIXED_VECTOR"两因素，不构成"只差 ETEC"的消融。
 - **ETEC 隔离主对照 = `full`（QEMR + ETEC on）vs `event_no_etec`（QEMR + ETEC off）**，只差 ETEC 存储/整合；`full` vs `etec` 为检索策略隔离（同 ETEC 存储）。本口径已写入 spec §3.3、§13 决议 1 与 `docs/EVALUATION.md` §7。
 - 在 ETEC 真实不可达的诊断结论下（§8.1），`full` vs `event_no_etec` 是 ETEC 隔离的唯一可用纯净对照，既有 multi-session 切片该对照 EM 逐题一致（Δ 0，CI [0,0]，§7）与机制诊断（SUPERSEDE 不触发则 ETEC 在检索侧无操作面）相互佐证。
 

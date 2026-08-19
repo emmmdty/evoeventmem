@@ -87,9 +87,34 @@ done
 mkdir -p "$RUN_DIR"
 
 if [[ "$RESUME_MODE" == "1" ]]; then
-    # Resume: run merge pass + finalize on existing run dir
+    # Resume: batch 1 already completed (5 samples + manifest exist). Re-run
+    # batches 2-10 in parallel with --resume-dir, then merge + finalize.
     echo ""
-    echo "=== Resume mode: re-merge existing per-sample files ==="
+    echo "=== Resume mode: launching batches 2-10 in parallel ==="
+    PIDS=()
+    for i in $(seq 1 $((N_BATCHES - 1))); do
+        BATCH="${BATCHES[$i]}"
+        echo "  Batch $((i+1)): $BATCH"
+        uv run python -m benchmarks.longmemeval.run \
+            --config "$CONFIG" \
+            --resume-dir "$RUN_DIR" \
+            --sample-ids $BATCH > "runs/publication/v2-batch$((i+1)).log" 2>&1 &
+        PIDS+=($!)
+    done
+
+    echo "Waiting for $((N_BATCHES - 1)) parallel batches..."
+    FAIL=0
+    for pid in "${PIDS[@]}"; do
+        if ! wait $pid; then
+            echo "  WARNING: process $pid failed"
+            FAIL=$((FAIL + 1))
+        fi
+    done
+    echo "Parallel batches done. Failures: $FAIL/$((N_BATCHES - 1))"
+
+    # Merge pass: read all per-sample files and rewrite shared artifacts
+    echo ""
+    echo "=== Merge pass: collecting all 50 samples into shared artifacts ==="
     time uv run python -m benchmarks.longmemeval.run \
         --config "$CONFIG" \
         --resume-dir "$RUN_DIR" 2>&1 | tail -10

@@ -97,7 +97,18 @@ for i in $(seq 0 $((N_BATCHES - 1))); do
         continue
     fi
     echo "  Batch $BATCH_NUM: $BATCH -> $SUB_DIR"
-    rm -rf "$SUB_DIR"
+    # In fresh mode, only nuke the sub-dir if it has no usable sample files.
+    # This preserves cached work from a previous interrupted run.
+    if [[ "$RESUME_MODE" != "1" ]] && [[ -d "${SUB_DIR}/samples" ]] && \
+       [[ -n "$(ls -A "${SUB_DIR}/samples" 2>/dev/null)" ]]; then
+        # Sub-dir has sample files — let run.py skip already-done samples
+        # and resume the rest. Just remove the stale manifest so run.py
+        # rebuilds it with the current git state.
+        rm -f "${SUB_DIR}/manifest.json" "${SUB_DIR}/summary.json" \
+              "${SUB_DIR}/finalized/FINALIZED.json"
+    else
+        rm -rf "$SUB_DIR"
+    fi
     uv run python -m benchmarks.longmemeval.run \
         --config "$CONFIG" \
         --run-dir "$SUB_DIR" \

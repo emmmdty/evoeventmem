@@ -159,3 +159,51 @@ O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_
 `full` vs `etec` 则是检索策略隔离（同 ETEC 存储）：`full` 用 QEMR、`etec` 用 FIXED_VECTOR。
 
 **理由**：(1) 控制变量法要求消融臂只差被消融因子，避免方法混杂（AGENTS.md 代码评审规则："Reject changes that mix benchmark methods under unequal model, context-budget, or retrieval-budget settings"）；(2) 在 ETEC 真实不可达的诊断结论下（`docs/8of10_ACCEPTANCE.md` §a.7），`full` vs `event_no_etec` 是 ETEC 隔离的唯一可用纯净对照，既有 multi-session 切片该对照 EM 逐题一致（Δ 0）与机制诊断（SUPERSEDE 不触发则 ETEC 在检索侧无操作面）相互佐证；(3) `etec` vs `event_no_etec` 对照不丢弃，但定位为"检索策略 + ETEC 两因素联合对照"，不作 ETEC 单因素结论。
+
+## test50-mimo-v2-factslot (n=50, mimo-v2.5, v3 prompt, 2026-08-19) — S2 in-progress, results pending
+
+**Status**: S2 v2-factslot 50-question run launched in background (PID 674612). The run uses the S4b-fixed embedding pipeline (CachedEmbeddingModel batching + OpenAICompatibleEmbeddingClient progressive-shrink + pre-warm at write time → p50 search latency 2,367 ms on the S4b 5-question verification, well under the 30,000 ms target). Results will be filled in by `uv run python -m benchmarks.mechanism.s2_diagnostics` once the run finalizes.
+
+**Pre-registered expectations**: None. Per `METHODOLOGY_CHANGE.md`'s negative-result framework, S2 does not pre-declare an expected SUPERSEDE count or EM delta. The run measures; the report states.
+
+**Same-model comparison**: v1 and v2 both use mimo-v2.5 as reader and extractor. v1 vs v2 EM comparison is permitted. Cross-model comparison against the 24-question deepseek-v4-flash run is forbidden (N8).
+
+**S4b vector_rag latency fix**: applied (see `src/evoeventmem/models/cache.py`, `src/evoeventmem/infra/openai_compatible.py`, `benchmarks/longmemeval/run.py`). The S4b fix moves the corpus-embedding cost from `search_latency_ms` (per-query) to `vector_index_ms` (per-sample write). The v2 search latency will therefore be directly comparable to v1 only if v1 used the same pre-warm (it did not — v1 ran on the un-pre-warmed code). The v2 `search_latency_ms` will be near-zero; the v2 `vector_index_ms` will be ~70-80s per sample. **This means v1 vs v2 search latency is NOT directly comparable; v1 vs v2 EM IS directly comparable (latency does not affect EM).**
+
+### v1 vs v2 EM comparison (filled in after run completes)
+
+| method         | v1 EM | v2 EM | Δ    |
+|----------------|-------|-------|------|
+| no_memory      | 0.00  | TBD   | TBD  |
+| full_context   | 0.00  | TBD   | TBD  |
+| vector_rag     | 0.56  | TBD   | TBD  |
+| event_no_etec  | 0.54  | TBD   | TBD  |
+| etec           | 0.52  | TBD   | TBD  |
+| full (flagship)| 0.46  | TBD   | TBD  |
+
+_No pre-declared expectation. Same model (mimo-v2.5). Cross-model comparison forbidden (N8)._
+
+### ETEC actions distribution (filled in after run completes)
+
+- v1 baseline (test50-mimo): SUPERSEDE = 0 (ETEC structurally unreachable on v1's v2-prompt extraction output).
+- v2 S2 measurement: SUPERSEDE = TBD (the S2 spec routes: 0 → S5 path A (negative-result paper); >0 → S3 (QEMR diagnosis + M2 stale-judge)).
+
+### fact_slot / valid_from / sentinel rates (filled in after run completes)
+
+- S1c 5-question baseline: effective fact_slot rate 60.3%, sentinel rate 39.7% (CONDITIONAL PASS — sentinel > 20% triggers spec fallback).
+- S2 50-question v2 measurement:
+  - fact_slot effective rate: TBD (spec floor: 50%; soft gate)
+  - valid_from non-empty rate: TBD (spec floor: 50%; soft gate)
+  - sentinel rate: TBD (spec ceiling: 20%; soft gate — ≥20% routes to S3/S5 decision, NOT back to S1c for prompt tweak #3)
+
+### Per-sample breakdown (filled in after run completes)
+
+_To be filled by `uv run python -m benchmarks.mechanism.s2_diagnostics --output ...`._
+
+### Routing after S2
+
+- If SUPERSEDE > 0 + EM翻盘 → S3 (QEMR diagnosis + M2 stale-judge; positive thesis).
+- If SUPERSEDE > 0 + EM不翻盘 → S3 (QEMR root cause; middle-route thesis).
+- If SUPERSEDE = 0 → S5 path A (negative-result paper framing). S3 still runs to explain QEMR failure.
+- If sentinel rate ≥ 20% on 50 questions → do NOT re-tune prompt in S2; route to S3/S5 (AGENTS.md anti-fishing rule).
+- If fact_slot effective rate < 50% on 50 questions → spec fallback (re-evaluate 50% threshold on 50 questions, route to S3).

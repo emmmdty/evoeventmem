@@ -5,10 +5,10 @@
 ## 1. 一句话简历版本（30 秒电梯陈述）
 
 **中文版**：
-> 设计并实现了一个框架无关的 Agent 时序事件记忆服务：事件以"证据约束 + 时间有效区间 + 合并谱系"存储，检索采用按查询意图自适应的混合策略（向量+时序+图）。核心主张是"证据约束能防止错误记忆合并"，通过显式 ADD/MERGE/SUPERSEDE/REJECT 决策验证，在 LongMemEval/LoCoMo 基准上完成了全流程评测工程。**诚实结果**：vs `vector_rag`（公平 RAG 基线）flagship `full` 比 `vector_rag` 贵 41% 且 EM 更低（test50-mimo n=50：`full`=0.46 vs `vector_rag`=0.56；LoCoMo n=1986：`full`=0.0634 vs `vector_rag`=0.0861，p=0.000）；vs `full_context`（trivial 基线，把全部历史塞进 prompt）省约 96.5% 输入 token（仅供参照）。机制级证据链保留：溯源 100%、0 分修复 10→4、失败归因 33/33 复核。整改方案见 `docs/REMEDIATION_SPEC.md`。
+> 设计并实现了一个框架无关的 Agent 时序事件记忆服务（EvoEventMem），含两个研究贡献：ETEC（证据约束时态整合，显式 ADD/MERGE/SUPERSEDE/REJECT 决策）和 QEMR（查询自适应混合检索，向量+时序+图）。整改 S0→S5 闭环后定位**分支 C 中间路线**：ETEC 的 SUPERSEDE 在真实 LongMemEval 数据上**可达**（109 fires across 40/50 samples，第一次在真实数据触发，四重 gate 可达性 PASS，replay/online 一致）但**不足以提升整体准确率**（`full` flagship EM=0.48 仍低于 `vector_rag`=0.56，Δ −0.08）。S3 三层机制级根因诊断定位到 router 误路由（500 题准确率 38% < 80% 阈值，**可修复**，future-work）+ operating surface 太窄（M2 stale-judge 74% tie，**结构性**——single-session-user 无时间显著性答案可改 reader 可见值），排除权重 profile（`qemr` 0.48 ≥ 全部消融臂）与 SUPERSEDE 消费（0% full-stale）。正面贡献是基础设施级：100% provenance 覆盖率、33/33 失败归因、不可篡改 FINALIZED.json、三层机制级根因诊断。**不声称翻盘 / ETEC 有效 / QEMR 有效**。详见 `docs/REMEDIATION_FINAL_REPORT.md`。
 
 **英文版**：
-> Built a framework-agnostic temporal event-memory service for agents: memories carry enforced evidence provenance, validity intervals, and merge lineage; retrieval adapts per query intent across vector/temporal/graph signals. Core thesis: evidence constraints prevent erroneous memory consolidation — validated via explicit ADD/MERGE/SUPERSEDE/REJECT decisions and a full evaluation pipeline on LongMemEval/LoCoMo. **Honest result**: vs `vector_rag` (fair RAG baseline), flagship `full` is 41% more expensive *and* lower EM (test50-mimo n=50: `full`=0.46 vs `vector_rag`=0.56; LoCoMo n=1986: `full`=0.0634 vs `vector_rag`=0.0861, p=0.000); vs `full_context` (trivial baseline, stuffing full history into prompt) ~96.5% input-token savings (reference only). Mechanism-level evidence retained: 100% provenance coverage, 10→4 zero-score repair, 33/33 reviewed failure attribution. Remediation plan in `docs/REMEDIATION_SPEC.md`.
+> Built a framework-agnostic temporal event-memory service (EvoEventMem) with two research contributions: ETEC (evidence-constrained temporal consolidation with explicit ADD/MERGE/SUPERSEDE/REJECT decisions) and QEMR (query-adaptive hybrid retrieval across vector/temporal/graph signals). After the S0→S5 remediation closure, the honest framing is **branch C (intermediate route)**: ETEC's evidence-constrained SUPERSEDE is **reachable on real LongMemEval data** (109 fires across 40/50 samples, first time on real data, four-gate reachability PASS, replay/online consistent) but **insufficient to lift overall `full` EM above `vector_rag`** (0.48 vs 0.56, Δ −0.08). S3's three-layer mechanism-level root-cause diagnosis localized the failure to router mis-routing (full-500 accuracy 38% < 80% threshold, **fixable**, future work) + operating-surface narrowness (M2 stale-judge 74% tie, **structural** — single-session-user questions have no temporal-salient answer for consolidation to change), ruling out the weight profile (`qemr` 0.48 ≥ all ablation arms) and SUPERSEDE consumption (0% full-stale). Infrastructure contributions: 100% provenance coverage, 33/33 failure attribution, tamper-proof FINALIZED.json, three-layer mechanism diagnosis. Does **not** claim thesis翻盘 / ETEC有效 / QEMR有效. See `docs/REMEDIATION_FINAL_REPORT.md`.
 
 ## 2. 差异化叙事的三个支柱（都经得起拷问）
 
@@ -128,12 +128,11 @@
 **项目名**：EvoEventMem —— 证据约束的 Agent 时序事件记忆服务
 
 **要点**：
-1. 实现框架无关记忆服务：事件存储（证据+有效区间+合并谱系）、查询自适应混合检索（向量+时序+图）、显式合并决策（ADD/MERGE/SUPERSEDE/REJECT）
-2. 验证"证据约束"的机制价值：溯源覆盖率 100%、merge gate 修复 0 分格 10→4、33/33 失败归因复核（主因 reader 输出精度，非检索失效）
-3. 完整评测工程：LongMemEval/LoCoMo 双基准（LongMemEval 有 finalized 内容寻址产物，LoCoMo 为 1986 题 legacy 主 run）、统一预算无泄漏、6 因子消融（全部 finalized）、失败分类复核、不可变产物
-4. 效率证据（诚实）：LoCoMo 记忆方法 `full` 200 tokens/query vs `full_context` 4102（vs trivial 基线省约 96.5% 输入 token，仅供参照）；**vs 公平 RAG 基线 `vector_rag` 142 tokens/query，`full` 反而贵 41% 且 EM 更低**（LoCoMo `full`=0.0634 vs `vector_rag`=0.0861，p=0.000；test50-mimo `full`=0.46 vs `vector_rag`=0.56）。
-5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）
-6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）
+1. 实现框架无关记忆服务：事件存储（证据+有效区间+合并谱系）、查询自适应混合检索（向量+时序+图）、显式合并决策（ADD/MERGE/SUPERSEDE/REJECT）。
+2. 两个研究贡献：ETEC（证据约束时态整合）+ QEMR（查询自适应混合检索）。整改 S0→S5 闭环，**分支 C 中间路线**定位：ETEC 的 SUPERSEDE 在真实 LongMemEval 数据上**可达**（109 fires across 40/50 samples，第一次在真实数据触发，四重 gate 可达性 PASS，replay/online 一致）但**不足以提升整体准确率**（`full` flagship EM=0.48 仍低于 `vector_rag`=0.56，Δ −0.08）。
+3. S3 三层机制级根因诊断定位根因：router 误路由（500 题准确率 38% < 80% 阈值，**可修复**，future-work，N9 scope）+ operating surface 太窄（M2 stale-judge 74% tie，**结构性**——single-session-user 无时间显著性答案可改 reader 可见值）；排除权重 profile（`qemr` 0.48 ≥ `no_temporal`/`no_graph`/`uniform` 全部消融臂）与 SUPERSEDE 消费（0% full-stale）。
+4. 基础设施级贡献：溯源覆盖率 100%、33/33 失败归因复核、不可篡改 FINALIZED.json、三层机制级根因诊断、离线 `deterministic_fake` 复现配置（`configs/longmemeval/offline10.toml`，benchmark 运行零网络调用）。
+5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）。
+6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）。
 
-**诚实红线**：不声称"端到端 QA 提升"——24 样本上 `full` vs `vector_rag` 无正向显著差异；
-交付物是机制证据链 + 可复现产物。
+**诚实红线**：**不声称翻盘 / ETEC 有效 / QEMR 有效**——分支 C 是"可达但不足以提升"。整改定稿见 `docs/REMEDIATION_FINAL_REPORT.md`，S3 根因见 `docs/QEMR_FAILURE_DIAGNOSIS.md`，独立审查见 `docs/STAGE4a5_REVIEW.md`。**不跨模型对比**：v1 vs v2 都用 mimo-v2.5（同 4096 预算，可对比）；24 题 deepseek-v4-flash run 已停服、禁止与 mimo-v2.5 对比（AGENTS.md N8）。

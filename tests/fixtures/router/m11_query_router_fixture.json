@@ -39,6 +39,48 @@
       "note": "Profile fact lookup."
     },
     {
+      "case_id": "semantic_what_did_i",
+      "query": "What degree did I graduate with?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: what + noun + did + subject (LongMemEval single-session-user pattern)."
+    },
+    {
+      "case_id": "semantic_where_did_i",
+      "query": "Where did I redeem a $5 coupon?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: where did + subject (LongMemEval single-session-user pattern)."
+    },
+    {
+      "case_id": "semantic_how_many",
+      "query": "How many playlists do I have on Spotify?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: how many + noun + do + subject."
+    },
+    {
+      "case_id": "semantic_how_much",
+      "query": "How much did I spend on a designer handbag?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: how much + did + subject."
+    },
+    {
+      "case_id": "semantic_how_long_measurement",
+      "query": "How long is my daily commute to work?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: how long is (measurement, not temporal ordering)."
+    },
+    {
+      "case_id": "semantic_what_attribute",
+      "query": "What breed is my dog?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: what + attribute noun (breed)."
+    },
+    {
+      "case_id": "semantic_my_previous",
+      "query": "What was my previous occupation?",
+      "expected_intent": "semantic",
+      "note": "Strong fact cue: my previous + noun."
+    },
+    {
       "case_id": "temporal_move_date",
       "query": "When did Caroline move to Seattle?",
       "expected_intent": "temporal",
@@ -55,6 +97,12 @@
       "query": "How long did the project take?",
       "expected_intent": "temporal",
       "note": "Duration question."
+    },
+    {
+      "case_id": "knowledge_update_used_to",
+      "query": "What tool did I used to use before switching?",
+      "expected_intent": "temporal",
+      "note": "Knowledge-update cue: 'used to' indicates a prior value."
     },
     {
       "case_id": "graph_relation",

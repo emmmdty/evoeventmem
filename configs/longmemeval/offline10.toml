@@ -1,0 +1,44 @@
+schema_version = "longmemeval.config.v1"
+run_id_prefix = "m13-longmemeval-offline10"
+dataset_path = "tests/fixtures/longmemeval/oracle_tiny.json"
+methods = ["no_memory", "full_context", "vector_rag", "event_no_etec", "etec", "full"]
+provider = "deterministic_fake"
+max_input_tokens = 4096
+max_extraction_tokens = 262144
+max_candidates_per_source = 128
+max_items_per_source = 8
+sample_limit = 10
+
+# Offline / no-network reproducibility config (S4a, spec Stage 4a Step A2).
+#
+# The deterministic_fake provider builds in-memory chat + embedding models
+# only and makes ZERO network calls during the benchmark run (see
+# benchmarks/common/providers.py: build_model_bundle / _build_chat /
+# _build_embedding). It is a placeholder model: predictions are fixed
+# strings, so EM is 0.0 by design. The goal of this config is pipeline
+# reachability / no-network reproducibility, not accuracy.
+#
+# Dataset: the committed `tests/fixtures/longmemeval/oracle_tiny.json`
+# fixture (n=1, tracked by git — no download needed for a fresh clone).
+# `sample_limit = 10` is a cap; the run processes 1 sample because that
+# is all the committed fixture contains, and completes in well under a
+# second. For a 10-sample offline run on the real LongMemEval-S dataset
+# instead, set `dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"`
+# after a one-time `python scripts/data/download_longmemeval.py --variant s`
+# fetch (the benchmark run itself still makes zero network calls; the
+# real-samples variant takes ~20 min because real LongMemEval haystacks
+# are large — see docs/EVALUATION.md §"Model pinning + reproducibility").
+#
+# Same 6 methods + same 4096-token budget as the production test50-mimo
+# run (configs/longmemeval/test50-mimo.toml), so the run exercises the
+# full extraction -> consolidation -> retrieval -> reader path end-to-end.
+
+[reader]
+model_id = "deterministic-local-fake-reader"
+
+[extractor]
+model_id = "deterministic-local-fake-extractor"
+
+[embedding]
+model_id = "deterministic-local-embedding"
+

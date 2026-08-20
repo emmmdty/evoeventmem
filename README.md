@@ -36,39 +36,42 @@ Agent Runtime 负责规划、工具调用和执行；本项目负责记忆写入
   `runs/main` 产物（1986 题主 run，尚未升级到 finalized 管线）；
 - 生产服务：FastAPI + PostgreSQL/pgvector（asyncpg 池）、多租户隔离（tenant/user/session）、fail-closed 降级、可观测性、Docker Compose。
 
-评测结论（当前口径，全部数字可溯源到 `runs/` 产物）：
+**整改闭环（S0→S5，分支 C 中间路线，2026-08-20）**：S0 诚信止血 → S1a/S1b/S1c 修 ETEC 第一道闸门（schema + v3 prompt + required fact_slot）→ S4b 修 vector_rag 延迟 → S2 50 题 v2 run → S3 QEMR 失效根因诊断 + M2 stale-judge → **S4a 可复现性 config + S5 定稿**。详见 [`docs/REMEDIATION_FINAL_REPORT.md`](docs/REMEDIATION_FINAL_REPORT.md)（定稿）+ [`docs/QEMR_FAILURE_DIAGNOSIS.md`](docs/QEMR_FAILURE_DIAGNOSIS.md)（S3 根因）。
 
-- **机制级强结果（24 样本小样本闭环）**：证据溯源覆盖率 100%、0 分格修复 10→4（merge gate + 预算满装）、LoCoMo 记忆方法 vs `full_context`（trivial 基线，把全部历史塞进 prompt）省约 96.5% 输入 token（**注意：vs `vector_rag`（公平 RAG 基线）`full` 反而贵 41% 且 EM 更低，见下表**）；33/33 失败人工复核（主因是 reader 精确输出，真正检索/提取/预算失效仅 7/33）。
-- **O09 机制诊断增量（2026-08-18，见 [`docs/8of10_ACCEPTANCE.md`](docs/8of10_ACCEPTANCE.md)）**：
-  - SUPERSEDE 诊断：真实数据 0/32 触发（R1 提取不写 fact_slot → R1b 不写 valid_from point-interval 不重叠 → R3 LLM 输出形态三层级联屏障），同代码在受控夹具上 4/12 SUPERSEDE（`runs/mechanism/etec_stress/…/summary.json`）→ 真实不可达根因是提取管线 metadata 缺口，非 consolidation 逻辑 bug；interval 算子 500 题确定性预筛 16 例 interval（15 BETWEEN + 1 AT，3.2%），BEFORE/AFTER=0（`runs/mechanism/router_screen/router-screen.json`）。
-  - 大样本一致性：4 个 finalized 24 样本 run（n=96）provenance 100%（Wilson 95% CI 两两重叠于 1.0）+ 记忆方法预算饱和 1.0 + SUPERSEDE=0 全 run + 失败归因分布结构同构（`runs/mechanism/consistency/consistency.json`）；1986-LoCoMo 效率 96.5% vs `full_context`（trivial 基线；vs `vector_rag` `full` 反而贵 41%）与 r2 复核"reader 主导错误"方向一致。500 run 配额阻断待续（网关 429/403），预注册 §6.3 末段兜底路径 + 功效论证已交付（n=500 最小可检测效应 ±0.018–0.039 > 观测 0.005–0.014，500 run 无显著性是预期内）。
-  - 对照臂口径修正：`etec`=FIXED_VECTOR、`event_no_etec`=QEMR（`benchmarks/longmemeval/run.py:153-158`，8of10 报告原文记作 `run.py:153-158`）→ 既有"etec vs event_no_etec"混入检索策略因素；**ETEC 隔离主对照 = `full` vs `event_no_etec`（同 QEMR，只差 ETEC 存储/整合）**，已写入 spec §3.3/§13 决议 1 与 `docs/EVALUATION.md` §7。
-- **无端到端 QA 增益声明**：`full` vs `vector_rag` 在 24 样本上无正向显著差异；方法论定位是"机制证据链 + 可复现产物"，不是绝对分数竞争。详见 `docs/METHODOLOGY_CHANGE.md`（含大样本一致性验证的定位）。
+评测结论（v2 S2/S3，全部数字可溯源到 `runs/` 产物）：
 
-## test50-mimo (n=50, mimo-v2.5, 2026-08-18)
+- **分支 C thesis（中间路线）**：ETEC 的证据约束 SUPERSEDE 在真实数据上**可达但不足以提升整体准确率**——`full`（ETEC+QEMR flagship）EM=0.48 仍低于 `vector_rag`=0.56（Δ −0.08）；SUPERSEDE=109 在 40/50 样本上触发（v1 为 0，v3 required-fact-slot prompt 闭合 R1+R1b 屏障后首次在真实数据触发），四重 gate 可达性 PASS（非 XFAIL）。两个已识别根因（均非权重 profile / SUPERSEDE 消费）：(a) router 误路由（500 题准确率 38% < 80% 阈值，**可修复**，留 future-work，N9 scope）；(b) operating-surface 太窄（50 题全为 `single-session-user`，M2 stale-judge 74% tie，consolidation 无时间显著性答案可改 reader 可见值，**结构性**）。
+- **v1 vs v2 诚实 nuance**：`full` vs `event_no_etec` gap 从 v1 的 −0.08（ETEC 有害）收敛到 v2 的 0.00（ETEC 中性），但收敛是通过 `event_no_etec` 降 0.06（0.54→0.48）实现的，不是 `full` 升 0.02（0.46→0.48）实现的。v3 prompt 让 ETEC **中性化**，不是**有效化**。
+- **正面贡献（基础设施，非准确率声明）**：(1) 100% provenance 覆盖率基础设施；(2) 33/33 失败人工复核归因；(3) 不可篡改 `FINALIZED.json`；(4) S3 三层机制级根因诊断（router 38% / weights qemr≥ablations / M2 74% tie → 定位到 router 规则 + operating surface，排除权重 + SUPERSEDE 消费）。
+- **不声称翻盘 / ETEC 有效 / QEMR 有效**（分支 C 是"可达但不足以提升"；AGENTS.md 代码评审规则 + `METHODOLOGY_CHANGE.md` 预注册框架）。任何强 claim 需 p-value + CI 支撑，本阶段无新实验不产生新 p-value。
+- **跨模型对比禁止**：v1 vs v2 都用 mimo-v2.5（同 4096 预算，可对比）；24 题 deepseek-v4-flash run 已停服、不可复现、**禁止与 mimo-v2.5 对比**（AGENTS.md N8）。
 
-> 本节为 S0 整改（诚信止血）补披露——`test50-mimo` 是项目最大的 finalized LongMemEval run（50 题，FINALIZED 在 `runs/publication/m13-longmemeval-test50-mimo/`，git `e585d7e` 干净），与 8of10 验收文档同一天生成，但在所有叙事文档中缺席。整改 spec `docs/REMEDIATION_SPEC.md` S0 步骤 2 要求主动披露。
+## test50-mimo-v2-factslot (n=50, mimo-v2.5, v3 prompt, 2026-08-19, 整改 S2)
 
-完整指标表（数字源自 `runs/publication/m13-longmemeval-test50-mimo/summary.json`）：
+> S2 v2 run（FINALIZED 在 `runs/publication/m13-longmemeval-test50-mimo-v2-factslot/`，git `17b1014` 干净）。S3 权重消融产物在同目录的 `m13-longmemeval-test50-mimo-v2-ablation/` 子目录。整改 spec `docs/REMEDIATION_SPEC.md` S2/S3/S5。
 
-| method         | EM    | token_f1 | evidence_recall | tokens/query | p50 search ms | p50 write ms |
-|----------------|-------|----------|------------------|--------------|---------------|--------------|
-| no_memory      | 0.00  | 0.0050   | 0.0000           | 10.56        | 0.0           | -            |
-| full_context   | 0.00  | 0.0107   | 0.0000           | 4094.86      | 3.4           | -            |
-| vector_rag     | 0.56  | 0.8105   | 1.0000           | 4072.50      | 437,556.8     | 45.1         |
-| event_no_etec  | 0.54  | 0.7264   | 0.9800           | 4082.66      | 2,386.8       | 36.2         |
-| etec           | 0.52  | 0.7060   | 0.9800           | 4083.00      | 2,340.3       | 130,185.2    |
-| full (flagship)| 0.46  | 0.6869   | 0.9800           | 4080.92      | 2,339.1       | 130,185.2    |
+v1 vs v2 EM 对比表（同模型 mimo-v2.5，同 4096 预算，可对比；24 题 deepseek-v4-flash run 不对比——N8）：
+
+| method         | v1 EM | v2 EM | Δ     |
+|----------------|-------|-------|------|
+| no_memory      | 0.00  | 0.00  | +0.00 |
+| full_context   | 0.00  | 0.00  | +0.00 |
+| vector_rag     | 0.56  | 0.56  | +0.00 |
+| event_no_etec  | 0.54  | 0.48  | -0.06 |
+| etec           | 0.52  | 0.46  | -0.06 |
+| full (flagship)| 0.46  | 0.48  | +0.02 |
 
 **诚实解读**：
 
-- `full` (ETEC+QEMR flagship) 是所有记忆方法里最差（EM=0.46），比 `vector_rag` (0.56) 低 10 个点；
-- 拆掉 ETEC（`full` → `event_no_etec`）反而 +8 EM（0.46→0.54），说明 ETEC 在真实数据上有害；
-- 拆掉 QEMR（`full` → `etec`）反而 +6 EM（0.46→0.52），说明 QEMR 在真实数据上有害；
-- ETEC write p50=130,185ms（约 130s）是 consolidation 开销；
-- `vector_rag` p50 search=437,556ms（约 7.3 分钟）是 SSH tunnel + 串行 embedding 的病态延迟（整改 spec S4b 修复，必须先于 S2 重跑）；
-- **跨模型对比禁止**：50 题 run 用 mimo-v2.5 reader；既有 24 题 finalized run 用 deepseek-v4-flash（已停服、不可复现、**禁止跨模型对比**——AGENTS.md 禁止不等模型下 benchmark 对比）；
-- 整改方案见 `docs/REMEDIATION_SPEC.md`（S1a/S1b 修 ETEC 第一道闸门 → S2 重跑诊断 → S3 QEMR 失效根因）。
+- `full` (ETEC+QEMR flagship) EM=0.48，仍低于 `vector_rag` (0.56) 0.08 个点；S2 v3 prompt 让 `full` +0.02（微升，非翻盘）。
+- 拆掉 ETEC（`full` → `event_no_etec`）v2 上 Δ 0.00（0.48 vs 0.48，ETEC 中性；v1 是 Δ −0.08 ETEC 有害）；gap 收敛由 `event_no_etec` 降 0.06 驱动，非 `full` 升 0.02 驱动。
+- **ETEC actions（v2）**：`ADD=7188, MERGE=1770, REJECT=352, SUPERSEDE=109`（across 40/50 samples）。SUPERSEDE=109 是**第一次在真实数据触发**（v1 为 0），四重 gate 可达性 PASS（非 XFAIL）；replay/online 一致性：109 SUPERSEDE 完全一致，2/50 样本 minor ADD↔MERGE 重分类（known limitation）。
+- **fact_slot / sentinel（v2，9419 events）**：有效 fact_slot=66.8% (6295/9419) ✅ ≥ 50% floor；valid_from=66.8% ✅；sentinel=33.2% (3124/9419) ⚠️ ≥ 20% ceiling（known weakness，写进 limitations）。
+- **S3 router 诊断**：全 500 题 router 准确率 38% (190/500) < 80% N9 阈值；50 题切片 4% (2/50，全为 `single-session-user`，40/50 误路由到 HYBRID 权重中性，8/50 到 TEMPORAL 把 dense 权重从 1.0 降到 0.3)。`_FACT_RE` 不匹配 LongMemEval 的 "what + noun + did + subject + verb" 句式。
+- **S3 权重消融**（同模型同预算，只差 retrieval weight）：`qemr`=0.48 ≥ `no_temporal`=0.46 / `no_graph`=0.48 / `uniform`=0.42（权重 profile 不是根因，不修）。
+- **S3 M2 stale-judge**（judge=minimax-m3 ≠ reader mimo-v2.5，31 差异预测样本）：tie 74.2% (23/31)、event_no_etec less-stale 19.4% (6/31，correctness 混淆)、full less-stale 3.2% (1/31)、parse-error 3.2% (1/31)。**retrieval 未忽略 SUPERSEDE；operating surface 窄**。
+- **跨模型对比禁止**：v1 vs v2 都用 mimo-v2.5 reader+extractor（同 4096 预算，可对比）；既有 24 题 finalized run 用 deepseek-v4-flash（已停服、不可复现、**禁止跨模型对比**——AGENTS.md N8）。
+- 整改定稿见 [`docs/REMEDIATION_FINAL_REPORT.md`](docs/REMEDIATION_FINAL_REPORT.md)（分支 C）；S3 根因见 [`docs/QEMR_FAILURE_DIAGNOSIS.md`](docs/QEMR_FAILURE_DIAGNOSIS.md)；可复现性见 [`docs/EVALUATION.md`](docs/EVALUATION.md) §6.5。
 
 ## LoCoMo (n=1986, legacy run)
 
@@ -182,9 +185,10 @@ docs/                   架构、评测、数据和求职材料
 
 | 条目 | 状态 |
 |---|---|
-| 双基准 | ✅ LongMemEval（finalized 内容寻址）；⚠️ LoCoMo 仅有 legacy `runs/main` 产物（M14 run，未升级 finalized 管线） |
-| 方法公平对比 | ✅ 24 样本 6 方法（`runs/publication/longmemeval-test20-6m`）+ LoCoMo 1986 题 |
-| ETEC/QEMR 消融 | ✅ 六因子 `runs/ablation/`（全部 finalized）；⚠️ ETEC SUPERSEDE 真实数据 0/32（R1+R1b+R3 级联屏障）vs 受控夹具 4/12（`runs/mechanism/etec_stress/`、`runs/mechanism/evala/metrics.partial.json`），机制诊断见 `docs/8of10_ACCEPTANCE.md` §a |
-| 指标报告 | ✅ M15 内容寻址报告（EM/token_f1/evidence_f1/tokens）；⚠️ stale-memory error 机制诊断完成（SUPERSEDE 在真实数据结构性不可达，M2 stale judge 因配额未跑、由诊断隐含无 with/without 差异），见 `docs/8of10_ACCEPTANCE.md` §a/§b 风险 |
-| 复现 | ✅ smoke config + 不可变产物 + 内容寻址分析（`--config`/`--resume-dir` 支持断点续跑）；✅ 4 finalized 24 样本 run（n=96）一致性重算（`runs/mechanism/consistency/consistency.json`，sha256:5764711a…）；⚠️ 500 run `configs/longmemeval/main500.toml` 已入库、网关配额阻断待续 |
+| 双基准 | ✅ LongMemEval（finalized 内容寻址：v1 `m13-longmemeval-test50-mimo/` + v2 `m13-longmemeval-test50-mimo-v2-factslot/` + S3 消融 `m13-longmemeval-test50-mimo-v2-ablation/`）；⚠️ LoCoMo 仅有 legacy `runs/main` 产物（M14 run，未升级 finalized 管线） |
+| 方法公平对比 | ✅ 50 题 6 方法 v1+v2 同模型（mimo-v2.5，同 4096 预算）；LoCoMo 1986 题；24 题 deepseek-v4-flash run 已停服、禁止跨模型对比（N8） |
+| ETEC/QEMR 消融 | ✅ 六因子 `runs/ablation/`（全部 finalized）；✅ S3 QEMR 权重消融三臂（`no_temporal`/`no_graph`/`uniform`，同模型同预算，`qemr` 0.48 ≥ 全部）；✅ ETEC SUPERSEDE 真实数据 v2=109 across 40/50 samples（v1=0，v3 required-fact_slot 闭合 R1+R1b 屏障后首次触发），四重 gate 可达性 PASS（非 XFAIL） |
+| 指标报告 | ✅ M15 内容寻址报告（EM/token_f1/evidence_f1/tokens）；✅ S3 M2 stale-judge 已跑（judge=minimax-m3 ≠ reader mimo-v2.5，31 缓存 judge 调用，74% tie / 0% full-stale → retrieval 未忽略 SUPERSEDE，operating surface 窄） |
+| 整改闭环 | ✅ S0→S5 全链路完成（分支 C 中间路线）；定稿 [`docs/REMEDIATION_FINAL_REPORT.md`](docs/REMEDIATION_FINAL_REPORT.md)，S3 根因 [`docs/QEMR_FAILURE_DIAGNOSIS.md`](docs/QEMR_FAILURE_DIAGNOSIS.md)，独立审查 [`docs/STAGE4a5_REVIEW.md`](docs/STAGE4a5_REVIEW.md) |
+| 复现 | ✅ offline `configs/longmemeval/offline10.toml`（`deterministic_fake`，benchmark 运行零网络调用）；✅ smoke config + 不可变产物 + 内容寻址分析（`--config`/`--resume-dir` 断点续跑）；✅ `.env.example` 全字段 + `.env` 不追踪；⚠️ 500 run `configs/longmemeval/main500.toml` 已入库、网关配额阻断待续（future-work，分支 C 不要求补跑） |
 | MCP 集成 | ⚠️ implemented, not deployed（`adapters/opencode/` 代码存在，未上线） |

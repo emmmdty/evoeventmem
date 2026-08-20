@@ -9,12 +9,12 @@
 ## 🎯 第一层：30 秒电梯陈述（先记住这个）
 
 **中文**：
-> 我做了一个框架无关的 Agent 长期记忆服务。它解决一个具体问题：Agent 的"记忆"会过期、会冲突、无法溯源。我的核心设计是"证据约束"——每条记忆必须指向精确的原始证据，合并或取代必须显式决策。为了验证这个设计，我在 LongMemEval（Long-term Memory Evaluation benchmark）和 LoCoMo（Long Conversation Memory benchmark）上做了完整评测，并实现了生产级部署（PostgreSQL/pgvector/多租户隔离）。
+> 我做了一个框架无关的 Agent 长期记忆服务。它解决一个具体问题：Agent 的"记忆"会过期、会冲突、无法溯源。我的核心设计是"证据约束"——每条记忆必须指向精确的原始证据，合并或取代必须显式决策（ADD/MERGE/SUPERSEDE/REJECT）。我实现了两个研究贡献：ETEC（证据约束时态整合）和 QEMR（查询自适应混合检索）。在 LongMemEval 50 题 single-session-user 切片上的诚实结果：ETEC 的 SUPERSEDE 在真实数据上**可达**（109 fires across 40/50 samples，第一次在真实数据触发，四重 gate 可达性 PASS），但**不足以提升整体准确率**——`full`（flagship）EM=0.48 仍低于 `vector_rag`=0.56（Δ −0.08）。S3 机制级根因诊断定位到两个原因：(a) router 误路由（500 题准确率 38% < 80% 阈值，**可修复**，留 future-work）；(b) operating surface 窄（M2 stale-judge 74% tie，consolidation 无时间显著性答案可改 reader 可见值，**结构性**）。正面贡献是基础设施级：100% provenance 覆盖率、33/33 失败归因、不可篡改 FINALIZED.json、三层机制级根因诊断。详见 `docs/REMEDIATION_FINAL_REPORT.md`（分支 C 中间路线）。
 
 **英文**（备选）：
-> I built a framework-agnostic long-term memory service for AI agents. It addresses three failure modes of agent memory: staleness, contradiction, and untraceability. The core design is "evidence constraint" — every memory must point to exact source evidence, and consolidation (merge/supersede) requires explicit decisions. I evaluated the design end-to-end with null/negative result on flagship config — `full` (ETEC+QEMR) is the worst memory method on LongMemEval 50-question run (EM=0.46, vs `vector_rag` 0.56) and significantly worse than `vector_rag` on LoCoMo 1986 questions (0.0634 vs 0.0861, p=0.000); mechanism-level evidence (100% provenance coverage, 33/33 failure attribution, tamper-proof FINALIZED.json) is the real contribution, but the accuracy thesis is not supported by the data. Production-grade deployment: PostgreSQL/pgvector, multi-tenant isolation.
+> I built a framework-agnostic long-term memory service for AI agents. It addresses three failure modes of agent memory: staleness, contradiction, and untraceability. The core design is "evidence constraint" — every memory must point to exact source evidence, and consolidation (merge/supersede) requires explicit ADD/MERGE/SUPERSEDE/REJECT decisions. I built two research contributions: ETEC (evidence-constrained temporal consolidation) and QEMR (query-adaptive hybrid retrieval). On LongMemEval's 50-question single-session-user slice, the honest result is **branch C (intermediate route)**: ETEC's SUPERSEDE is **reachable on real data** (109 fires across 40/50 samples, first time, four-gate reachability PASS) but **insufficient to lift overall `full` EM above `vector_rag`** (0.48 vs 0.56, Δ −0.08). S3 mechanism-level root-cause diagnosis localized two contributors (neither is the weight profile nor the SUPERSEDE consumption): (a) router mis-routes 84% of factual lookups (full-500 accuracy 38%, **fixable**, future work); (b) operating surface too narrow (M2 stale-judge 74% tie, **structural** — single-session-user questions have no temporal-salient answer for consolidation to change). Infrastructure contributions: 100% provenance coverage, 33/33 failure attribution, tamper-proof FINALIZED.json, three-layer mechanism diagnosis. See `docs/REMEDIATION_FINAL_REPORT.md`.
 
-**记忆要点**：问题（过期/冲突/不可溯源）→ 设计（证据约束+显式决策）→ 验证（双基准+消融）→ 工程（生产部署）。
+**记忆要点**：问题（过期/冲突/不可溯源）→ 设计（证据约束+显式决策）→ 两个研究贡献（ETEC+QEMR）→ 诚实结果（SUPERSEDE 可达但不足以提升）→ 机制级根因（router 38% 可修 + surface 窄结构性）→ 正面贡献（provenance/归因/FINALIZED/三层诊断）。**不声称翻盘 / ETEC 有效 / QEMR 有效**（分支 C 是"可达但不足以提升"）。
 
 ---
 
@@ -243,7 +243,12 @@
 
 ### Q7："你的性能数据？"
 
-> 检索路径是纯数据库操作（pgvector HNSW），零 LLM 调用，毫秒级。写入路径的成本在 LLM 提取（可选规则提取器零成本）。效率数字有两组真实数据：LongMemEval 上所有方法都打满 4096 token 预算（等预算可比性成立）；LoCoMo 主 run（1986 题）上**vs 公平 RAG 基线 `vector_rag` 142 tokens/query：flagship `full` 200 tokens/query 反而贵 41% 且 EM 更低（`full`=0.0634 vs `vector_rag`=0.0861，p=0.000）；vs trivial 基线 `full_context` 4102 tokens/query：`full` 省约 96.5% 输入 token（仅供参照，Δ −3959.9，p<0.001）**。诚实地说：精确的 p95 延迟还没测完，这是我要补的数据。**（诚实承认未完成项，不编数据）**
+> 整改 S0→S5 闭环后的诚实结果（分支 C 中间路线，全部数字可溯源到 `runs/` 产物）：
+> - LongMemEval 50 题 v2 run（mimo-v2.5，4096 预算）：`full`（ETEC+QEMR flagship）EM=0.48，仍低于 `vector_rag`=0.56（Δ −0.08）。S2 v3 required-fact_slot prompt 让 `full` +0.02（0.46→0.48，微升非翻盘），且 gap 收敛由 `event_no_etec` 降 0.06 驱动而非 `full` 升 0.02 驱动——ETEC 中性化，不是有效化。
+> - ETEC SUPERSEDE 在真实数据首次触发：109 fires across 40/50 samples（v1 为 0），四重 gate 可达性 PASS（非 XFAIL），replay/online 一致。
+> - S3 三层机制级根因诊断（不声称翻盘 / ETEC 有效 / QEMR 有效）：router 准确率 38% < 80% 阈值（**可修复**，future-work，N9 scope）；权重消融 `qemr`=0.48 ≥ `no_temporal`/`no_graph`/`uniform`（权重 profile 不是根因，不修）；M2 stale-judge（judge=minimax-m3 ≠ reader）74% tie / 0% full-stale（retrieval 未忽略 SUPERSEDE，operating surface 窄）。
+> - 检索路径纯数据库操作（pgvector HNSW），零 LLM 调用，毫秒级。S4b 修了 v1 vector_rag 病态延迟（437s → ~2s）。诚实承认未测的：p95 延迟。
+> - 整改定稿见 `docs/REMEDIATION_FINAL_REPORT.md`，S3 根因见 `docs/QEMR_FAILURE_DIAGNOSIS.md`。**不跨模型对比**：v1 vs v2 都用 mimo-v2.5（可对比）；24 题 deepseek-v4-flash run 已停服、禁止与 mimo-v2.5 对比（N8）。
 
 ---
 
@@ -257,13 +262,18 @@
 | 提取方法（分块+确定性定位） | ✅ 完成 + 验证 | 方法论故事（90%→0%） |
 | 生产部署（pgvector/async/多租户/fail-closed） | ✅ 完成 + Compose/PG 集成测试 | 架构选型、隔离证明 |
 | 评测工程（无泄漏/统一预算/不可变产物） | ✅ 完成 | 公平性控制方法论 |
-| LongMemEval 跑批 | ✅ 完成（24 样本小样本闭环；机制级强结果） | 机制证据链（见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md`） |
+| LongMemEval 跑批 | ✅ 完成（50 题 v1+v2 同模型 run，S2 v2 + S3 消融 + M2 stale-judge；分支 C 中间路线） | 分支 C 诚实结果（SUPERSEDE 可达但不足以提升；机制级根因诊断） |
 | LoCoMo 跑批 | ✅ 完成（1986 题主 run） | 效率证据（vs `vector_rag` `full` 贵 41% 且 EM 更低；vs `full_context` trivial 基线省 96.5%，仅供参照） |
-| 6 因子消融 | ✅ 完成（`runs/ablation/` 全部 finalized） | 决策级诊断 + factor_leak 诚实披露 |
-| 最终分析报告 | ✅ 完成（3 份内容寻址 M15 报告，validate valid=true） | 配对 bootstrap、失败归因 33/33 复核 |
+| 6 因子消融 | ✅ 完成（`runs/ablation/` 全部 finalized）+ ✅ S3 QEMR 权重消融三臂（`qemr` 0.48 ≥ 全部） | 决策级诊断 + factor_leak 诚实披露 + S3 权重 sound 验证 |
+| 最终分析报告 | ✅ 完成（3 份内容寻址 M15 报告 + 整改定稿 `docs/REMEDIATION_FINAL_REPORT.md` + S3 根因 `docs/QEMR_FAILURE_DIAGNOSIS.md`） | 配对 bootstrap、失败归因 33/33 复核、S3 三层机制诊断 |
 | p95 延迟测量 | ⏳ 未做 | 讲为什么还没做 |
 
-**面试纪律**：任何"提升 X%"的说法，必须来自跑批完成后的真实数据。当前没有端到端 QA 增益声明——24 样本上 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ 为负，且受 run-to-run 非确定性影响）；50 题 test50-mimo run 上 `full`=0.46 是所有记忆方法里最差（`vector_rag`=0.56，Δ −0.10）；LoCoMo 1986 题上 `full` 显著劣于 `vector_rag`（0.0634 vs 0.0861，p=0.000）。能讲的是机制级强结果（溯源 100%、0 分修复 10→4、归因 33/33）。**效率数字诚实标注**：vs `vector_rag` `full` 贵 41% 且 EM 更低；vs `full_context` trivial 基线省 96.5%（仅供参照）。定位是"机制证据链 + 可复现产物"，不是"分数更高"。
+**面试纪律**：任何"提升 X%"的说法，必须来自跑批完成后的真实数据。整改 S0→S5 闭环后的诚实定位是**分支 C 中间路线**（"可达但不足以提升"，不声称翻盘 / ETEC 有效 / QEMR 有效）：
+- LongMemEval 50 题 v2 run：`full`=0.48 仍低于 `vector_rag`=0.56（Δ −0.08）；S2 v3 prompt 让 `full` +0.02（微升非翻盘），ETEC gap 收敛由 `event_no_etec` 降 0.06 驱动而非 `full` 升 0.02 驱动（ETEC 中性化，不是有效化）。
+- ETEC SUPERSEDE 在真实数据首次触发：109 fires across 40/50 samples（v1 为 0），四重 gate 可达性 PASS（非 XFAIL），replay/online 一致。
+- S3 三层机制诊断：router 38% 准确率（**可修复**，future-work）/ 权重 `qemr`≥ablations（不修）/ M2 74% tie 0% full-stale（retrieval 未忽略 SUPERSEDE，surface 窄）。
+- LoCoMo 1986 题：`full` 显著劣于 `vector_rag`（0.0634 vs 0.0861，p=0.000）。
+- 能讲的是机制级与基础设施级贡献：100% provenance 覆盖率、33/33 失败归因、不可篡改 FINALIZED.json、S3 三层根因诊断。详见 `docs/REMEDIATION_FINAL_REPORT.md`。**效率数字诚实标注**：vs `vector_rag` `full` 贵 41% 且 EM 更低；vs `full_context` trivial 基线省 96.5%（仅供参照）。定位是"机制证据链 + 可复现产物 + 分支 C 中间路线"，不是"分数更高"。
 
 ---
 

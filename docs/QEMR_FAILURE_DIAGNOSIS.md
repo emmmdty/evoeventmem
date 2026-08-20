@@ -111,7 +111,69 @@ _Artifact_: `runs/publication/m13-longmemeval-test50-mimo-v2-factslot/router_dia
 
 ## §2. Weight profile ablation (Step 2)
 
-_Pending — see Step 2 below._
+**Scope**: `src/evoeventmem/retrieval.py` adds three diagnostic
+`RetrievalStrategy` values (`QEMR_NO_TEMPORAL`, `QEMR_NO_GRAPH`,
+`QEMR_UNIFORM`) + `resolve_weights` branches. The production
+`QEMR_WEIGHT_PROFILES` dict is **not** modified. `benchmarks/mechanism/weight_ablation.py`
+re-runs only the `full` retrieval method on the v2 extraction snapshot under
+each strategy. Same reader (`mimo-v2.5`), same budget (4096), same embedding
+(`qwen3-embedding-0.6b`); only the QEMR weight profile differs
+(AGENTS.md anti-mixed-methods). The `strategy` field on every
+`QEMRRetrievalResult` makes each arm observable (no silent fallback).
+
+**Cache strategy**: a composite cache reads embeddings + extraction-time
+chat hits from the v2 run dir (read-only) and writes reader chat misses to
+the ablation dir. The v2 run dir is never mutated. Reader messages differ
+under ablation weights → reader cache misses → 150 fresh `mimo-v2.5` calls
+(3 arms × 50); a transient connection-reset outer retry wrapper kept all
+arms at 0 failures.
+
+### EM comparison (50 questions, same model / same budget)
+
+| arm | strategy | EM | scored | failed | n |
+|---|---|---|---|---|---|
+| v2 full (baseline) | qemr | 0.4800 | 50 | 0 | 50 |
+| no_temporal | qemr_no_temporal | 0.4600 | 50 | 0 | 50 |
+| no_graph | qemr_no_graph | 0.4800 | 50 | 0 | 50 |
+| uniform | qemr_uniform | 0.4200 | 50 | 0 | 50 |
+
+_No pre-declared expectation (negative-result framework,
+`METHODOLOGY_CHANGE.md`)._
+
+### Findings
+
+1. **`qemr` (0.48) ≥ all ablations** — the production weight profile is the
+   best (or tied) on the 50-question slice. The weight profile is **not
+   over-fit** to this slice; removing any source does not help.
+2. **`qemr_no_temporal` (0.46) < `qemr` (0.48), Δ -0.02** — the temporal
+   source contributes a small positive on LongMemEval. This is the
+   **opposite** of the LoCoMo §9 finding (`no_temporal` 0.3654 >
+   `qemr` 0.3000). On LongMemEval single-session-user questions the
+   temporal-recency source is mildly helpful, not harmful.
+3. **`qemr_no_graph` (0.48) = `qemr` (0.48), Δ 0.00** — the graph source is
+   weight-neutral on this slice. (The 50 questions are all
+   `single-session-user`, so graph traversal has little surface; this is
+   not evidence that graph is useless in general, only that it is not the
+   bottleneck here.)
+4. **`qemr_uniform` (0.42) < `qemr` (0.48), Δ -0.06** — equal-weight fusion
+   underperforms the intent-specific profile. The query-adaptive weight
+   design buys +0.06 EM on this slice; it is not over-engineered.
+
+### §2 verdict
+
+- The QEMR weight profile is **not** the failure root cause: it beats or
+  ties every ablation arm, and the intent-specific design is +0.06 over
+  uniform. Weight-profile edits are **not** warranted.
+- The temporal source is mildly helpful (not harmful as in LoCoMo), so the
+  "ETEC temporal filter hurts retrieval" hypothesis is not supported on
+  this slice.
+- The bottleneck is elsewhere: §1 shows 38% router accuracy (SEMANTIC
+  questions mis-routed to TEMPORAL/HYBRID), and the absolute `full` EM
+  (0.48) still trails `vector_rag` (0.56) by 0.08 — pointing at the
+  retrieval pipeline structure and/or embedding quality, not the weights.
+
+_Artifact_: `runs/publication/m13-longmemeval-test50-mimo-v2-ablation/ablation_report.md`
++ `ablation_summary.json` + `ablation_<arm>.json` × 3.
 
 ## §3. Embedding model comparison (Step 3)
 

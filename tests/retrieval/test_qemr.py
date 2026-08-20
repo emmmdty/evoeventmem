@@ -124,6 +124,35 @@ def test_qemr_weights_are_hand_set_and_differ_by_intent() -> None:
     assert temporal != semantic
 
 
+def test_s3_ablation_strategies_zero_named_source_without_mutating_production() -> None:
+    # S3 Step 2: ablation strategies must zero the named source while leaving
+    # the production QEMR_WEIGHT_PROFILES dict and other sources untouched.
+    production_temporal = QEMR_WEIGHT_PROFILES[QueryIntent.TEMPORAL]["temporal"]
+    production_graph = QEMR_WEIGHT_PROFILES[QueryIntent.GRAPH]["graph"]
+
+    no_temporal = resolve_weights(RetrievalStrategy.QEMR_NO_TEMPORAL, QueryIntent.TEMPORAL)
+    assert no_temporal["temporal"] == 0.0
+    assert no_temporal["dense"] == QEMR_WEIGHT_PROFILES[QueryIntent.TEMPORAL]["dense"]
+    assert no_temporal["graph"] == QEMR_WEIGHT_PROFILES[QueryIntent.TEMPORAL]["graph"]
+    # production dict untouched
+    assert QEMR_WEIGHT_PROFILES[QueryIntent.TEMPORAL]["temporal"] == production_temporal
+
+    no_graph = resolve_weights(RetrievalStrategy.QEMR_NO_GRAPH, QueryIntent.GRAPH)
+    assert no_graph["graph"] == 0.0
+    assert no_graph["dense"] == QEMR_WEIGHT_PROFILES[QueryIntent.GRAPH]["dense"]
+    assert QEMR_WEIGHT_PROFILES[QueryIntent.GRAPH]["graph"] == production_graph
+
+
+def test_s3_uniform_ablation_weights_all_sources_equal() -> None:
+    uniform = resolve_weights(RetrievalStrategy.QEMR_UNIFORM, QueryIntent.TEMPORAL)
+    assert len({w for w in uniform.values()}) == 1
+    assert all(w == 1.0 for w in uniform.values())
+    # intent-independent
+    assert resolve_weights(
+        RetrievalStrategy.QEMR_UNIFORM, QueryIntent.SEMANTIC
+    ) == resolve_weights(RetrievalStrategy.QEMR_UNIFORM, QueryIntent.GRAPH)
+
+
 def test_harness_runs_all_three_strategies_on_one_input() -> None:
     memory = _memory(
         content="Caroline's favorite color is teal.",

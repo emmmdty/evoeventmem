@@ -65,6 +65,16 @@ class RetrievalStrategy(StrEnum):
     FIXED_VECTOR = "fixed_vector"
     FIXED_HYBRID = "fixed_hybrid"
     QEMR = "qemr"
+    # S3 ablation strategies (Step 2). These are diagnostic-only entry points
+    # that reuse the QEMR retrieval path (RRF merge, temporal-constraint
+    # filtering, intent routing) with a modified weight profile. The
+    # production ``QEMR_WEIGHT_PROFILES`` dict is NOT modified; ``resolve_weights``
+    # derives the ablation weights from it at call time. The ``strategy`` field
+    # on ``QEMRRetrievalResult`` makes every ablation arm observable (no silent
+    # fallback to vector retrieval — AGENTS.md).
+    QEMR_NO_TEMPORAL = "qemr_no_temporal"
+    QEMR_NO_GRAPH = "qemr_no_graph"
+    QEMR_UNIFORM = "qemr_uniform"
 
 
 ALL_SOURCES = list(CandidateSource)
@@ -342,6 +352,24 @@ def resolve_weights(
         return dict(FIXED_VECTOR_WEIGHTS)
     if strategy is RetrievalStrategy.FIXED_HYBRID:
         return dict(FIXED_HYBRID_WEIGHTS)
+    if strategy is RetrievalStrategy.QEMR_UNIFORM:
+        # Uniform ablation: all sources weighted 1.0 (same shape as
+        # FIXED_HYBRID_WEIGHTS) but dispatched through the QEMR retrieval
+        # path (intent routing + RRF merge + temporal constraint).
+        return dict(FIXED_HYBRID_WEIGHTS)
+    if strategy in (
+        RetrievalStrategy.QEMR_NO_TEMPORAL,
+        RetrievalStrategy.QEMR_NO_GRAPH,
+    ):
+        # Single-source zeroing ablations: start from the production intent
+        # profile and zero the named source. The production
+        # ``QEMR_WEIGHT_PROFILES`` dict is never mutated.
+        weights = dict(QEMR_WEIGHT_PROFILES[intent])
+        if strategy is RetrievalStrategy.QEMR_NO_TEMPORAL:
+            weights[CandidateSource.TEMPORAL] = 0.0
+        else:
+            weights[CandidateSource.GRAPH] = 0.0
+        return weights
     return dict(QEMR_WEIGHT_PROFILES[intent])
 
 

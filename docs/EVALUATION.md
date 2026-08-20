@@ -141,6 +141,29 @@ O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_
 
 **注**：6m run（`runs/publication/longmemeval-test20-6m/`）的 `ingestion.etec.actions` 字段为 NA（legacy 字段契约，未持久化 samples dir 的 `ingestion.etec.actions` 路径；deepseek-v4-flash 已停服，run 不可复现）。整改 spec `docs/REMEDIATION_SPEC.md` S0 步骤 5（B4 / Gap 3）要求显式声明，避免读者误读为"已测量但缺失"。
 
+## 6.5 模型 pinning + 可复现性（S4a）
+
+S4a 把"私有网关 + SSH tunnel + 未追踪 .env"的可复现性风险清零。所有 reader/extractor 模型在 TOML 配置里以 `model_id` 显式 pin；`.env.example` 列出全部字段名（值留空 + 注释说明用途），`.env` 不被 git 追踪（`git ls-files .env` 输出空）。
+
+**模型 pinning**：
+
+- 50 题 v1 run（`test50-mimo`）+ 50 题 v2 run（`test50-mimo-v2-factslot`）+ S3 权重消融（`test50-mimo-v2-ablation`）均用 `mimo-v2.5` 作 reader/extractor（`configs/longmemeval/test50-mimo.toml`，`model_id = "mimo-v2.5"` pinned）。v1 vs v2 EM 可对比（同模型同 4096 预算）。
+- S3 M2 stale-judge 用 `minimax-m3`（`ARK_*` env），**显式 ≠** reader `mimo-v2.5`（AGENTS.md "LLM judges require cached inputs/outputs and a documented judge model"；spec N8/B4）。judge 输入输出缓存到 `<source-run>/m2_judge_cache/`（31 个内容寻址缓存文件）。
+- Embedding：50 题 v1/v2 run + 消融均用 `qwen3-embedding-0.6b`（本地 GPU tunnel，`http://127.0.0.1:11436/v1`）。
+- 24 题 finalized run（`longmemeval-test20-6m` / `longmemeval-test20-ms` 等）用 `deepseek-v4-flash`（已停服、不可复跑、**禁止与 mimo-v2.5 跨模型对比**——AGENTS.md 禁止不等模型下 benchmark 对比，见上文 §test50-mimo "跨模型对比禁止" 与 §test50-mimo-v2-factslot "Same-model comparison"）。
+
+**离线复现（无网络调用）**：
+
+```bash
+uv run python -m benchmarks.longmemeval.run --config configs/longmemeval/offline10.toml
+```
+
+`configs/longmemeval/offline10.toml` 用 `provider = "deterministic_fake"`：`benchmarks/common/providers.py` 的 `build_model_bundle` 在该 provider 下构造内存态 chat + embedding 模型，benchmark 运行期间**零网络调用**。`deterministic_fake` 是占位模型（预测为固定字符串，EM=0.0 by design），目标是**管线可达性 + 无网络复现**，不是准确率基准。配置使用已追踪的 `tests/fixtures/longmemeval/oracle_tiny.json`（n=1，fresh clone 无需下载数据集即可跑通；`sample_limit = 10` 为上限，因 fixture 仅含 1 题故实际处理 1 题，<1 秒完成）。若要在真实 LongMemEval-S 数据上做 10 题离线跑，把 `dataset_path` 改为 `data/raw/longmemeval/longmemeval_s_cleaned.json`（先一次性 `python scripts/data/download_longmemeval.py --variant s` 拉取；benchmark 运行本身仍零网络调用，但真实 LongMemEval haystack 较大，10 题约需 20 分钟）。
+
+**生产复现（需凭据）**：
+
+50 题 v2 run 的复现需要：(1) `OPENAI_API_KEY`（opencode.ai 网关 / `mimo-v2.5` reader+extractor）；(2) 本地 embedding tunnel（`qwen3-embedding-0.6b` on GPU，`http://127.0.0.1:11436/v1`，`EMBEDDING_API_KEY` 用任意非空值）。配置见 `configs/longmemeval/test50-mimo.toml`。S3 M2 judge 的复现额外需要 `ARK_API_KEY`（`minimax-m3`）。`.env.example` 列出全部字段名 + 用途注释，不留真实凭据值。
+
 ## 7. 方法学：对照臂口径修正（O09）
 
 来源：`docs/8of10_ACCEPTANCE.md` §a.1/§c.2、`benchmarks/longmemeval/run.py:153-158`（8of10 报告原文记作 `run.py:153-158`）、spec §3.3/§13 决议 1。

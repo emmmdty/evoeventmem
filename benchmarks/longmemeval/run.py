@@ -1338,7 +1338,7 @@ def _new_run_dir(output_root: Path, run_id_prefix: str) -> Path:
 def _artifact_class(config: LongMemEvalConfig) -> ArtifactClass:
     if config.provider == "deterministic_fake":
         return ArtifactClass.SMOKE
-    return ArtifactClass.DIAGNOSTIC
+    return ArtifactClass.PUBLICATION
 
 
 def _scope(config: LongMemEvalConfig) -> str:

@@ -1,7 +1,7 @@
-.PHONY: install test lint typecheck check smoke serve task
+.PHONY: install test lint typecheck check smoke serve docker-build task
 
 install:
-	uv sync --extra dev
+	uv sync --extra dev --extra models --extra postgres --extra bench
 
 test:
 	uv run pytest -q
@@ -19,6 +19,9 @@ smoke:
 
 serve:
 	uv run uvicorn evoeventmem.api.app:app --reload
+
+docker-build:
+	docker build -t evoeventmem:local .
 
 task:
 	python scripts/taskctl.py show $(ID)

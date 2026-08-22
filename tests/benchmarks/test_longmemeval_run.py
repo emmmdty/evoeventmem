@@ -393,3 +393,33 @@ def test_resume_custom_sample_subset_restores_manifest_ids(tmp_path: Path) -> No
     second = run_experiment(config, run_dir)
     assert second.sample_validation.completed_sample_count == 1
     assert second.sample_validation.valid
+
+
+def test_incomplete_run_is_not_finalized_and_retry_completes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.longmemeval.run as run_module
+
+    config = load_config(SMOKE_CONFIG)
+    run_dir = tmp_path / "run"
+    original = run_module._process_sample
+    state = {"failed_once": False}
+
+    def flaky_process_sample(*args: object, **kwargs: object):  # noqa: ANN001, ANN202
+        if not state["failed_once"]:
+            state["failed_once"] = True
+            raise RuntimeError("simulated transient failure")
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_module, "_process_sample", flaky_process_sample)
+    first = run_experiment(config, run_dir)
+
+    assert not first.sample_validation.valid
+    assert first.sample_validation.missing_sample_ids == ["lme-q1"]
+    assert not (run_dir / "finalized" / "FINALIZED.json").exists()
+
+    monkeypatch.setattr(run_module, "_process_sample", original)
+    second = run_experiment(config, run_dir)
+
+    assert second.sample_validation.valid
+    assert (run_dir / "finalized" / "FINALIZED.json").exists()

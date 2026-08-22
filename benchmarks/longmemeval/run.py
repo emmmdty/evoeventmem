@@ -435,7 +435,18 @@ def run_experiment(
         "extraction_snapshots": len(summary.extraction_snapshot_ids),
     }
     if not extraction_only:
-        finalize_run(run_dir, manifest, completion_counts=completion_counts)
+        if summary.sample_validation.valid:
+            finalize_run(run_dir, manifest, completion_counts=completion_counts)
+        else:
+            validation = summary.sample_validation
+            print(
+                "WARN: skipping finalize; sample validation failed "
+                f"(completed {validation.completed_sample_count}/"
+                f"{validation.expected_sample_count}, "
+                f"missing={validation.missing_sample_ids}); "
+                "rerun the same command to retry missing samples",
+                flush=True,
+            )
     return summary
 
 

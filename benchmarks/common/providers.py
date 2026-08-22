@@ -54,6 +54,7 @@ class ResolvedModelConfig(BaseModel):
     timeout_s: float = Field(default=60.0, gt=0)
     thinking: Literal["enabled", "disabled", None] = None
     max_tokens: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
 
     @model_validator(mode="after")
     def require_live_fields(self) -> ResolvedModelConfig:
@@ -216,6 +217,7 @@ def _live_config(resolved: ResolvedModelConfig) -> OpenAICompatibleConfig:
         timeout_s=resolved.timeout_s,
         thinking=resolved.thinking,
         max_tokens=resolved.max_tokens,
+        temperature=resolved.temperature,
     )
 
 

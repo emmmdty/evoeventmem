@@ -52,6 +52,7 @@ class OpenAICompatibleConfig:
     timeout_s: float = 30.0
     thinking: str | None = None
     max_tokens: int | None = None
+    temperature: float | None = None
 
     def __post_init__(self) -> None:
         if not self.base_url.strip():
@@ -80,6 +81,8 @@ class OpenAICompatibleChatClient:
         }
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
+        if self._config.temperature is not None:
+            payload["temperature"] = self._config.temperature
         if self._config.thinking is not None:
             payload["thinking"] = {"type": self._config.thinking}
         response = _post_json(self._config, "chat/completions", payload)

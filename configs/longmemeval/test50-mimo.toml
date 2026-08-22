@@ -25,6 +25,7 @@ api_key_env = "OPENAI_API_KEY"
 timeout_s = 180
 thinking = "disabled"
 max_tokens = 65536
+temperature = 0
 
 [embedding]
 provider = "openai_compatible"

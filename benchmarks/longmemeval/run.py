@@ -388,7 +388,7 @@ def run_experiment(
     )
     if sample_ids is None and existing_manifest is not None:
         sample_ids = list(existing_manifest.expected_sample_ids)
-    records = _apply_sample_ids(_load_records(config), sample_ids)
+    records = _apply_sample_ids(_load_records(config, sample_ids), sample_ids)
     expected_sample_ids = [record.sample_id for record in records]
     expected_question_ids = [record.questions[0].question_id for record in records]
     manifest = _build_manifest(
@@ -410,15 +410,24 @@ def run_experiment(
 
     bundle = build_model_bundle(config.providers, cache_for_run(run_dir))
     extractor_impl = extractor if extractor is not None else build_extractor(bundle)
+    failed_samples: list[str] = []
     for record in records:
-        _process_sample(
-            record,
-            config,
-            bundle,
-            extractor_impl,
-            run_dir,
-            extraction_only=extraction_only,
-        )
+        try:
+            _process_sample(
+                record,
+                config,
+                bundle,
+                extractor_impl,
+                run_dir,
+                extraction_only=extraction_only,
+            )
+        except Exception as exc:
+            import traceback
+            print(f"WARN: sample {record.sample_id} failed: {exc}", flush=True)
+            traceback.print_exc()
+            failed_samples.append(record.sample_id)
+    if failed_samples:
+        print(f"WARN: {len(failed_samples)} samples failed: {failed_samples}", flush=True)
 
     summary = _write_summary(config, run_dir, manifest, expected_sample_ids, bundle)
     completion_counts = {
@@ -1176,11 +1185,17 @@ def _config_report(config: LongMemEvalConfig, config_path: Path) -> dict[str, An
     return report
 
 
-def _load_records(config: LongMemEvalConfig) -> list[NormalizedRecord]:
+def _load_records(
+    config: LongMemEvalConfig, sample_ids: Sequence[str] | None = None
+) -> list[NormalizedRecord]:
     records: list[NormalizedRecord] = []
     for record in iter_longmemeval_records(config.dataset_path):
         records.append(record)
-        if config.sample_limit is not None and len(records) >= config.sample_limit:
+        if (
+            sample_ids is None
+            and config.sample_limit is not None
+            and len(records) >= config.sample_limit
+        ):
             break
     return records
 
@@ -1323,7 +1338,7 @@ def _new_run_dir(output_root: Path, run_id_prefix: str) -> Path:
 def _artifact_class(config: LongMemEvalConfig) -> ArtifactClass:
     if config.provider == "deterministic_fake":
         return ArtifactClass.SMOKE
-    return ArtifactClass.PUBLICATION
+    return ArtifactClass.DIAGNOSTIC
 
 
 def _scope(config: LongMemEvalConfig) -> str:

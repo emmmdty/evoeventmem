@@ -129,7 +129,7 @@ from evoeventmem.tokenization import DEFAULT_TOKEN_ESTIMATOR
 
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m14_locomo")
 EXTRACTION_PROMPT_VERSION = "shared-snapshot.v1"
-CONSOLIDATION_POLICY_NAME = "etec.v1"
+CONSOLIDATION_POLICY_NAME = "etec.v2"
 
 REFERENCE_TIME_SOURCE = "last_session_timestamp"
 EVIDENCE_MAPPING = "official_dia_ids_from_turn_refs"

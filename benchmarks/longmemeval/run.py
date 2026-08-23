@@ -118,7 +118,7 @@ from evoeventmem.tokenization import DEFAULT_TOKEN_ESTIMATOR
 
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m13_longmemeval")
 EXTRACTION_PROMPT_VERSION = "shared-snapshot.v1"
-CONSOLIDATION_POLICY_NAME = "etec.v1"
+CONSOLIDATION_POLICY_NAME = "etec.v2"
 
 OFFICIAL_ABILITIES = (
     "information-extraction",

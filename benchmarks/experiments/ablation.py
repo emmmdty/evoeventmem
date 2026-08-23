@@ -825,7 +825,7 @@ def _family_manifest(
             extraction="shared-snapshot.v1",
             router=ROUTER_POLICY_NAME,
             retrieval=POLICY_NAME,
-            consolidation="etec.v1",
+            consolidation="etec.v2",
         ),
         budget=BudgetSpec(
             input_tokens=config.base.controls.budget_tokens or 2048,
@@ -879,7 +879,7 @@ def _arm_manifest(
             extraction="shared-snapshot.v1",
             router=ROUTER_POLICY_NAME,
             retrieval=POLICY_NAME,
-            consolidation="etec.v1",
+            consolidation="etec.v2",
         ),
         budget=BudgetSpec(
             input_tokens=arm.controls.budget_tokens or 2048,

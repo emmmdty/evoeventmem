@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -58,6 +59,7 @@ class ETECDecision(BaseModel):
     thresholds: ETECThresholds
     rule_hits: list[str] = Field(default_factory=list)
     reason: str
+    conflict_target_memory_id: UUID | None = None
 
 
 class ETECApplyResult(BaseModel):
@@ -69,7 +71,7 @@ class ETECApplyResult(BaseModel):
 class ETECConsolidator:
     """Evidence-constrained temporal consolidation with inspectable rules."""
 
-    POLICY_NAME = "etec-rule-weighted.v1"
+    POLICY_NAME = "etec-rule-weighted.v2"
 
     def __init__(
         self,
@@ -180,18 +182,14 @@ class ETECConsolidator:
         source: MemoryRecord,
         scored: Sequence[ETECDecision],
     ) -> ETECDecision:
-        temporal_rejects = [
+        conflicts = [
             decision
             for decision in scored
-            if decision.action is ConsolidationAction.REJECT
-            and (
-                "missing_fact_effective_time" in decision.rule_hits
-                or "equal_fact_effective_time" in decision.rule_hits
-            )
+            if decision.conflict_target_memory_id is not None
         ]
-        if temporal_rejects:
+        if conflicts:
             return max(
-                temporal_rejects,
+                conflicts,
                 key=lambda decision: decision.features.contradiction_score,
             )
 
@@ -388,6 +386,7 @@ class ETECConsolidator:
         features = self._features(source, target)
         score = _weighted_score(features)
         rule_hits: list[str] = []
+        conflict_target_id: UUID | None = None
         action = ConsolidationAction.ADD
         reason = "Candidate did not meet a consolidation threshold."
 
@@ -402,19 +401,25 @@ class ETECConsolidator:
             source_time = _fact_effective_time(source)
             target_time = _fact_effective_time(target)
             if source_time is None or target_time is None:
-                action = ConsolidationAction.REJECT
-                rule_hits.append("missing_fact_effective_time")
+                rule_hits.extend(
+                    ["missing_fact_effective_time", "temporal_conflict_kept_both"]
+                )
                 reason = (
                     "A contradictory single-valued fact is missing an effective time, "
-                    "so temporal ordering is unsafe."
+                    "so temporal ordering is unsafe; both sides are retained with an "
+                    "explicit conflict marker instead of silently dropping the incoming fact."
                 )
+                action = ConsolidationAction.ADD
+                conflict_target_id = target.memory_id
             elif source_time == target_time:
-                action = ConsolidationAction.REJECT
-                rule_hits.append("equal_fact_effective_time")
+                rule_hits.extend(["equal_fact_effective_time", "temporal_conflict_kept_both"])
                 reason = (
                     "Contradictory single-valued facts have equal effective times, "
-                    "so neither can supersede the other."
+                    "so neither can supersede the other; both sides are retained with an "
+                    "explicit conflict marker instead of silently dropping the incoming fact."
                 )
+                action = ConsolidationAction.ADD
+                conflict_target_id = target.memory_id
             elif source_time > target_time:
                 action = ConsolidationAction.SUPERSEDE
                 rule_hits.extend(["temporal_contradiction", "newer_source_supersedes_older_target"])
@@ -466,6 +471,7 @@ class ETECConsolidator:
             thresholds=self._thresholds,
             rule_hits=rule_hits,
             reason=reason,
+            conflict_target_memory_id=conflict_target_id,
         )
 
     def _features(self, source: MemoryRecord, target: MemoryRecord) -> ETECFeatureVector:
@@ -526,9 +532,11 @@ class ETECConsolidator:
         ]
         metadata = _metadata_with_decision(target, decision)
         metadata["merged_source_memory_ids"] = [str(memory_id) for memory_id in merged_source_ids]
+        metadata["merged_contents"] = sorted({target.content, source.content})
         return _validated_copy(
             target,
             {
+                "content": _compose_merge_content(target.content, source.content),
                 "evidence_refs": _unique_evidence([*target.evidence_refs, *source.evidence_refs]),
                 "entities": _unique_entities([*target.entities, *source.entities]),
                 "relations": [*target.relations, *source.relations],
@@ -627,6 +635,9 @@ class ETECConsolidator:
         decision: ETECDecision,
         supersedes: Iterable[UUID],
     ) -> MemoryRecord:
+        metadata = _metadata_with_decision(source, decision)
+        if decision.conflict_target_memory_id is not None:
+            metadata["conflicts_with"] = [str(decision.conflict_target_memory_id)]
         return _validated_copy(
             source,
             {
@@ -635,7 +646,7 @@ class ETECConsolidator:
                 "superseded_by": None,
                 "valid_from": source.valid_from,
                 "valid_to": source.valid_to,
-                "metadata": _metadata_with_decision(source, decision),
+                "metadata": metadata,
                 "updated_at": datetime.now(UTC),
             },
         )
@@ -1044,6 +1055,26 @@ def _supersession_cutoff(source: MemoryRecord, target: MemoryRecord) -> datetime
     if target_start is not None and cutoff < target_start:
         return target_start
     return cutoff
+
+
+def _content_tokens(text: str) -> frozenset[str]:
+    return frozenset(re.findall(r"\w+", text.lower()))
+
+
+def _compose_merge_content(target_content: str, source_content: str) -> str:
+    """Compose merged content without destroying either side's information.
+
+    When one side's tokens fully contain the other's, keep the more specific
+    phrasing. Otherwise concatenate both surface forms so no answer-bearing
+    token is lost from the retrievable content.
+    """
+    target_tokens = _content_tokens(target_content)
+    source_tokens = _content_tokens(source_content)
+    if source_tokens <= target_tokens:
+        return target_content
+    if target_tokens <= source_tokens:
+        return source_content
+    return f"{target_content} {source_content}"
 
 
 def _metadata_with_decision(memory: MemoryRecord, decision: ETECDecision) -> dict[str, object]:

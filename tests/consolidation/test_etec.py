@@ -719,7 +719,7 @@ def test_stale_fact_is_stored_closed_and_newer_target_gains_reciprocal_link() ->
         ),
     ],
 )
-def test_ambiguous_fact_order_rejects_without_mutation(
+def test_ambiguous_fact_order_keeps_both_sides_with_conflict_marker(
     source_time: datetime | None,
     target_time: datetime | None,
     rule_hit: str,
@@ -750,11 +750,83 @@ def test_ambiguous_fact_order_rejects_without_mutation(
         candidate_generator=generator,  # type: ignore[arg-type]
     ).apply(repository, source)
 
-    assert result.decision.action is ConsolidationAction.REJECT
+    assert result.decision.action is ConsolidationAction.ADD
     assert rule_hit in result.decision.rule_hits
+    assert "temporal_conflict_kept_both" in result.decision.rule_hits
+    assert result.decision.conflict_target_memory_id == target.memory_id
+    stored_source = repository.get(source.memory_id)
+    assert stored_source is not None
+    assert stored_source.content == "Caroline lives in Boston."
+    assert stored_source.metadata["conflicts_with"] == [str(target.memory_id)]
     assert repository.get(target.memory_id) == snapshot
-    assert repository.get(source.memory_id) is None
-    assert result.updated_memories == []
+    assert result.updated_memories == [stored_source]
+
+
+def test_merge_composes_content_without_losing_the_more_specific_side() -> None:
+    repository = InMemoryMemoryRepository()
+    existing = _memory(
+        "68000000-0000-0000-0000-000000000001",
+        "User has a language exchange class with Juan.",
+        fact_slot="schedule.class",
+        fact_value="language exchange",
+        valid_from=datetime(2023, 5, 20, tzinfo=UTC),
+        evidence_id="mergec:1",
+    )
+    incoming = _memory(
+        "68000000-0000-0000-0000-000000000002",
+        "User has a language exchange class with a Colombian tutor named Juan "
+        "every Wednesday evening at a local language school.",
+        fact_slot="schedule.class",
+        fact_value="language exchange",
+        valid_from=datetime(2023, 5, 20, tzinfo=UTC),
+        evidence_id="mergec:2",
+    )
+    repository.add(existing)
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=_RecordingCandidateGenerator([existing]),  # type: ignore[arg-type]
+    ).apply(repository, incoming)
+
+    merged = repository.get(existing.memory_id)
+    assert result.decision.action is ConsolidationAction.MERGE
+    assert merged is not None
+    assert "Wednesday" in merged.content
+    assert sorted(merged.metadata["merged_contents"]) == sorted(
+        [existing.content, incoming.content]
+    )
+
+
+def test_merge_concatenates_when_neither_content_subsumes_the_other() -> None:
+    repository = InMemoryMemoryRepository()
+    existing = _memory(
+        "68000000-0000-0000-0000-000000000011",
+        "Caroline moved to Seattle for a new job.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 1, tzinfo=UTC),
+        evidence_id="merged:1",
+    )
+    incoming = _memory(
+        "68000000-0000-0000-0000-000000000012",
+        "Caroline lives in Seattle near the waterfront.",
+        fact_slot="profile.city",
+        fact_value="Seattle",
+        valid_from=datetime(2024, 1, 2, tzinfo=UTC),
+        evidence_id="merged:2",
+    )
+    repository.add(existing)
+
+    result = ETECConsolidator(
+        DeterministicFakeEmbeddingModel(),
+        candidate_generator=_RecordingCandidateGenerator([existing]),  # type: ignore[arg-type]
+    ).apply(repository, incoming)
+
+    merged = repository.get(existing.memory_id)
+    assert result.decision.action is ConsolidationAction.MERGE
+    assert merged is not None
+    for fragment in ("moved to Seattle", "near the waterfront"):
+        assert fragment in merged.content
 
 
 def test_repository_failure_rolls_back_every_supersession_write() -> None:

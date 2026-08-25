@@ -29,7 +29,6 @@ Usage on gpu-5090::
 from __future__ import annotations
 
 import socket
-import sys
 
 
 def _install_ipv4_preference() -> None:

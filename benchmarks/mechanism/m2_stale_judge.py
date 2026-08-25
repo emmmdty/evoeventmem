@@ -24,7 +24,6 @@ import argparse
 import hashlib
 import json
 import os
-import socket
 import sys
 import time
 import urllib.error
@@ -33,15 +32,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-# Diagnostic IPv4 preference (same rationale as weight_ablation.py).
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):  # type: ignore[no-untyped-def]
-    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-
-socket.getaddrinfo = _ipv4_getaddrinfo
+# S8 Step 2: the diagnostic AF_INET ``getaddrinfo`` filter that lived
+# here has been removed. The shim masked the real network path (forcing
+# AF_INET) and was a Phase-A diagnostic-only network patch from S3;
+# production code in ``src/evoeventmem`` was always untouched. If
+# dual-stack routing issues resurface, fix the gateway / DNS layer,
+# not this script.
 
 DEFAULT_SOURCE_RUN = Path("runs/publication/m13-longmemeval-test50-mimo-v2-factslot")
 DEFAULT_JUDGE_MODEL = "minimax-m3"
@@ -211,18 +207,48 @@ def _parse_judge_response(text: str) -> dict[str, Any]:
     }
 
 
-def _load_differing_samples(source_run: Path) -> list[dict[str, Any]]:
-    """Load v2 samples where full prediction != event_no_etec prediction."""
+# S8 Step 3c: the M2 judge runs **only** on the temporal-salient subset
+# where the gold question_type has a time-ordered answer that
+# consolidation can change. The S3 §4 74% tie on single-session-user
+# was a correctness/staleness confusion artefact (single-session-user
+# questions have no temporal-salient answer for SUPERSEDE to change).
+# Pre-registered in docs/S8-PREREGISTRATION.md §4.
+TEMPORAL_SALIENT_QUESTION_TYPES = frozenset(
+    {
+        "temporal-reasoning",
+        "knowledge-update",
+        "multi-session",
+    }
+)
+
+
+def _load_differing_samples(
+    source_run: Path,
+    *,
+    temporal_salient_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Load samples where ``full`` prediction != ``event_no_etec`` prediction.
+
+    When ``temporal_salient_only`` is True (S8 Step 3c default), the
+    judge scope is restricted to the temporal-salient subset
+    (``temporal-reasoning`` + ``knowledge-update`` + ``multi-session``)
+    where SUPERSEDE can actually change the reader-visible answer.
+    Single-session-* questions have no temporal-salient answer and are
+    excluded to avoid the S3 §4 correctness/staleness confusion.
+    """
     samples_dir = source_run / "samples"
     if not samples_dir.exists():
         raise FileNotFoundError(f"samples dir missing: {samples_dir}")
-    # Load gold answers from the dataset.
+    # Load gold answers + question_type from the dataset.
     dataset_path = Path("data/raw/longmemeval/longmemeval_s_cleaned.json")
     gold_by_id: dict[str, str] = {}
+    qtype_by_id: dict[str, str] = {}
     if dataset_path.exists():
         data = json.loads(dataset_path.read_bytes())
         for record in data:
-            gold_by_id[record["question_id"]] = record.get("answer", "")
+            qid = record["question_id"]
+            gold_by_id[qid] = record.get("answer", "")
+            qtype_by_id[qid] = record.get("question_type", "")
     out: list[dict[str, Any]] = []
     for path in sorted(samples_dir.glob("*.json")):
         if "extraction_snapshot" in path.name:
@@ -236,9 +262,13 @@ def _load_differing_samples(source_run: Path) -> list[dict[str, Any]]:
         if full_pred == etec_pred:
             continue
         qid = record.get("sample_id") or record.get("question_id") or path.stem
+        qtype = qtype_by_id.get(qid, "") or record.get("question_type", "")
+        if temporal_salient_only and qtype not in TEMPORAL_SALIENT_QUESTION_TYPES:
+            continue
         out.append(
             {
                 "question_id": qid,
+                "question_type": qtype,
                 "question": record.get("question")
                 or _question_text_from_dataset(qid)
                 or "(question text unavailable)",
@@ -270,9 +300,19 @@ def run_judge(
     judge_base_url: str,
     judge_api_key: str,
     timeout_s: float,
+    *,
+    temporal_salient_only: bool = True,
 ) -> dict[str, Any]:
-    """Run the M2 judge on all differing-prediction samples."""
-    samples = _load_differing_samples(source_run)
+    """Run the M2 judge on differing-prediction samples.
+
+    When ``temporal_salient_only`` is True (S8 Step 3c default), the
+    judge scope is restricted to the temporal-salient subset
+    (``temporal-reasoning`` + ``knowledge-update`` + ``multi-session``).
+    Pre-registered in ``docs/S8-PREREGISTRATION.md`` §4.
+    """
+    samples = _load_differing_samples(
+        source_run, temporal_salient_only=temporal_salient_only
+    )
     cache_dir = _judge_cache_dir(source_run)
     results: list[dict[str, Any]] = []
     counts = {"a": 0, "b": 0, "tie": 0, "parse_error": 0}
@@ -336,6 +376,15 @@ def run_judge(
         "etec_less_stale_count": counts["b"],
         "tie_count": counts["tie"],
         "parse_error_count": counts["parse_error"],
+        # S8 Step 3c: scope metadata so the report can state which
+        # question_types were judged (temporal-salient subset by default).
+        "temporal_salient_only": temporal_salient_only,
+        "judge_scope": (
+            "temporal-salient subset (temporal-reasoning + knowledge-"
+            "update + multi-session)"
+            if temporal_salient_only
+            else "all question_types (legacy S3 §4 scope)"
+        ),
         "results": results,
     }
 
@@ -352,6 +401,11 @@ def build_report(source_run: Path, result: dict[str, Any]) -> str:
     )
     lines.append(
         f"- **Differing-prediction samples judged**: {result['n_differing']}"
+    )
+    lines.append(
+        f"- **Judge scope**: {result.get('judge_scope', 'n/a')} "
+        "(S8 Step 3c pre-registration: temporal-salient subset only; "
+        "see docs/S8-PREREGISTRATION.md §4)"
     )
     lines.append("")
     lines.append("## Stale/fresh verdict")
@@ -435,6 +489,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=60.0,
         help="Per-judge-call timeout in seconds (default: 60).",
     )
+    parser.add_argument(
+        "--include-all-types",
+        action="store_true",
+        help=(
+            "S8 Step 3c override: include single-session-* in the judge "
+            "scope (legacy S3 §4 behaviour). Default is temporal-salient "
+            "only (temporal-reasoning + knowledge-update + multi-session) "
+            "per docs/S8-PREREGISTRATION.md §4."
+        ),
+    )
     args = parser.parse_args(argv)
 
     base_url = args.judge_base_url or os.environ.get("ARK_BASE_URL")
@@ -457,6 +521,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         base_url,
         api_key,
         args.timeout,
+        temporal_salient_only=not args.include_all_types,
     )
     json_path = args.source_run / "m2_judge_report.json"
     json_path.write_text(

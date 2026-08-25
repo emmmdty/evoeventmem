@@ -382,3 +382,261 @@ def test_temporal_decision_records_matched_spans_and_rule_hits() -> None:
         "after" in span.lower() or "2020" in span
         for span in decision.temporal_constraint.matched_spans
     )
+
+
+# ---------------------------------------------------------------------------
+# S8 Step 1: router rule enhancement coverage.
+# Each new regex pattern gets ≥3 cases per the S8 prompt: positive,
+# near-synonym negative, and cross-class interference negative.
+# ---------------------------------------------------------------------------
+
+
+class TestS8TemporalReasoningPatterns:
+    """S8 Step 1: temporal-reasoning phrasings added to
+    ``_TEMPORAL_STRONG_RE``."""
+
+    def test_how_many_weeks_ago_routes_temporal(self) -> None:
+        # Positive: "How many weeks ago did I meet my aunt" → TEMPORAL.
+        decision = QueryRouter().route("How many weeks ago did I meet my aunt?")
+        assert decision.intent is QueryIntent.TEMPORAL
+        assert decision.features.strong_temporal_count >= 1
+
+    def test_word_number_weeks_ago_routes_temporal(self) -> None:
+        # Positive: "two weeks ago" (word number, no digit) → TEMPORAL.
+        decision = QueryRouter().route(
+            "I mentioned a sports event two weeks ago. What was the event?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_a_month_ago_routes_temporal(self) -> None:
+        # Positive: "a month ago" bare-article form → TEMPORAL.
+        decision = QueryRouter().route(
+            "What charity event did I participate in a month ago?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_how_long_have_i_been_routes_temporal(self) -> None:
+        # Positive: "How long have I been using X" → TEMPORAL.
+        decision = QueryRouter().route("How long have I been using my Fitbit?")
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_how_long_had_i_been_routes_temporal(self) -> None:
+        # Positive: "How long had I been X when Y" → TEMPORAL.
+        decision = QueryRouter().route(
+            "How long had I been taking guitar lessons when I bought the amp?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_how_many_days_before_routes_temporal(self) -> None:
+        # Positive: "How many days before X did I Y" → TEMPORAL.
+        decision = QueryRouter().route(
+            "How many days before my birthday did I order the gift?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_how_many_days_passed_between_routes_temporal(self) -> None:
+        # Positive: "How many days had passed between X and Y" → TEMPORAL.
+        decision = QueryRouter().route(
+            "How many days had passed between the launch and the post-mortem?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_which_event_first_routes_temporal(self) -> None:
+        # Positive: "Which event happened first" → TEMPORAL.
+        decision = QueryRouter().route(
+            "Which event happened first, my cousin's wedding or the reunion?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_in_the_order_routes_temporal(self) -> None:
+        # Positive: "in the order from first to last" → TEMPORAL.
+        decision = QueryRouter().route(
+            "What is the order of the three trips I took, from earliest to latest?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_how_long_measurement_stays_semantic(self) -> None:
+        # Cross-class interference: "How long is my daily commute" is a
+        # measurement (strong_fact), not temporal ordering — must stay
+        # SEMANTIC, not flip to TEMPORAL when the new how-long patterns
+        # are added.
+        decision = QueryRouter().route("How long is my daily commute?")
+        assert decision.intent is QueryIntent.SEMANTIC
+
+    def test_what_is_caroline_color_stays_semantic(self) -> None:
+        # Cross-class interference: plain fact lookup, no temporal cue,
+        # must stay SEMANTIC.
+        decision = QueryRouter().route("What is Caroline's favorite color?")
+        assert decision.intent is QueryIntent.SEMANTIC
+
+
+class TestS8KnowledgeUpdatePatterns:
+    """S8 Step 1: knowledge-update phrasings added to
+    ``_KNOWLEDGE_UPDATE_RE``."""
+
+    def test_how_often_routes_temporal(self) -> None:
+        # Positive: "How often do I attend X" → TEMPORAL (KU gold).
+        decision = QueryRouter().route(
+            "How often do I attend yoga classes to help with my anxiety?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+        assert decision.features.has_knowledge_update_cue is True
+
+    def test_have_i_tried_routes_temporal(self) -> None:
+        # Positive: "How many Korean restaurants have I tried in my city"
+        # → TEMPORAL (KU gold).
+        decision = QueryRouter().route(
+            "How many Korean restaurants have I tried in my city?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_my_current_routes_temporal(self) -> None:
+        # Positive: "What is my current highest score" → TEMPORAL.
+        decision = QueryRouter().route(
+            "What is my current highest score in Ticket to Ride?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_my_former_routes_temporal(self) -> None:
+        # Positive: "my former manager Rachel" → TEMPORAL (KU).
+        decision = QueryRouter().route(
+            "How many women are on the team led by my former manager Rachel?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_just_started_routes_temporal(self) -> None:
+        # Positive: "just started my new role" → TEMPORAL (KU).
+        decision = QueryRouter().route(
+            "How many engineers do I lead when I just started my new role?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_have_i_since_routes_temporal(self) -> None:
+        # Positive: "have I written since I started" → TEMPORAL (KU).
+        decision = QueryRouter().route(
+            "How many short stories have I written since I started writing regularly?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+
+    def test_my_previous_occupation_stays_semantic(self) -> None:
+        # Cross-class interference: the M11 fixture case
+        # ``semantic_my_previous`` contracts "my previous + noun" to
+        # SEMANTIC. The S8 KU pattern intentionally excludes "my
+        # previous" so this contract holds.
+        decision = QueryRouter().route("What was my previous occupation?")
+        assert decision.intent is QueryIntent.SEMANTIC
+
+    def test_what_is_caroline_color_stays_semantic(self) -> None:
+        # Cross-class interference: plain fact, no KU cue, must stay
+        # SEMANTIC.
+        decision = QueryRouter().route("What is Caroline's favorite color?")
+        assert decision.intent is QueryIntent.SEMANTIC
+
+
+class TestS8MultiSessionPatterns:
+    """S8 Step 1: multi-session aggregation cues (``_MULTI_SESSION_AGGREGATION_RE``)
+    promote HYBRID routing."""
+
+    def test_in_total_routes_hybrid(self) -> None:
+        # Positive: "How many hours have I spent playing games in total"
+        # → HYBRID.
+        decision = QueryRouter().route(
+            "How many hours have I spent playing games in total?"
+        )
+        assert decision.intent is QueryIntent.HYBRID
+        assert decision.features.has_multi_session_cue is True
+
+    def test_combined_routes_hybrid(self) -> None:
+        # Positive: "three road trip destinations combined" → HYBRID.
+        decision = QueryRouter().route(
+            "How many hours did I spend driving to three road trip destinations combined?"
+        )
+        assert decision.intent is QueryIntent.HYBRID
+
+    def test_how_many_different_routes_hybrid(self) -> None:
+        # Positive: "How many different doctors did I visit" → HYBRID.
+        decision = QueryRouter().route("How many different doctors did I visit?")
+        assert decision.intent is QueryIntent.HYBRID
+
+    def test_in_the_last_month_routes_hybrid(self) -> None:
+        # Positive: "How many plants did I acquire in the last month"
+        # → HYBRID (multi-session aggregation, not temporal-anchored).
+        decision = QueryRouter().route(
+            "How many plants did I acquire in the last month?"
+        )
+        assert decision.intent is QueryIntent.HYBRID
+
+    def test_in_the_last_two_months_routes_hybrid(self) -> None:
+        # Positive: word-number "two months" timeframe → HYBRID.
+        decision = QueryRouter().route(
+            "How many pieces of jewelry did I acquire in the last two months?"
+        )
+        assert decision.intent is QueryIntent.HYBRID
+
+    def test_how_many_weeks_ago_stays_temporal(self) -> None:
+        # Cross-class interference: "How many weeks ago" is temporal-
+        # reasoning (single past event), NOT multi-session aggregation.
+        # Must NOT promote to HYBRID.
+        decision = QueryRouter().route(
+            "How many weeks ago did I meet up with my aunt?"
+        )
+        assert decision.intent is QueryIntent.TEMPORAL
+        assert decision.features.has_multi_session_cue is False
+
+    def test_what_is_caroline_color_stays_semantic(self) -> None:
+        # Cross-class interference: plain fact lookup, no aggregation
+        # cue, must stay SEMANTIC (not HYBRID fallback).
+        decision = QueryRouter().route("What is Caroline's favorite color?")
+        assert decision.intent is QueryIntent.SEMANTIC
+
+
+class TestS8AssistantRecallPattern:
+    """S8 Step 1: single-session-assistant recall phrasings
+    (``_ASSISTANT_RECALL_RE``) promote SEMANTIC routing and suppress
+    spurious TEMPORAL cues from stray day-of-week / "last time" words."""
+
+    def test_previous_chat_remind_me_routes_semantic(self) -> None:
+        # Positive: "I'm checking our previous chat ... Can you remind me
+        # what was the rotation for Admon on a Sunday?" → SEMANTIC
+        # despite "Sunday" (strong temporal) and "what was" (fact).
+        decision = QueryRouter().route(
+            "I'm checking our previous chat about the shift rotation sheet. "
+            "Can you remind me what was the rotation for Admon on a Sunday?"
+        )
+        assert decision.intent is QueryIntent.SEMANTIC
+        assert decision.features.has_assistant_recall_cue is True
+
+    def test_you_recommended_routes_semantic(self) -> None:
+        # Positive: "you recommended last time" → SEMANTIC (recall cue
+        # suppresses "last time" temporal).
+        decision = QueryRouter().route(
+            "I'm planning my trip to Amsterdam again and I was wondering, "
+            "what was the name of that hostel near the Red Light District "
+            "that you recommended last time?"
+        )
+        assert decision.intent is QueryIntent.SEMANTIC
+
+    def test_follow_up_on_previous_conversation_routes_semantic(self) -> None:
+        # Positive: "I wanted to follow up on our previous conversation"
+        # → SEMANTIC.
+        decision = QueryRouter().route(
+            "I wanted to follow up on our previous conversation about "
+            "front-end and back-end development. Can you clarify the "
+            "framework choice?"
+        )
+        assert decision.intent is QueryIntent.SEMANTIC
+
+    def test_did_i_tell_you_stays_episodic(self) -> None:
+        # Cross-class interference: the M11 fixture case ``episodic_trip``
+        # ("Did I tell you about my trip to Japan?") contracts EPISODIC.
+        # The assistant-recall pattern does not match "Did I tell you"
+        # (it requires "you" before the verb), so EPISODIC is preserved.
+        decision = QueryRouter().route("Did I tell you about my trip to Japan?")
+        assert decision.intent is QueryIntent.EPISODIC
+
+    def test_when_did_caroline_move_stays_temporal(self) -> None:
+        # Cross-class interference: "When did Caroline move to Seattle?"
+        # is a temporal-reasoning query (M11 fixture) and must NOT be
+        # captured by the assistant-recall SEMANTIC boost.
+        decision = QueryRouter().route("When did Caroline move to Seattle?")
+        assert decision.intent is QueryIntent.TEMPORAL

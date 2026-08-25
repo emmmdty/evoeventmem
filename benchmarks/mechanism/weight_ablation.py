@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import socket
 import sys
 import time
 import tomllib
@@ -67,21 +66,13 @@ DEFAULT_DATASET = Path("data/raw/longmemeval/longmemeval_s_cleaned.json")
 # Smoke-test override (set via --sample-limit). None means run all samples.
 _SMOKE_LIMIT: int | None = None
 
-# Diagnostic IPv4 preference: opencode.ai resolves to both IPv4 and IPv6,
-# and the IPv6 path intermittently resets connections on this host. The v2
-# run completed before the issue surfaced; S3 ablation re-runs hit it.
-# This monkeypatch filters ``getaddrinfo`` to AF_INET (IPv4) only, so the
-# reader's ``urllib.request`` calls stay on the working IPv4 path. This is
-# a diagnostic-only network shim in the ablation script; production code
-# (``src/evoeventmem``) is untouched.
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):  # type: ignore[no-untyped-def]
-    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-
-socket.getaddrinfo = _ipv4_getaddrinfo
+# S8 Step 2: the diagnostic AF_INET ``getaddrinfo`` filter that lived
+# here has been removed. The shim forced AF_INET to work around a
+# dual-stack connection-reset issue on this host during S3 ablation
+# re-runs; it was a diagnostic-only network patch in the ablation
+# script (production code in ``src/evoeventmem`` was always untouched).
+# If dual-stack routing issues resurface, fix the gateway / DNS layer,
+# not this script.
 
 # Outer retry for transient server-side connection resets. The production
 # ``_post_json`` retries 3 times with short backoff; on flaky days that is

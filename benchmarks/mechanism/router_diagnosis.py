@@ -29,6 +29,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter
 from collections.abc import Sequence
@@ -268,11 +269,113 @@ def _iter_questions(
             yield qid, question.category, question.question, question.asked_at
 
 
+def _per_category_breakdown(
+    samples: list[dict[str, Any]],
+    gold: list[QueryIntent],
+    predicted: list[QueryIntent],
+) -> dict[str, dict[str, Any]]:
+    """Return per-``question_type`` accuracy and prediction distribution.
+
+    Pure function (no I/O) so it can be unit-tested. Used by S8 Step 1
+    Phase A acceptance (A2 temporal-reasoning ≥70%, A3 knowledge-update
+    ≥70%, A4 multi-session ≥60%) and Step 4 Phase C dry-run verification.
+    """
+    by_type: dict[str, dict[str, Any]] = {}
+    for sample, g, p in zip(samples, gold, predicted, strict=True):
+        qtype = sample.get("question_type", "unknown")
+        bucket = by_type.setdefault(
+            qtype,
+            {
+                "support": 0,
+                "correct": 0,
+                "predictions": Counter(),
+            },
+        )
+        bucket["support"] += 1
+        bucket["predictions"][p.value] += 1
+        if g is p:
+            bucket["correct"] += 1
+    out: dict[str, dict[str, Any]] = {}
+    for qtype, bucket in by_type.items():
+        support = bucket["support"]
+        correct = bucket["correct"]
+        out[qtype] = {
+            "support": support,
+            "correct": correct,
+            "accuracy": correct / support if support else 0.0,
+            "predictions": dict(bucket["predictions"]),
+        }
+    return out
+
+
+def _format_per_category_table(breakdown: dict[str, dict[str, Any]]) -> str:
+    if not breakdown:
+        return "_No samples._"
+    label_width = max(10, *(len(k) for k in breakdown))
+    header = (
+        f"| {'question_type':<{label_width}} | "
+        f"{'support':>7} | {'correct':>7} | {'accuracy':>9} | "
+        f"{'top_pred':>11} |"
+    )
+    sep = "|---|---|---|---|---|"
+    rows = []
+    for qtype in sorted(breakdown):
+        m = breakdown[qtype]
+        top_pred = max(m["predictions"], key=m["predictions"].get) if m["predictions"] else "n/a"
+        rows.append(
+            f"| {qtype:<{label_width}} | {m['support']:>7} | "
+            f"{m['correct']:>7} | {m['accuracy'] * 100:>8.1f}% | "
+            f"{top_pred:>11} |"
+        )
+    return "\n".join([header, sep, *rows])
+
+
+def _load_sample_ids_file(path: Path) -> set[str] | None:
+    """Load a sample-ids manifest (one ID per line, or JSON list / dict).
+
+    Supports the S8 Step 4 stratified-sample manifest format
+    (``configs/longmemeval/stratified100.toml.inc``). Returns ``None`` if
+    the file is empty / not found so the caller can fall back to the full
+    dataset.
+    """
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return None
+    # JSON list or {"sample_ids": [...]} dict
+    if text[0] in "[{":
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            return {str(item) for item in payload}
+        if isinstance(payload, dict):
+            for key in ("sample_ids", "question_ids", "ids"):
+                if key in payload:
+                    return {str(item) for item in payload[key]}
+        return None
+    # Plain text: one ID per line (ignore blanks and # comments)
+    return {
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
 def build_report(
     source_run: Path,
     dataset_path: Path,
+    *,
+    full_500_only: bool = False,
+    sample_ids: set[str] | None = None,
 ) -> str:
-    """Build the router diagnosis markdown report."""
+    """Build the router diagnosis markdown report.
+
+    When ``full_500_only`` is set, the 50-question slice is skipped and
+    only the full 500-question supplement is emitted (S8 Step 1 Phase A
+    verification). When ``sample_ids`` is set, both the 50-question slice
+    and the 500-question supplement are restricted to those IDs (S8
+    Step 4 Phase C dry-run verification on the stratified100 manifest).
+    """
     v2_ids = _load_v2_sample_ids(source_run)
     v2_id_set = set(v2_ids) if v2_ids else None
     if v2_id_set is None:
@@ -284,49 +387,17 @@ def build_report(
 
     router = QueryRouter()
 
-    # 50-question slice (matches the v2 benchmark run).
-    samples_50: list[dict[str, Any]] = []
-    gold_50: list[QueryIntent] = []
-    pred_50: list[QueryIntent] = []
-    for qid, qtype, text, asked_at in _iter_questions(dataset_path, v2_id_set):
-        gold = GOLD_INTENT.get(qtype or "", QueryIntent.HYBRID)
-        pred = classify_query(router, text, asked_at)
-        samples_50.append(
-            {
-                "question_id": qid,
-                "question_type": qtype or "unknown",
-                "question": text,
-            }
-        )
-        gold_50.append(gold)
-        pred_50.append(pred)
-
-    result_50 = confusion_matrix(gold_50, pred_50)
-    misclassified_50 = _misclassified(samples_50, gold_50, pred_50)
-
-    # Full 500-question supplement (pure router classification; no benchmark).
-    samples_all: list[dict[str, Any]] = []
-    gold_all: list[QueryIntent] = []
-    pred_all: list[QueryIntent] = []
-    for qid, qtype, text, asked_at in _iter_questions(dataset_path, None):
-        gold_all.append(GOLD_INTENT.get(qtype or "", QueryIntent.HYBRID))
-        pred_all.append(classify_query(router, text, asked_at))
-        samples_all.append(
-            {
-                "question_id": qid,
-                "question_type": qtype or "unknown",
-                "question": text,
-            }
-        )
-    result_all = confusion_matrix(gold_all, pred_all)
-    misclassified_all = _misclassified(samples_all, gold_all, pred_all)
-
     lines: list[str] = []
     lines.append("# S3 Step 1: Router confusion-matrix diagnosis")
     lines.append("")
     lines.append(f"- **Router policy**: `{POLICY_NAME}`")
     lines.append(f"- **Source run**: `{source_run}`")
     lines.append(f"- **Dataset**: `{dataset_path}`")
+    if sample_ids is not None:
+        lines.append(
+            f"- **Sample restriction**: {len(sample_ids)} IDs from "
+            "manifest (S8 Step 4 Phase C dry run)"
+        )
     lines.append(
         "- **Gold-label mapping** (LongMemEval ``question_type`` → "
         "``QueryIntent``): "
@@ -344,46 +415,92 @@ def build_report(
     )
     lines.append("")
 
-    lines.append("## 50-question slice (matches the v2 benchmark run)")
-    lines.append("")
-    lines.append(
-        f"- N = {result_50['n']}, accuracy = "
-        f"{result_50['accuracy'] * 100:.1f}% "
-        f"({result_50['correct']}/{result_50['n']})"
-    )
-    lines.append(
-        "- All 50 v2 questions are `single-session-user` (gold = SEMANTIC); "
-        "this slice shows how the router classifies factual single-session "
-        "lookups, but cannot expose multi-class confusion."
-    )
-    lines.append("")
-    lines.append("### Confusion matrix (gold × predicted)")
-    lines.append("")
-    lines.append("```")
-    lines.append(_format_matrix_table(result_50))
-    lines.append("```")
-    lines.append("")
-    lines.append("### Per-class precision / recall / F1")
-    lines.append("")
-    lines.append(_format_per_class_table(result_50))
-    lines.append("")
-
-    if misclassified_50:
-        lines.append("### Misclassified samples (50-question slice)")
-        lines.append("")
-        lines.append("| question_id | gold | predicted | question |")
-        lines.append("|---|---|---|---|")
-        for m in misclassified_50[:10]:
-            q = m["question"].replace("|", "\\|").replace("\n", " ")[:80]
-            lines.append(
-                f"| {m['question_id']} | {m['gold']} | "
-                f"{m['predicted']} | {q} |"
+    # 50-question slice (matches the v2 benchmark run). Skipped when
+    # --full-500 is set or when a sample-ids manifest restricts the scope.
+    if not full_500_only and sample_ids is None:
+        samples_50: list[dict[str, Any]] = []
+        gold_50: list[QueryIntent] = []
+        pred_50: list[QueryIntent] = []
+        for qid, qtype, text, asked_at in _iter_questions(dataset_path, v2_id_set):
+            gold = GOLD_INTENT.get(qtype or "", QueryIntent.HYBRID)
+            pred = classify_query(router, text, asked_at)
+            samples_50.append(
+                {
+                    "question_id": qid,
+                    "question_type": qtype or "unknown",
+                    "question": text,
+                }
             )
-        if len(misclassified_50) > 10:
-            lines.append(f"... ({len(misclassified_50) - 10} more)")
+            gold_50.append(gold)
+            pred_50.append(pred)
+
+        result_50 = confusion_matrix(gold_50, pred_50)
+        misclassified_50 = _misclassified(samples_50, gold_50, pred_50)
+
+        lines.append("## 50-question slice (matches the v2 benchmark run)")
+        lines.append("")
+        lines.append(
+            f"- N = {result_50['n']}, accuracy = "
+            f"{result_50['accuracy'] * 100:.1f}% "
+            f"({result_50['correct']}/{result_50['n']})"
+        )
+        lines.append(
+            "- All 50 v2 questions are `single-session-user` (gold = SEMANTIC); "
+            "this slice shows how the router classifies factual single-session "
+            "lookups, but cannot expose multi-class confusion."
+        )
+        lines.append("")
+        lines.append("### Confusion matrix (gold × predicted)")
+        lines.append("")
+        lines.append("```")
+        lines.append(_format_matrix_table(result_50))
+        lines.append("```")
+        lines.append("")
+        lines.append("### Per-class precision / recall / F1")
+        lines.append("")
+        lines.append(_format_per_class_table(result_50))
         lines.append("")
 
-    lines.append("## Full 500-question supplement (router-only, no LLM)")
+        if misclassified_50:
+            lines.append("### Misclassified samples (50-question slice)")
+            lines.append("")
+            lines.append("| question_id | gold | predicted | question |")
+            lines.append("|---|---|---|---|")
+            for m in misclassified_50[:10]:
+                q = m["question"].replace("|", "\\|").replace("\n", " ")[:80]
+                lines.append(
+                    f"| {m['question_id']} | {m['gold']} | "
+                    f"{m['predicted']} | {q} |"
+                )
+            if len(misclassified_50) > 10:
+                lines.append(f"... ({len(misclassified_50) - 10} more)")
+            lines.append("")
+
+    # Full 500-question supplement (pure router classification; no LLM),
+    # OR the stratified-sample subset when --sample-ids-file is set.
+    samples_all: list[dict[str, Any]] = []
+    gold_all: list[QueryIntent] = []
+    pred_all: list[QueryIntent] = []
+    for qid, qtype, text, asked_at in _iter_questions(dataset_path, sample_ids):
+        gold_all.append(GOLD_INTENT.get(qtype or "", QueryIntent.HYBRID))
+        pred_all.append(classify_query(router, text, asked_at))
+        samples_all.append(
+            {
+                "question_id": qid,
+                "question_type": qtype or "unknown",
+                "question": text,
+            }
+        )
+    result_all = confusion_matrix(gold_all, pred_all)
+    misclassified_all = _misclassified(samples_all, gold_all, pred_all)
+    breakdown_all = _per_category_breakdown(samples_all, gold_all, pred_all)
+
+    supplement_title = (
+        "## Stratified-sample subset (router-only, no LLM)"
+        if sample_ids is not None
+        else "## Full 500-question supplement (router-only, no LLM)"
+    )
+    lines.append(supplement_title)
     lines.append("")
     lines.append(
         f"- N = {result_all['n']}, accuracy = "
@@ -407,7 +524,32 @@ def build_report(
     lines.append(_format_per_class_table(result_all))
     lines.append("")
 
-    lines.append("## Misclassified samples (full 500, first 25)")
+    # S8 Step 1 Phase A: per-question_type breakdown for A2/A3/A4
+    # acceptance (temporal-reasoning ≥70%, knowledge-update ≥70%,
+    # multi-session ≥60%).
+    lines.append("### Per-question_type accuracy (S8 Phase A acceptance)")
+    lines.append("")
+    lines.append(_format_per_category_table(breakdown_all))
+    tr = breakdown_all.get("temporal-reasoning", {})
+    ku = breakdown_all.get("knowledge-update", {})
+    ms = breakdown_all.get("multi-session", {})
+    tr_ku_support = tr.get("support", 0) + ku.get("support", 0)
+    tr_ku_correct = tr.get("correct", 0) + ku.get("correct", 0)
+    tr_ku_acc = tr_ku_correct / tr_ku_support if tr_ku_support else 0.0
+    ms_acc = ms.get("accuracy", 0.0)
+    lines.append("")
+    lines.append(
+        f"- temporal-reasoning + knowledge-update combined: "
+        f"{tr_ku_correct}/{tr_ku_support} = {tr_ku_acc * 100:.1f}% "
+        "(S8 V1 ≥ 70%)"
+    )
+    lines.append(
+        f"- multi-session: {ms.get('correct', 0)}/{ms.get('support', 0)} "
+        f"= {ms_acc * 100:.1f}% (S8 A4 ≥ 60%)"
+    )
+    lines.append("")
+
+    lines.append("## Misclassified samples (first 25)")
     lines.append("")
     if misclassified_all:
         lines.append("| question_id | question_type | gold | predicted | question |")
@@ -429,25 +571,29 @@ def build_report(
     lines.extend(_suggestions(result_all))
     lines.append("")
 
-    lines.append("## N9 verdict")
+    lines.append("## N9 / S8 Phase A verdict")
     lines.append("")
-    if result_all["accuracy"] >= 0.80:
+    if result_all["accuracy"] >= 0.60:
         lines.append(
-            f"- Full-500 router accuracy = {result_all['accuracy'] * 100:.1f}% "
-            "≥ 80% threshold → router rules are **not** the obvious QEMR "
-            "failure root cause. Weight profile (Step 2) and embedding "
-            "(Step 3) are the next levers."
+            f"- Router accuracy = {result_all['accuracy'] * 100:.1f}% "
+            "≥ 60% S8 Phase A threshold (A1) → router is fit for the "
+            "stratified live run. Continue to Phase B."
         )
     else:
         lines.append(
-            f"- Full-500 router accuracy = {result_all['accuracy'] * 100:.1f}% "
-            "< 80% threshold → router mis-routing contributes to QEMR "
-            "failure; rule edits routed to a post-S3 task (N9 scope)."
+            f"- Router accuracy = {result_all['accuracy'] * 100:.1f}% "
+            "< 60% S8 Phase A threshold (A1) → router mis-routing still "
+            "contributes; iterate rules before Phase B."
         )
     lines.append(
-        f"- 50-question slice accuracy = {result_50['accuracy'] * 100:.1f}% "
-        "(single-class slice; informational only)."
+        f"- temporal-reasoning + knowledge-update combined = "
+        f"{tr_ku_acc * 100:.1f}% (S8 V1 ≥ 70%)"
     )
+    if not full_500_only and sample_ids is None and "result_50" in dir():
+        lines.append(
+            f"- 50-question slice accuracy = {result_50['accuracy'] * 100:.1f}% "
+            "(single-class slice; informational only)."
+        )
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -455,7 +601,7 @@ def build_report(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="S3 Step 1: router confusion-matrix diagnosis (N9, read-only)."
+        description="S3 Step 1 / S8 Step 1: router confusion-matrix diagnosis (N9, read-only)."
     )
     parser.add_argument(
         "--source-run",
@@ -475,6 +621,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Write the report to this path. Default: stdout.",
     )
+    parser.add_argument(
+        "--full-500",
+        action="store_true",
+        help=(
+            "S8 Step 1 Phase A: emit only the full 500-question supplement "
+            "(skip the 50-question v2 slice)."
+        ),
+    )
+    parser.add_argument(
+        "--sample-ids-file",
+        type=Path,
+        default=None,
+        help=(
+            "S8 Step 4 Phase C: restrict the diagnosis to the IDs listed "
+            "in this manifest (one ID per line, JSON list, or "
+            "{'sample_ids': [...]} dict). Used for the stratified100 "
+            "dry run."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.dataset.exists():
@@ -487,7 +652,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    report = build_report(args.source_run, args.dataset)
+    sample_ids = (
+        _load_sample_ids_file(args.sample_ids_file)
+        if args.sample_ids_file is not None
+        else None
+    )
+    report = build_report(
+        args.source_run,
+        args.dataset,
+        full_500_only=args.full_500,
+        sample_ids=sample_ids,
+    )
 
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

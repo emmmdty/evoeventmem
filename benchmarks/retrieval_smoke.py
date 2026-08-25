@@ -32,7 +32,19 @@ from evoeventmem.router import QueryIntent
 
 ANNOTATIONS = Path("tests/fixtures/retrieval/m12_retrieval_smoke.json")
 DEFAULT_OUTPUT_ROOT = Path("artifacts/m12_retrieval_smoke")
-STRATEGIES = list(RetrievalStrategy)
+# S8: ``RetrievalStrategy`` grew to 6 members when S3 added the
+# ``qemr_no_temporal`` / ``qemr_no_graph`` / ``qemr_uniform`` ablation
+# arms. The retrieval smoke is a base-strategy contract (M12), not an
+# ablation runner — only the three base strategies (fixed_vector,
+# fixed_hybrid, qemr) are in scope. Pinning the list keeps the
+# per-case record count at 3 (one per base strategy); using
+# ``list(RetrievalStrategy)`` would produce 6 records per case and
+# trip ``test_retrieval_smoke_excludes_synthetic_memory_without_evidence``.
+STRATEGIES = [
+    RetrievalStrategy.FIXED_VECTOR,
+    RetrievalStrategy.FIXED_HYBRID,
+    RetrievalStrategy.QEMR,
+]
 RECENCY_REFERENCE = datetime(2026, 8, 1, tzinfo=UTC)
 WRRF_STRATEGIES = frozenset({RetrievalStrategy.FIXED_HYBRID, RetrievalStrategy.QEMR})
 

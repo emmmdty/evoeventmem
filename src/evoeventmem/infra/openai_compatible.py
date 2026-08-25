@@ -15,7 +15,7 @@ from evoeventmem.core.ports import ChatMessage, ChatResponse, EmbeddingResponse
 MAX_RETRY_ATTEMPTS = 3
 # S4b: backoff is overridable via env var so tests can run sub-batch retry
 # scenarios in seconds rather than minutes. Read lazily inside ``_post_json``
-# so test fixtures that monkeypatch the env var take effect per-call.
+# so test fixtures that patch the env var take effect per-call.
 DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
 # S4b: qwen3-embedding (and similar small OpenAI-compatible embedding
 # servers) intermittently reject large ``input`` arrays with HTTP 500 after

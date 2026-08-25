@@ -304,6 +304,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-dir", type=Path, default=None)
     parser.add_argument("--resume-dir", type=Path, default=None)
     parser.add_argument("--sample-ids", nargs="*", default=None)
+    parser.add_argument(
+        "--sample-ids-file",
+        type=Path,
+        default=None,
+        help=(
+            "S8: load sample IDs from a manifest file (one ID per line, "
+            "JSON list, or {'sample_ids': [...]} dict). Used with the "
+            "stratified100 manifest. Mutually exclusive with --sample-ids."
+        ),
+    )
     parser.add_argument("--validate-config", action="store_true")
     parser.add_argument(
         "--extraction-only",
@@ -316,16 +326,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.sample_ids is not None and args.sample_ids_file is not None:
+        parser.error("--sample-ids and --sample-ids-file are mutually exclusive")
+
     config = load_config(args.config)
     if args.validate_config:
         print(json.dumps(_config_report(config, args.config), indent=2, sort_keys=True))
         return 0
 
+    resolved_sample_ids = args.sample_ids
+    if args.sample_ids_file is not None:
+        resolved_sample_ids = _load_sample_ids_from_file(args.sample_ids_file)
+
     run_dir = _resolve_run_dir(args)
     summary = run_experiment(
         config,
         run_dir,
-        sample_ids=args.sample_ids,
+        sample_ids=resolved_sample_ids,
         extraction_only=args.extraction_only,
     )
     if args.extraction_only:
@@ -1209,6 +1226,34 @@ def _load_records(
         ):
             break
     return records
+
+
+def _load_sample_ids_from_file(path: Path) -> list[str]:
+    """Load sample IDs from a manifest file (S8 stratified-sample format).
+
+    Supports: one ID per line (plain text), a JSON list, or a JSON dict
+    with ``sample_ids`` / ``question_ids`` / ``ids`` key. Used by the
+    S8 ``--sample-ids-file`` CLI flag with the stratified100 manifest.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"sample-ids-file not found: {path}")
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            return [str(item) for item in payload]
+        if isinstance(payload, dict):
+            for key in ("sample_ids", "question_ids", "ids"):
+                if key in payload:
+                    return [str(item) for item in payload[key]]
+        raise ValueError(f"unrecognized sample-ids-file JSON shape: {path}")
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
 
 
 def _apply_sample_ids(

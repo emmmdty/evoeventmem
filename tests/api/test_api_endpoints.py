@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from evoeventmem.api.app import create_app
@@ -437,3 +438,67 @@ def test_logs_never_contain_memory_content() -> None:
 
     assert "secret project codename npmmirror-42" not in stream.getvalue()
     assert "npmmirror-42" not in stream.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# T2-A6: existing endpoints work when auth is enabled (mock auth)
+# ---------------------------------------------------------------------------
+
+_AUTH_TOKEN = "test-api-key-t2a6"
+
+
+def _auth_headers(
+    *,
+    tenant: str = "api-tenant",
+    user: str = "api-user",
+    session: str | None = None,
+) -> dict[str, str]:
+    h = _headers(tenant=tenant, user=user, session=session)
+    h["Authorization"] = f"Bearer {_AUTH_TOKEN}"
+    return h
+
+
+def test_existing_endpoints_work_with_auth_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T2-A6: all CRUD endpoints return 200 when EEM_API_KEYS is set and
+    requests carry a valid Bearer token."""
+    monkeypatch.setenv("EEM_API_KEYS", _AUTH_TOKEN)
+    client = TestClient(create_app())
+
+    # write
+    write_resp = client.post(
+        "/v1/memories", headers=_auth_headers(), json=_write_payload()
+    )
+    assert write_resp.status_code == 200
+    memory_id = write_resp.json()["memory_id"]
+
+    # search
+    search_resp = client.get(
+        "/v1/memories/search",
+        headers=_auth_headers(),
+        params={"q": "npmmirror"},
+    )
+    assert search_resp.status_code == 200
+
+    # explain
+    explain_resp = client.get(
+        f"/v1/memories/{memory_id}/explain",
+        headers=_auth_headers(),
+    )
+    assert explain_resp.status_code == 200
+
+    # feedback
+    feedback_resp = client.post(
+        f"/v1/memories/{memory_id}/feedback",
+        headers=_auth_headers(),
+        json={"outcome": "useful"},
+    )
+    assert feedback_resp.status_code == 200
+
+    # forget
+    forget_resp = client.post(
+        f"/v1/memories/{memory_id}/forget",
+        headers=_auth_headers(),
+    )
+    assert forget_resp.status_code == 200

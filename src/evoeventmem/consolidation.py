@@ -23,6 +23,7 @@ from evoeventmem.linking import (
     LinkCandidateGenerator,
     normalized_linking_key,
 )
+from evoeventmem.router import QueryIntent
 
 
 class ConsolidationAction(StrEnum):
@@ -79,10 +80,12 @@ class ETECConsolidator:
         thresholds: ETECThresholds | None = None,
         *,
         candidate_generator: LinkCandidateGenerator | None = None,
+        routing_intent: QueryIntent | None = None,
     ) -> None:
         self._embedding_model = embedding_model
         self._thresholds = thresholds or ETECThresholds()
         self._candidate_generator = candidate_generator or LinkCandidateGenerator(embedding_model)
+        self._routing_intent = routing_intent
 
     def decide(
         self,
@@ -130,6 +133,24 @@ class ETECConsolidator:
             decision = reject_decision or self._select_decision(source, scored)
             if decision.action is ConsolidationAction.REJECT:
                 return ETECApplyResult(decision=decision)
+
+            if (
+                decision.action is ConsolidationAction.SUPERSEDE
+                and self._routing_intent is QueryIntent.TEMPORAL
+            ):
+                decision = decision.model_copy(
+                    update={
+                        "action": ConsolidationAction.MERGE,
+                        "rule_hits": [
+                            *decision.rule_hits,
+                            "temporal_intent_supersede_downgraded_to_merge",
+                        ],
+                        "reason": (
+                            "SUPERSEDE was downgraded to MERGE because the query "
+                            "intent is TEMPORAL; old values are preserved for sorting."
+                        ),
+                    }
+                )
 
             targets_by_id = {target.memory_id: target for target in bounded_targets}
             if decision.action is ConsolidationAction.MERGE:

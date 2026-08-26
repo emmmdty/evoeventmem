@@ -45,6 +45,7 @@ from evoeventmem.extraction import (
     _turn_evidence,
 )
 from evoeventmem.infra.in_memory_repository import InMemoryMemoryRepository
+from evoeventmem.router import QueryIntent
 from evoeventmem.services.memory_service import (
     MemoryService,
     MemoryWriteCandidate,
@@ -271,6 +272,7 @@ def materialize_event_store(
     apply_etec: bool,
     embedding_model: EmbeddingModel | None = None,
     user_id: str,
+    routing_intent: QueryIntent | None = None,
 ) -> tuple[MemoryRepository, dict[str, Any]]:
     """Build a MemoryRepository from a shared extraction snapshot."""
     repository = InMemoryMemoryRepository()
@@ -281,7 +283,7 @@ def materialize_event_store(
     if apply_etec:
         if embedding_model is None:
             raise ValueError("apply_etec requires an embedding_model")
-        consolidator = ETECConsolidator(embedding_model)
+        consolidator = ETECConsolidator(embedding_model, routing_intent=routing_intent)
         actions: Counter[str] = Counter()
         for memory in candidates:
             applied = consolidator.apply(repository, memory)

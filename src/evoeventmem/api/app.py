@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from evoeventmem.api.auth import AuthMiddleware
 from evoeventmem.core.ports import RequestScope, SearchHit
 from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemorySearchHit
 from evoeventmem.infra.async_embedding import EmbeddingModelError
@@ -401,6 +402,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.middleware("http")(_observability_middleware)
+    app.add_middleware(AuthMiddleware)
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:

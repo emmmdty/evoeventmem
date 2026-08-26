@@ -102,6 +102,18 @@ uv run python -m evoeventmem.cli smoke
 uv run uvicorn evoeventmem.api.app:app --reload
 ```
 
+API 端点默认无需认证（开发模式）。生产环境设置 `EEM_API_KEYS` 启用 Bearer token 认证：
+
+```bash
+# .env 中设置（逗号分隔多个 key）
+EEM_API_KEYS=your-api-key-here
+
+# 请求时携带
+curl -H "Authorization: Bearer your-api-key-here" http://localhost:8000/v1/memories/search?q=test
+```
+
+未设置 `EEM_API_KEYS` 时认证中间件自动禁用，不影响开发体验。
+
 不使用 `uv`：
 
 ```bash

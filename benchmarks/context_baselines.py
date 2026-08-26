@@ -39,7 +39,7 @@ class DatasetConfig(BaseModel):
 
 
 class ContextBaselineConfig(BaseModel):
-    baseline: Literal["no_memory", "full_context"]
+    baseline: Literal["no_memory", "full_context", "full_context_unlimited"]
     run_id_prefix: str = Field(min_length=1)
     model_id: str = Field(default="deterministic-local-fake", min_length=1)
     max_input_tokens: int = Field(gt=0)
@@ -84,8 +84,9 @@ class NoMemoryContextBuilder:
 
 
 class FullContextBuilder:
-    def __init__(self, max_input_tokens: int) -> None:
+    def __init__(self, max_input_tokens: int, unlimited: bool = False) -> None:
         self.max_input_tokens = max_input_tokens
+        self.unlimited = unlimited
 
     def build(
         self,
@@ -94,6 +95,8 @@ class FullContextBuilder:
     ) -> ContextBuildResult:
         question_line = f"Question: {question.question}"
         question_tokens = _count_tokens(question_line)
+        if self.unlimited:
+            return self._build_unlimited(question, history, question_line, question_tokens)
         if question_tokens > self.max_input_tokens:
             return _fit_question_only(question.question_id, question_line, self.max_input_tokens)
 
@@ -125,6 +128,25 @@ class FullContextBuilder:
             input_tokens=_count_tokens(prompt),
             included_history_turn_ids=tuple(line.turn_id for line in accepted),
             truncations=tuple(reversed(truncations)),
+        )
+
+    def _build_unlimited(
+        self,
+        question: NormalizedQuestion,
+        history: Iterable[NormalizedSession],
+        question_line: str,
+        question_tokens: int,
+    ) -> ContextBuildResult:
+        history_lines = _history_lines(history)
+        accepted = history_lines
+        prompt_lines = [line.text for line in accepted]
+        prompt_lines.append(question_line)
+        prompt = "\n".join(prompt_lines)
+        return ContextBuildResult(
+            prompt=prompt,
+            input_tokens=_count_tokens(prompt),
+            included_history_turn_ids=tuple(line.turn_id for line in accepted),
+            truncations=(),
         )
 
 
@@ -241,10 +263,13 @@ def run_context_baseline(config: ContextBaselineConfig, output_dir: Path) -> Run
 
 
 def _make_builder(
-    baseline: Literal["no_memory", "full_context"], max_input_tokens: int
+    baseline: Literal["no_memory", "full_context", "full_context_unlimited"],
+    max_input_tokens: int,
 ) -> NoMemoryContextBuilder | FullContextBuilder:
     if baseline == "no_memory":
         return NoMemoryContextBuilder(max_input_tokens)
+    if baseline == "full_context_unlimited":
+        return FullContextBuilder(max_input_tokens, unlimited=True)
     return FullContextBuilder(max_input_tokens)
 
 

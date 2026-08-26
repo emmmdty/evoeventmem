@@ -103,3 +103,96 @@ def test_context_baselines_produce_standard_run_artifacts(tmp_path: Path) -> Non
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_full_context_unlimited_includes_all_history() -> None:
+    question = NormalizedQuestion(question_id="q1", question="Where does the user live now?")
+    history = [
+        NormalizedSession(
+            session_id="old",
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="old:1", speaker="user", content="I live in Austin.")
+            ],
+        ),
+        NormalizedSession(
+            session_id="new",
+            timestamp=datetime(2024, 2, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="new:1", speaker="user", content="I moved to Seattle.")
+            ],
+        ),
+    ]
+    builder = FullContextBuilder(max_input_tokens=16, unlimited=True)
+    result = builder.build(question, history)
+
+    assert "Austin" in result.prompt
+    assert "Seattle" in result.prompt
+    assert result.truncations == ()
+    assert set(result.included_history_turn_ids) == {"old:1", "new:1"}
+    assert result.input_tokens > 16
+
+
+def test_full_context_unlimited_output_exceeds_limited() -> None:
+    question = NormalizedQuestion(question_id="q1", question="Where does the user live now?")
+    history = [
+        NormalizedSession(
+            session_id="old",
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="old:1", speaker="user", content="I live in Austin.")
+            ],
+        ),
+        NormalizedSession(
+            session_id="new",
+            timestamp=datetime(2024, 2, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="new:1", speaker="user", content="I moved to Seattle.")
+            ],
+        ),
+    ]
+    limited = FullContextBuilder(max_input_tokens=16, unlimited=False).build(question, history)
+    unlimited = FullContextBuilder(max_input_tokens=16, unlimited=True).build(question, history)
+
+    assert unlimited.input_tokens > limited.input_tokens
+    assert len(unlimited.included_history_turn_ids) > len(limited.included_history_turn_ids)
+
+
+def test_full_context_limited_behavior_unchanged() -> None:
+    question = NormalizedQuestion(question_id="q1", question="Where does the user live now?")
+    history = [
+        NormalizedSession(
+            session_id="old",
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="old:1", speaker="user", content="I live in Austin.")
+            ],
+        ),
+        NormalizedSession(
+            session_id="new",
+            timestamp=datetime(2024, 2, 1, tzinfo=UTC),
+            turns=[
+                NormalizedTurn(turn_id="new:1", speaker="user", content="I moved to Seattle.")
+            ],
+        ),
+    ]
+    builder = FullContextBuilder(max_input_tokens=16)
+    result = builder.build(question, history)
+
+    assert result.included_history_turn_ids == ("new:1",)
+    assert "Austin" not in result.prompt
+    assert result.input_tokens <= 16
+
+
+def test_context_baselines_unlimited_produces_standard_artifacts(tmp_path: Path) -> None:
+    unlimited_config = load_context_baseline_config(
+        CONFIGS / "m04_full_context_unlimited_fixture.json"
+    )
+    unlimited_summary = run_context_baseline(unlimited_config, tmp_path / "full-context-unlimited")
+
+    assert unlimited_summary.metadata.metadata["baseline"] == "full_context_unlimited"
+    assert unlimited_summary.sample_count == 2
+
+    predictions = _read_jsonl(tmp_path / "full-context-unlimited/predictions.jsonl")
+    assert predictions[0]["metadata"]["context"]["truncations"] == []
+    assert predictions[0]["metadata"]["context"]["included_history_turn_ids"]

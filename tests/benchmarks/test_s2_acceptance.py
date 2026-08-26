@@ -639,6 +639,20 @@ def test_s2_scope_diff_stat_touches_only_expected_files() -> None:
         "tests/models/test_openai_compatible.py",
         "benchmarks/longmemeval/run.py",
     )
+    # Phase 1 (T1 selective SUPERSEDE, T2 API auth, T3 CI/CD) completed
+    # and pending commit.
+    phase1_allowed = (
+        ".env.example",
+        ".github/workflows/ci.yml",
+        "README.md",
+        "benchmarks/common/memory_inputs.py",
+        "src/evoeventmem/api/app.py",
+        "src/evoeventmem/api/auth.py",
+        "src/evoeventmem/consolidation.py",
+        "tests/api/test_api_endpoints.py",
+        "tests/api/test_auth.py",
+        "tests/consolidation/test_selective_supersede.py",
+    )
     # S8 (stratified validation) is a post-S2 remediation stage that
     # explicitly modifies ``src/evoeventmem/router.py`` (Step 1 router
     # rules enhancement), the IPv4-shim diagnostic modules, the
@@ -656,8 +670,10 @@ def test_s2_scope_diff_stat_touches_only_expected_files() -> None:
         "benchmarks/mechanism/router_diagnosis.py",
         "benchmarks/longmemeval/stratified_sample.py",
         "benchmarks/retrieval_smoke.py",
+        "benchmarks/context_baselines.py",
         "tests/retrieval/test_query_router.py",
         "tests/benchmarks/test_stratified_sample.py",
+        "tests/benchmarks/test_context_baselines.py",
         "tests/mechanism/test_router_diagnosis.py",
         "tests/mechanism/test_m2_stale_judge.py",
         "docs/S8-PREREGISTRATION.md",
@@ -681,6 +697,8 @@ def test_s2_scope_diff_stat_touches_only_expected_files() -> None:
             continue
         if path.startswith(s8_allowed):
             s8_pending.append(path)
+            continue
+        if path.startswith(phase1_allowed):
             continue
         offending.append(path)
     if offending:

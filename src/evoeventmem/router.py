@@ -811,6 +811,13 @@ def _detect_temporal_constraint(
                 rule_hits=rule_hits,
                 reason="Query bounds events before an explicit date.",
             )
+        _record("temporal_relation_without_date")
+        return TemporalConstraint(
+            operator=TemporalOperator.NONE,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query mentions a temporal relation but lacks an explicit date.",
+        )
     if _AFTER_RE.search(normalized):
         year = _YEAR_RE.search(normalized)
         if year is not None:
@@ -823,6 +830,13 @@ def _detect_temporal_constraint(
                 rule_hits=rule_hits,
                 reason="Query bounds events after an explicit date.",
             )
+        _record("temporal_relation_without_date")
+        return TemporalConstraint(
+            operator=TemporalOperator.NONE,
+            matched_spans=spans,
+            rule_hits=rule_hits,
+            reason="Query mentions a temporal relation but lacks an explicit date.",
+        )
     if _AT_DATE_RE.search(normalized):
         year = _YEAR_RE.search(normalized)
         if year is not None:
@@ -883,14 +897,6 @@ def _detect_temporal_constraint(
             matched_spans=spans,
             rule_hits=rule_hits,
             reason="Query asks about the latest occurrence.",
-        )
-    if _BEFORE_RE.search(normalized) or _AFTER_RE.search(normalized):
-        _record("temporal_relation_without_date")
-        return TemporalConstraint(
-            operator=TemporalOperator.NONE,
-            matched_spans=spans,
-            rule_hits=rule_hits,
-            reason="Query mentions a temporal relation but lacks an explicit date.",
         )
     return None
 

@@ -1,0 +1,16 @@
+{
+  "baseline": "full_context_unlimited",
+  "run_id_prefix": "m04-full-context-unlimited-fixture",
+  "model_id": "deterministic-local-fake",
+  "max_input_tokens": 128,
+  "datasets": [
+    {
+      "name": "longmemeval",
+      "path": "tests/fixtures/longmemeval/oracle_tiny.json"
+    },
+    {
+      "name": "locomo",
+      "path": "tests/fixtures/locomo/locomo_tiny.json"
+    }
+  ]
+}

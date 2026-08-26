@@ -42,6 +42,13 @@ n=100 分层样本，6 方法 × 6 类别：
 | single-session-preference | 6 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
 | **overall** | **100** | **0.240** | **0.200** | **0.230** | **0.200** | **0.000** | **0.000** |
 
+> **Multiple-comparison caveat**: Per-category EM values are exploratory.
+> With 6 categories × N method pairs, uncorrected comparisons inflate
+> false-positive risk. Category-level results should be interpreted as
+> hypothesis-generating, not confirmatory. A Holm-corrected analysis
+> across all category-method pairs is recommended before drawing
+> category-specific conclusions.
+
 **ETEC 主场子集**（temporal-reasoning + knowledge-update, n=42）：
 
 | 方法 | EM |
@@ -64,7 +71,7 @@ n=100 分层样本上 `full` vs `vector_rag` 的配对 EM 差异：
 | temporal-reasoning | 27 | 0.148 | 0.222 | -0.074 | — |
 | knowledge-update | 15 | 0.267 | 0.133 | +0.133 | — |
 
-**注意**：n=100 的 MDE ≈ ±0.14（整体），n=42 的 MDE ≈ ±0.21（主场子集）。所有 delta 均在 MDE 范围内，统计功效不足以判断方向显著性。预注册决策规则基于方向 + 效应量，不要求显著性。
+**注意**：n=100 的 MDE ≈ ±0.14（整体），n=42 的 MDE ≈ ±0.21（主场子集）。所有 delta 均在 MDE 范围内，统计功效不足以判断方向显著性。预注册决策规则基于方向 + 效应量，不要求显著性。Category-level p-values are not corrected for multiplicity. The primary comparison (full vs vector_rag at the dataset level) is the pre-registered confirmatory test.
 
 ## 5. M2 judge 新结果
 

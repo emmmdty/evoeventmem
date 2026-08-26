@@ -61,9 +61,67 @@ noise that no post-hoc analysis can disentangle.
 
 ## 3. MDE and statistical power (pre-registered)
 
-n=100, α=0.05 two-sided, power=0.8:
-- **ETEC home-court subset (n≈42)**: paired-proportion MDE ≈ ±0.21.
-- **Overall (n=100)**: paired-proportion MDE ≈ ±0.14.
+### MDE formula (paired-proportion test)
+
+For a paired design comparing two proportions (EM scores) on the same
+questions, the minimum detectable effect (MDE) is:
+
+```
+MDE ≈ (z_{α/2} + z_β) × √(p̄ × (1−p̄) / n)
+```
+
+where:
+- `z_{α/2} = 1.96` (α = 0.05 two-sided)
+- `z_β = 0.84` (power = 0.80)
+- `p̄ = (p1 + p2) / 2` is the pooled baseline proportion
+- `n` is the number of paired observations
+
+Note: Unlike the two-independent-proportions formula, the paired design
+does **not** include the factor of 2 in the variance term, because the
+same questions are evaluated by both methods (within-subject design).
+
+The paired correlation ρ between methods on the same questions is
+accounted for via the variance inflation factor (VIF):
+
+```
+VIF = 2 × (1 − ρ)
+MDE_adjusted = MDE × √(VIF)
+```
+
+With ρ ≈ 0.3 (same questions, different retrieval methods), VIF ≈ 1.4,
+inflating MDE by ~18%.
+
+### Assumptions
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| α | 0.05 two-sided | Standard |
+| Power (1−β) | 0.80 | Standard |
+| Expected baseline (vector_rag EM) | ≈ 0.56 | S3 v2 50q pilot |
+| Paired correlation ρ | ≈ 0.3 | Same questions, different methods |
+| n (overall) | 100 | Pre-registered sample |
+| n (home-court subset) | ≈ 42 | temporal-reasoning + knowledge-update |
+
+### Computed MDE values
+
+- **Overall (n=100)**: p̄ ≈ 0.50, MDE ≈ ±0.14 (before VIF adjustment)
+- **Home-court subset (n≈42)**: p̄ ≈ 0.50, MDE ≈ ±0.21 (before VIF adjustment)
+
+### Caveats on C+/C/D decision stability
+
+- **n=100 MDE=0.14** is far larger than the observed delta range
+  (0.00–0.08 across categories). C+/C/D judgment is **unstable** at
+  this sample size — a small shift in sample composition could flip the
+  verdict.
+- **n=42 home-court MDE=0.21** is even larger. The home-court结论
+  (full vs vector_rag delta=+0.000) is **directional only**, not
+  statistically grounded.
+- **500q run** would shrink MDE to ±0.06–0.10, but still requires CI
+  support to draw category-specific conclusions. 500q is non-blocking
+  per `docs/METHODOLOGY_CHANGE.md`.
+- Category-level comparisons (6 categories × N methods) are
+  **exploratory** — see `docs/S8-STRATIFIED_VALIDATION_REPORT.md`
+  multiple-comparison caveat.
 
 **The decision does NOT require statistical significance.** It requires
 **direction + effect size** — this is the small-sample pre-registered

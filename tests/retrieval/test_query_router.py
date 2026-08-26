@@ -640,3 +640,37 @@ class TestS8AssistantRecallPattern:
         # captured by the assistant-recall SEMANTIC boost.
         decision = QueryRouter().route("When did Caroline move to Seattle?")
         assert decision.intent is QueryIntent.TEMPORAL
+
+
+# ---------------------------------------------------------------------------
+# T6: router dead-code fix — BEFORE/AFTER without year must return NONE
+# before DURATION/SEQUENCE/RELATIVE/FIRST/LAST checks.
+# ---------------------------------------------------------------------------
+
+
+def test_before_without_year_returns_none() -> None:
+    """'What happened before the concert?' → TemporalOperator.NONE"""
+    decision = QueryRouter().route("What happened before the concert?")
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+    assert "temporal_relation_without_date" in decision.temporal_constraint.rule_hits
+
+
+def test_after_without_year_returns_none() -> None:
+    """'What happened after the meeting?' → TemporalOperator.NONE"""
+    decision = QueryRouter().route("What happened after the meeting?")
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+    assert "temporal_relation_without_date" in decision.temporal_constraint.rule_hits
+
+
+def test_before_with_year_returns_before() -> None:
+    """'What happened before 2023?' → TemporalOperator.BEFORE"""
+    decision = QueryRouter().route("What happened before 2023?")
+    assert decision.temporal_constraint.operator is TemporalOperator.BEFORE
+    assert decision.temporal_constraint.upper_bound_utc is not None
+
+
+def test_before_with_stray_first_not_misclassified() -> None:
+    """'What was the first thing before the concert?' → NONE, not EARLIEST"""
+    decision = QueryRouter().route("What was the first thing before the concert?")
+    assert decision.temporal_constraint.operator is TemporalOperator.NONE
+    assert decision.temporal_constraint.operator is not TemporalOperator.EARLIEST

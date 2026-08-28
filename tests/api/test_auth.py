@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
+import time
+from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from jose import jwt
 
 from evoeventmem.api.app import create_app
 
@@ -144,3 +148,235 @@ def test_multiple_valid_keys() -> None:
         assert resp_b.status_code == 200
     finally:
         os.environ["EEM_API_KEYS"] = _API_KEY
+
+
+# ---------------------------------------------------------------------------
+# OAuth2/OIDC JWT verification tests
+# ---------------------------------------------------------------------------
+
+_JWKS_URL = "https://auth.example.com/.well-known/jwks.json"
+_ISSUER = "https://auth.example.com"
+_AUDIENCE = "evoeventmem-api"
+
+
+def _make_rsa_key_pair() -> tuple[object, str]:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    from jose.utils import long_to_base64
+
+    numbers = public_key.public_numbers()
+    jwk = {
+        "kty": "RSA",
+        "kid": "test-key-1",
+        "use": "sig",
+        "alg": "RS256",
+        "n": long_to_base64(numbers.n).decode(),
+        "e": long_to_base64(numbers.e).decode(),
+    }
+    return private_key, jwk
+
+
+_PRIVATE_KEY, _TEST_JWK = _make_rsa_key_pair()
+_JWKS = {"keys": [_TEST_JWK]}
+
+
+def _make_jwt(
+    *,
+    sub: str = "user-1",
+    iss: str = _ISSUER,
+    aud: str = _AUDIENCE,
+    exp: int | None = None,
+) -> str:
+    from cryptography.hazmat.primitives import serialization
+
+    payload: dict[str, object] = {"sub": sub, "iss": iss, "aud": aud}
+    if exp is not None:
+        payload["exp"] = exp
+    else:
+        payload["exp"] = int(time.time()) + 3600
+    private_pem = _PRIVATE_KEY.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    return jwt.encode(
+        payload, private_pem, algorithm="RS256", headers={"kid": "test-key-1"}
+    )
+
+
+def _oauth2_settings_env() -> dict[str, str]:
+    return {
+        "EEM_AUTH_MODE": "oauth2",
+        "EEM_OAUTH2_JWKS_URL": _JWKS_URL,
+        "EEM_OAUTH2_ISSUER": _ISSUER,
+        "EEM_OAUTH2_AUDIENCE": _AUDIENCE,
+    }
+
+
+class _FakeAsyncClient:
+    def __init__(self, *, jwks: dict | None = None) -> None:
+        self._jwks = jwks
+
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+    async def get(self, url: str, **kwargs: object) -> _FakeResponse:
+        if self._jwks is None:
+            raise httpx.ConnectError("not reachable")
+        return _FakeResponse(self._jwks)
+
+
+class _FakeResponse:
+    def __init__(self, jwks: dict) -> None:
+        self._jwks = jwks
+
+    def json(self) -> dict:
+        return self._jwks
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+def _patch_jwks(jwks: dict | None = None) -> object:
+    fake = _FakeAsyncClient(jwks=jwks)
+    return patch(
+        "evoeventmem.api.auth.httpx.AsyncClient",
+        return_value=fake,
+    )
+
+
+def test_oauth2_rejects_missing_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    client = TestClient(create_app())
+    response = client.post(
+        "/v1/memories",
+        headers={_TENANT_HEADER: "t", _USER_HEADER: "u"},
+        json=_write_payload(),
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing bearer token"
+
+
+def test_oauth2_rejects_invalid_jwt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    with _patch_jwks(_JWKS):
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/memories",
+            headers=_headers(token="not-a-jwt"),
+            json=_write_payload(),
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "malformed token"
+
+
+def test_oauth2_accepts_valid_jwt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    token = _make_jwt()
+
+    with _patch_jwks(_JWKS):
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/memories",
+            headers=_headers(token=token),
+            json=_write_payload(),
+        )
+    assert response.status_code == 200
+    assert response.json()["content"] == "test memory"
+
+
+def test_oauth2_rejects_expired_jwt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    token = _make_jwt(exp=int(time.time()) - 3600)
+
+    with _patch_jwks(_JWKS):
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/memories",
+            headers=_headers(token=token),
+            json=_write_payload(),
+        )
+    assert response.status_code == 401
+
+
+def test_oauth2_rejects_wrong_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    token = _make_jwt(iss="https://wrong-issuer.example.com")
+
+    with _patch_jwks(_JWKS):
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/memories",
+            headers=_headers(token=token),
+            json=_write_payload(),
+        )
+    assert response.status_code == 401
+
+
+def test_oauth2_rejects_wrong_audience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    token = _make_jwt(aud="wrong-audience")
+
+    with _patch_jwks(_JWKS):
+        client = TestClient(create_app())
+        response = client.post(
+            "/v1/memories",
+            headers=_headers(token=token),
+            json=_write_payload(),
+        )
+    assert response.status_code == 401
+
+
+def test_oauth2_health_works_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _oauth2_settings_env()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("EEM_API_KEYS", raising=False)
+
+    client = TestClient(create_app())
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

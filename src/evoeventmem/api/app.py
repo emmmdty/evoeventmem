@@ -5,16 +5,21 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
 
 from evoeventmem.api.auth import AuthMiddleware
-from evoeventmem.core.ports import RequestScope, SearchHit
-from evoeventmem.domain.models import EvidenceRef, MemoryKind, MemoryRecord, MemorySearchHit
+from evoeventmem.api.dto import (
+    V1ExplainResponse,
+    V1FeedbackRequest,
+    V1MemoryResponse,
+    V1MemorySearchHitResponse,
+)
+from evoeventmem.api.ratelimit import setup_rate_limiting
+from evoeventmem.core.ports import RequestScope
+from evoeventmem.domain.models import MemoryRecord
 from evoeventmem.infra.async_embedding import EmbeddingModelError
 from evoeventmem.infra.async_in_memory_repository import AsyncInMemoryRepository
 from evoeventmem.infra.config import Settings, redact_dsn
@@ -38,6 +43,7 @@ from evoeventmem.infra.service_factory import (
     build_async_repository,
     build_async_service,
 )
+from evoeventmem.infra.tracing import setup_tracing
 from evoeventmem.services.async_memory_service import (
     AsyncMemoryService,
     ScopeMismatchError,
@@ -45,95 +51,6 @@ from evoeventmem.services.async_memory_service import (
 from evoeventmem.services.memory_service import MemoryIdentityCollisionError
 
 logger = logging.getLogger("evoeventmem")
-
-
-class _V1EvidenceResponse(BaseModel):
-    source_type: str
-    source_id: str
-    locator: str | None
-    quote: str | None
-
-    @classmethod
-    def from_domain(cls, evidence: EvidenceRef) -> _V1EvidenceResponse:
-        return cls(
-            source_type=evidence.source_type,
-            source_id=evidence.source_id,
-            locator=evidence.locator,
-            quote=evidence.quote,
-        )
-
-
-class _V1MemoryResponse(BaseModel):
-    memory_id: UUID
-    tenant_id: str | None = None
-    user_id: str
-    session_id: str | None = None
-    kind: MemoryKind
-    content: str
-    entities: list[str]
-    evidence: list[_V1EvidenceResponse]
-    event_time: datetime | None
-    valid_from: datetime | None
-    valid_to: datetime | None
-    supersedes: UUID | None
-    confidence: float
-    metadata: dict[str, Any]
-    created_at: datetime
-
-    @classmethod
-    def from_domain(cls, memory: MemoryRecord) -> _V1MemoryResponse:
-        return cls(
-            memory_id=memory.memory_id,
-            tenant_id=memory.tenant_id,
-            user_id=memory.user_id,
-            session_id=memory.session_id,
-            kind=memory.memory_kind,
-            content=memory.content,
-            entities=[entity.name for entity in memory.entities],
-            evidence=[
-                _V1EvidenceResponse.from_domain(evidence)
-                for evidence in memory.evidence_refs
-            ],
-            event_time=memory.event_time,
-            valid_from=memory.valid_from,
-            valid_to=memory.valid_to,
-            supersedes=memory.supersedes[0] if memory.supersedes else None,
-            confidence=memory.confidence,
-            metadata=memory.metadata,
-            created_at=memory.created_at,
-        )
-
-
-class _V1MemorySearchHitResponse(BaseModel):
-    memory: _V1MemoryResponse
-    score: float
-    reason: str
-
-    @classmethod
-    def from_domain(cls, hit: MemorySearchHit) -> _V1MemorySearchHitResponse:
-        return cls(
-            memory=_V1MemoryResponse.from_domain(hit.memory),
-            score=hit.score,
-            reason=hit.reason,
-        )
-
-    @classmethod
-    def from_hit(cls, hit: SearchHit) -> _V1MemorySearchHitResponse:
-        return cls(
-            memory=_V1MemoryResponse.from_domain(hit.memory),
-            score=hit.score,
-            reason=hit.reason,
-        )
-
-
-class _V1ExplainResponse(BaseModel):
-    memory: _V1MemoryResponse
-    related: list[_V1MemoryResponse]
-
-
-class _V1FeedbackRequest(BaseModel):
-    outcome: str = Field(min_length=1)
-    rating: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 async def _observability_middleware(
@@ -403,6 +320,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.middleware("http")(_observability_middleware)
     app.add_middleware(AuthMiddleware)
+    limiter = setup_rate_limiting(app)
+    
+    # Setup OpenTelemetry tracing
+    setup_tracing(
+        app,
+        service_name="evoeventmem",
+        jaeger_endpoint=None,  # Set via environment variable in production
+        console_export=False,  # Enable for debugging
+    )
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
@@ -474,12 +400,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type="text/plain; version=0.0.4",
         )
 
-    @app.post("/v1/memories", response_model=_V1MemoryResponse)
+    @app.post("/v1/memories", response_model=V1MemoryResponse)
+    @limiter.limit("30/minute")
     async def write_memory(
         memory: MemoryRecord,
         request: Request,
         scope: RequestScope = ScopeDependency,
-    ) -> _V1MemoryResponse:
+    ) -> V1MemoryResponse:
         _fail_closed_check(request)
         try:
             written = await _get_service(request.app).write(scope, memory)
@@ -504,15 +431,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "memory written",
             extra={"event": "memory.written", "memory_id": str(written.memory_id)},
         )
-        return _V1MemoryResponse.from_domain(written)
+        return V1MemoryResponse.from_domain(written)
 
-    @app.get("/v1/memories/search", response_model=list[_V1MemorySearchHitResponse])
+    @app.get("/v1/memories/search", response_model=list[V1MemorySearchHitResponse])
+    @limiter.limit("60/minute")
     async def search_memories(
         request: Request,
         scope: RequestScope = ScopeDependency,
         q: str = Query(min_length=1),
         limit: int = Query(default=5, ge=1, le=50),
-    ) -> list[_V1MemorySearchHitResponse]:
+    ) -> list[V1MemorySearchHitResponse]:
         _fail_closed_check(request)
         try:
             hits = await _get_service(request.app).search(scope, q, limit)
@@ -522,33 +450,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=REASON_EMBEDDING_UNAVAILABLE) from exc
         except RepositoryUnavailableError as exc:
             raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
-        return [_V1MemorySearchHitResponse.from_hit(hit) for hit in hits]
+        return [V1MemorySearchHitResponse.from_domain(hit) for hit in hits]
 
-    @app.get("/v1/memories/{memory_id}/explain", response_model=_V1ExplainResponse)
+    @app.get("/v1/memories/{memory_id}/explain", response_model=V1ExplainResponse)
     async def explain_memory(
         request: Request,
         memory_id: UUID,
         scope: RequestScope = ScopeDependency,
-    ) -> _V1ExplainResponse:
+    ) -> V1ExplainResponse:
         _fail_closed_check(request)
-        result = await _get_service(request.app).explain(scope, memory_id)
+        try:
+            result = await _get_service(request.app).explain(scope, memory_id)
+        except RepositoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=REASON_STORE_UNAVAILABLE) from exc
         if result is None:
             raise HTTPException(
                 status_code=404,
                 detail="memory not found or out of scope",
             )
-        return _V1ExplainResponse(
-            memory=_V1MemoryResponse.from_domain(result.memory),
-            related=[_V1MemoryResponse.from_domain(item) for item in result.related],
+        return V1ExplainResponse(
+            memory=V1MemoryResponse.from_domain(result.memory),
+            related=[V1MemoryResponse.from_domain(item) for item in result.related],
         )
 
-    @app.post("/v1/memories/{memory_id}/feedback", response_model=_V1MemoryResponse)
+    @app.post("/v1/memories/{memory_id}/feedback", response_model=V1MemoryResponse)
     async def feedback_memory(
         request: Request,
         memory_id: UUID,
-        payload: _V1FeedbackRequest,
+        payload: V1FeedbackRequest,
         scope: RequestScope = ScopeDependency,
-    ) -> _V1MemoryResponse:
+    ) -> V1MemoryResponse:
         _fail_closed_check(request)
         try:
             updated = await _get_service(request.app).feedback(
@@ -565,14 +496,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=404,
                 detail="memory not found or out of scope",
             )
-        return _V1MemoryResponse.from_domain(updated)
+        return V1MemoryResponse.from_domain(updated)
 
-    @app.post("/v1/memories/{memory_id}/forget", response_model=_V1MemoryResponse)
+    @app.post("/v1/memories/{memory_id}/forget", response_model=V1MemoryResponse)
+    @limiter.limit("10/minute")
     async def forget_memory(
         request: Request,
         memory_id: UUID,
         scope: RequestScope = ScopeDependency,
-    ) -> _V1MemoryResponse:
+    ) -> V1MemoryResponse:
         _fail_closed_check(request)
         try:
             updated = await _get_service(request.app).forget(
@@ -591,7 +523,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "memory forgotten",
             extra={"event": "memory.forgotten", "memory_id": str(memory_id)},
         )
-        return _V1MemoryResponse.from_domain(updated)
+        return V1MemoryResponse.from_domain(updated)
 
     return app
 

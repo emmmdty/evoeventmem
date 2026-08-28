@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: evoeventmem
+  labels:
+    app.kubernetes.io/name: evoeventmem
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: evoeventmem
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: evoeventmem
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: api
+          image: evoeventmem:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: evoeventmem-secrets
+          env:
+            - name: EEM_STORE
+              value: postgres
+            - name: EEM_DB_CONNECT_TIMEOUT
+              value: "10"
+            - name: EEM_DB_OPERATION_TIMEOUT
+              value: "30"
+            - name: EEM_LOG_LEVEL
+              value: INFO
+            - name: EEM_EMBEDDING_PROVIDER
+              value: deterministic
+            - name: EEM_EMBEDDING_MODEL_ID
+              value: test-model
+            - name: EEM_EMBEDDING_DIMENSION
+              value: "4"
+            - name: EEM_SCHEMA_VERSION
+              value: memory.v1
+            - name: EEM_ALLOW_DEV_FALLBACK
+              value: "0"
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 512m
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12

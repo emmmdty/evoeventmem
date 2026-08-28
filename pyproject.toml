@@ -12,7 +12,13 @@ license = { text = "MIT" }
 authors = [{ name = "EvoEventMem contributors" }]
 dependencies = [
   "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "opentelemetry-api>=1.20,<2",
+  "opentelemetry-sdk>=1.20,<2",
+  "opentelemetry-instrumentation-fastapi>=0.41b0,<1",
   "pydantic>=2.10,<3",
+  "python-jose[cryptography]>=3.3,<4",
+  "slowapi>=0.1.9,<1",
   "uvicorn>=0.34,<1",
 ]
 
@@ -68,7 +74,7 @@ strict = true
 packages = ["evoeventmem"]
 
 [[tool.mypy.overrides]]
-module = ["asyncpg", "asyncpg.*", "pgvector", "pgvector.*", "numpy", "numpy.*"]
+module = ["asyncpg", "asyncpg.*", "pgvector", "pgvector.*", "jose", "jose.*", "numpy", "numpy.*", "opentelemetry.exporter.jaeger.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

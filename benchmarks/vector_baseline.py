@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -31,6 +30,7 @@ from benchmarks.common.normalization import (
     iter_locomo_records,
     iter_longmemeval_records,
 )
+from evoeventmem.core.math_utils import cosine_similarity
 from evoeventmem.core.ports import (
     ChatMessage,
     ChatModel,
@@ -246,7 +246,7 @@ class VectorIndex:
                 source_session_id=chunk.source_session_id,
                 source_turn_id=chunk.source_turn_id,
                 text=chunk.text,
-                score=_cosine_similarity(query_vector, vector),
+                score=cosine_similarity(query_vector, vector),
                 token_count=chunk.token_count,
                 position=chunk.position,
             )
@@ -458,17 +458,6 @@ def _mean(values: Sequence[float | int]) -> float:
     if not values:
         return 0.0
     return float(sum(values) / len(values))
-
-
-def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    numerator = sum(
-        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
-    )
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return numerator / (left_norm * right_norm)
 
 
 def _count_tokens(text: str) -> int:

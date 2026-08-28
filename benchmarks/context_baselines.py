@@ -39,7 +39,9 @@ class DatasetConfig(BaseModel):
 
 
 class ContextBaselineConfig(BaseModel):
-    baseline: Literal["no_memory", "full_context", "full_context_unlimited"]
+    baseline: Literal[
+        "no_memory", "full_context", "full_context_unlimited", "session_summary"
+    ]
     run_id_prefix: str = Field(min_length=1)
     model_id: str = Field(default="deterministic-local-fake", min_length=1)
     max_input_tokens: int = Field(gt=0)
@@ -147,6 +149,64 @@ class FullContextBuilder:
             input_tokens=_count_tokens(prompt),
             included_history_turn_ids=tuple(line.turn_id for line in accepted),
             truncations=(),
+        )
+
+
+@dataclass(frozen=True)
+class _SessionSummaryLine:
+    session_id: str
+    text: str
+    token_count: int
+    turn_ids: tuple[str, ...]
+
+
+class SessionSummaryBuilder:
+    def __init__(self, max_input_tokens: int) -> None:
+        self.max_input_tokens = max_input_tokens
+
+    def build(
+        self,
+        question: NormalizedQuestion,
+        history: Iterable[NormalizedSession],
+    ) -> ContextBuildResult:
+        question_line = f"Question: {question.question}"
+        question_tokens = _count_tokens(question_line)
+        if question_tokens > self.max_input_tokens:
+            return _fit_question_only(
+                question.question_id, question_line, self.max_input_tokens
+            )
+
+        remaining_tokens = self.max_input_tokens - question_tokens
+        session_lines = _session_summary_lines(history)
+        accepted: list[_SessionSummaryLine] = []
+        truncations: list[TruncationDecision] = []
+        for line in reversed(session_lines):
+            if line.token_count <= remaining_tokens:
+                accepted.append(line)
+                remaining_tokens -= line.token_count
+            else:
+                truncations.append(
+                    TruncationDecision(
+                        source_type="session",
+                        source_id=line.session_id,
+                        reason="context_budget_exceeded",
+                        token_count=line.token_count,
+                        max_input_tokens=self.max_input_tokens,
+                    )
+                )
+
+        accepted.reverse()
+        prompt_lines = [line.text for line in accepted]
+        prompt_lines.append(question_line)
+        prompt = "\n".join(prompt_lines)
+        included_turn_ids = tuple(
+            turn_id for line in accepted for turn_id in line.turn_ids
+        )
+        return ContextBuildResult(
+            prompt=prompt,
+            input_tokens=_count_tokens(prompt),
+            included_history_turn_ids=included_turn_ids,
+            truncations=tuple(reversed(truncations)),
         )
 
 
@@ -263,13 +323,17 @@ def run_context_baseline(config: ContextBaselineConfig, output_dir: Path) -> Run
 
 
 def _make_builder(
-    baseline: Literal["no_memory", "full_context", "full_context_unlimited"],
+    baseline: Literal[
+        "no_memory", "full_context", "full_context_unlimited", "session_summary"
+    ],
     max_input_tokens: int,
-) -> NoMemoryContextBuilder | FullContextBuilder:
+) -> NoMemoryContextBuilder | FullContextBuilder | SessionSummaryBuilder:
     if baseline == "no_memory":
         return NoMemoryContextBuilder(max_input_tokens)
     if baseline == "full_context_unlimited":
         return FullContextBuilder(max_input_tokens, unlimited=True)
+    if baseline == "session_summary":
+        return SessionSummaryBuilder(max_input_tokens)
     return FullContextBuilder(max_input_tokens)
 
 
@@ -313,6 +377,33 @@ def _history_lines(history: Iterable[NormalizedSession]) -> list[_HistoryLine]:
             lines.append(
                 _HistoryLine(turn_id=turn.turn_id, text=text, token_count=_count_tokens(text))
             )
+    return lines
+
+
+def _session_summary_lines(
+    history: Iterable[NormalizedSession],
+) -> list[_SessionSummaryLine]:
+    sorted_sessions = sorted(
+        history, key=lambda session: (session.timestamp, session.session_id)
+    )
+    lines: list[_SessionSummaryLine] = []
+    for session in sorted_sessions:
+        sorted_turns = sorted(
+            session.turns,
+            key=lambda turn: (turn.timestamp or session.timestamp, turn.turn_id),
+        )
+        content_parts = [turn.content for turn in sorted_turns]
+        concatenated = "; ".join(content_parts)
+        text = f"{session.session_id} summary: {concatenated}"
+        turn_ids = tuple(turn.turn_id for turn in sorted_turns)
+        lines.append(
+            _SessionSummaryLine(
+                session_id=session.session_id,
+                text=text,
+                token_count=_count_tokens(text),
+                turn_ids=turn_ids,
+            )
+        )
     return lines
 
 

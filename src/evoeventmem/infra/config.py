@@ -43,6 +43,10 @@ class Settings:
     schema_version: str = "memory.v1"
     embedding_policy: str = "vector"
     allow_development_fallback: bool = False
+    auth_mode: str = "static"
+    oauth2_jwks_url: str | None = None
+    oauth2_issuer: str | None = None
+    oauth2_audience: str | None = None
 
     @property
     def embedding_api_key(self) -> str | None:
@@ -75,6 +79,18 @@ class Settings:
                 f"EEM_EMBEDDING_POLICY must be 'vector' or 'token_overlap', got "
                 f"{embedding_policy!r}"
             )
+        auth_mode = env.get("EEM_AUTH_MODE", "static").strip().lower()
+        if auth_mode not in {"static", "oauth2"}:
+            raise ValueError(
+                f"EEM_AUTH_MODE must be 'static' or 'oauth2', got {auth_mode!r}"
+            )
+        oauth2_jwks_url = env.get("EEM_OAUTH2_JWKS_URL") or None
+        oauth2_issuer = env.get("EEM_OAUTH2_ISSUER") or None
+        oauth2_audience = env.get("EEM_OAUTH2_AUDIENCE") or None
+        if auth_mode == "oauth2" and not oauth2_jwks_url:
+            raise ValueError(
+                "EEM_OAUTH2_JWKS_URL must be set when EEM_AUTH_MODE is 'oauth2'"
+            )
         return cls(
             store=store,
             database_url=database_url or None,
@@ -96,6 +112,10 @@ class Settings:
             allow_development_fallback=_env_bool(
                 env, "EEM_ALLOW_DEV_FALLBACK", False
             ),
+            auth_mode=auth_mode,
+            oauth2_jwks_url=oauth2_jwks_url,
+            oauth2_issuer=oauth2_issuer,
+            oauth2_audience=oauth2_audience,
         )
 
 

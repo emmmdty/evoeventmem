@@ -23,6 +23,11 @@ from evoeventmem.retrieval import POLICY_NAME
 CONTROLLED_CONFIG = Path("configs/ablations/controlled.toml")
 LONGMEMEVAL_CONFIG = Path("configs/ablations/longmemeval.toml")
 LOCOMO_CONFIG = Path("configs/ablations/locomo.toml")
+_locomo_dataset = Path("data/raw/locomo/locomo10.json")
+_skip_locomo = pytest.mark.skipif(
+    not _locomo_dataset.exists(),
+    reason="data/raw/locomo/locomo10.json not available",
+)
 
 
 def test_controlled_run_finalizes_family_and_all_arms(tmp_path: Path) -> None:
@@ -165,12 +170,14 @@ def test_controlled_resume_is_idempotent(tmp_path: Path) -> None:
     assert second.controlled_run_hash == first.controlled_run_hash
 
 
+@_skip_locomo
 def test_dataset_executor_requires_controlled_run(tmp_path: Path) -> None:
     config = load_config(LOCOMO_CONFIG)
     with pytest.raises(ValueError, match="--controlled-run"):
         run_ablation(config, tmp_path / "run", controlled_run_dir=None)
 
 
+@_skip_locomo
 def test_dataset_executor_refuses_missing_controlled_run(tmp_path: Path) -> None:
     config = load_config(LOCOMO_CONFIG)
     missing = tmp_path / "missing-controlled"
@@ -178,6 +185,7 @@ def test_dataset_executor_refuses_missing_controlled_run(tmp_path: Path) -> None
         run_ablation(config, tmp_path / "run", controlled_run_dir=missing)
 
 
+@_skip_locomo
 def test_dataset_executor_refuses_inactive_controlled_run(tmp_path: Path) -> None:
     config = load_config(LOCOMO_CONFIG)
     inactive = tmp_path / "inactive"
@@ -187,6 +195,7 @@ def test_dataset_executor_refuses_inactive_controlled_run(tmp_path: Path) -> Non
         run_ablation(config, tmp_path / "run", controlled_run_dir=inactive)
 
 
+@_skip_locomo
 def test_dataset_executor_refuses_hash_drifted_controlled_run(tmp_path: Path) -> None:
     config = load_config(CONTROLLED_CONFIG)
     controlled_dir = tmp_path / "controlled"

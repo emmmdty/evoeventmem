@@ -382,47 +382,8 @@
         "title": "RelationRef",
         "type": "object"
       },
-      "ValidationError": {
-        "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
-            },
-            "title": "Location",
-            "type": "array"
-          },
-          "msg": {
-            "title": "Message",
-            "type": "string"
-          },
-          "type": {
-            "title": "Error Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError",
-        "type": "object"
-      },
-      "_V1EvidenceResponse": {
+      "V1EvidenceResponse": {
+        "description": "Evidence reference output for responses.",
         "properties": {
           "locator": {
             "anyOf": [
@@ -461,17 +422,18 @@
           "locator",
           "quote"
         ],
-        "title": "_V1EvidenceResponse",
+        "title": "V1EvidenceResponse",
         "type": "object"
       },
-      "_V1ExplainResponse": {
+      "V1ExplainResponse": {
+        "description": "Explain output for responses.",
         "properties": {
           "memory": {
-            "$ref": "#/components/schemas/_V1MemoryResponse"
+            "$ref": "#/components/schemas/V1MemoryResponse"
           },
           "related": {
             "items": {
-              "$ref": "#/components/schemas/_V1MemoryResponse"
+              "$ref": "#/components/schemas/V1MemoryResponse"
             },
             "title": "Related",
             "type": "array"
@@ -481,10 +443,11 @@
           "memory",
           "related"
         ],
-        "title": "_V1ExplainResponse",
+        "title": "V1ExplainResponse",
         "type": "object"
       },
-      "_V1FeedbackRequest": {
+      "V1FeedbackRequest": {
+        "description": "Feedback request body.",
         "properties": {
           "outcome": {
             "minLength": 1,
@@ -508,10 +471,11 @@
         "required": [
           "outcome"
         ],
-        "title": "_V1FeedbackRequest",
+        "title": "V1FeedbackRequest",
         "type": "object"
       },
-      "_V1MemoryResponse": {
+      "V1MemoryResponse": {
+        "description": "Memory record output for responses.",
         "properties": {
           "confidence": {
             "title": "Confidence",
@@ -547,13 +511,14 @@
           },
           "evidence": {
             "items": {
-              "$ref": "#/components/schemas/_V1EvidenceResponse"
+              "$ref": "#/components/schemas/V1EvidenceResponse"
             },
             "title": "Evidence",
             "type": "array"
           },
           "kind": {
-            "$ref": "#/components/schemas/MemoryKind"
+            "title": "Kind",
+            "type": "string"
           },
           "memory_id": {
             "format": "uuid",
@@ -643,13 +608,14 @@
           "metadata",
           "created_at"
         ],
-        "title": "_V1MemoryResponse",
+        "title": "V1MemoryResponse",
         "type": "object"
       },
-      "_V1MemorySearchHitResponse": {
+      "V1MemorySearchHitResponse": {
+        "description": "Search hit output for responses.",
         "properties": {
           "memory": {
-            "$ref": "#/components/schemas/_V1MemoryResponse"
+            "$ref": "#/components/schemas/V1MemoryResponse"
           },
           "reason": {
             "title": "Reason",
@@ -665,7 +631,47 @@
           "score",
           "reason"
         ],
-        "title": "_V1MemorySearchHitResponse",
+        "title": "V1MemorySearchHitResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       }
     }
@@ -788,7 +794,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/_V1MemoryResponse"
+                  "$ref": "#/components/schemas/V1MemoryResponse"
                 }
               }
             },
@@ -877,7 +883,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/_V1MemorySearchHitResponse"
+                    "$ref": "#/components/schemas/V1MemorySearchHitResponse"
                   },
                   "title": "Response Search Memories V1 Memories Search Get",
                   "type": "array"
@@ -956,7 +962,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/_V1ExplainResponse"
+                  "$ref": "#/components/schemas/V1ExplainResponse"
                 }
               }
             },
@@ -1031,7 +1037,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/_V1FeedbackRequest"
+                "$ref": "#/components/schemas/V1FeedbackRequest"
               }
             }
           },
@@ -1042,7 +1048,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/_V1MemoryResponse"
+                  "$ref": "#/components/schemas/V1MemoryResponse"
                 }
               }
             },
@@ -1118,7 +1124,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/_V1MemoryResponse"
+                  "$ref": "#/components/schemas/V1MemoryResponse"
                 }
               }
             },

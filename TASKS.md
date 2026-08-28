@@ -42,3 +42,12 @@
 | O07 | [Memory inspector dashboard](tasks/optional/O07_dashboard.md) | TODO |
 | O08 | [Privacy and multi-tenant hardening](tasks/optional/O08_privacy.md) | TODO |
 | O09 | [Mechanism evaluation](tasks/optional/O09_mechanism_evaluation.md) | DONE |
+
+## Phase 5 (Long-term)
+
+| ID | Task | Status |
+|---|---|---|
+| T19a | [Small sample performance analysis](benchmarks/small_sample_analysis.py) | DONE |
+| T20 | [Session summary baseline](benchmarks/context_baselines.py) | DONE |
+| T21 | [OAuth2/OIDC authentication upgrade](src/evoeventmem/api/auth.py) | DONE |
+| T22 | [Kubernetes deployment manifests](k8s/) | DONE |

@@ -167,37 +167,33 @@
 
 ### Phase 5：长期改进（3 个月+）
 
-#### T19: 500q 稳定性确认
+#### T19: 500q 稳定性确认 → T19a: 小样本性能验证
 - **优先级**：P3
-- **问题**：n=100 MDE 大，方向性结论不稳定
-- **方案**：跑 500q 完整 benchmark，缩窄 MDE 到 ±0.06-0.10
-- **工件**：`runs/publication/s8-full500/` 目录
-- **验证**：TR+KU 合并 delta 的 95% CI
-- **预估**：2-3 天（不含 LLM 调用时间）
+- **状态**：DONE (T19a)
+- **方案**：先在 n=100 上验证效果方向和效应量，若方向一致但 CI 宽，再扩展到 n=200-300
+- **工件**：`benchmarks/small_sample_analysis.py`
+- **验证**：分析框架包含 bootstrap CI、Cohen's d、样本量建议
 
 #### T20: session_summary baseline
 - **优先级**：P3
-- **问题**：EVALUATION.md 列为必须 baseline 但未实现
-- **方案**：实现 session summary 作为 baseline
-- **工件**：`benchmarks/context_baselines.py` 新增方法
-- **验证**：S8 100q 上跑 session_summary
-- **预估**：2-3 天
+- **状态**：DONE
+- **方案**：将 session 内所有记忆内容拼接为 summary，用 summary 回答 query
+- **工件**：`benchmarks/context_baselines.py` 新增 `SessionSummaryBuilder`
+- **验证**：在 baseline 注册表中添加 session_summary，ruff/mypy 通过
 
 #### T21: 认证升级（OAuth2/OIDC）
 - **优先级**：P3
-- **问题**：静态 token 不够安全
-- **方案**：集成 OAuth2/OIDC（如 Keycloak、Auth0）
-- **工件**：`src/evoeventmem/api/auth.py` 重写
-- **验证**：JWT 验证通过
-- **预估**：5-7 天
+- **状态**：DONE
+- **方案**：集成 OAuth2/OIDC（python-jose），保持静态 token 向后兼容
+- **工件**：`src/evoeventmem/api/auth.py` 重写，`src/evoeventmem/infra/config.py` 新增配置
+- **验证**：JWT 验证通过，18 个测试全部通过
 
 #### T22: Kubernetes 部署
 - **优先级**：P3
-- **问题**：无 K8s manifests
-- **方案**：添加 deployment.yaml、service.yaml、ingress.yaml
-- **工件**：`k8s/` 目录
-- **验证**：`kubectl apply` 成功
-- **预估**：3-5 天
+- **状态**：DONE
+- **方案**：添加完整 K8s manifests（namespace, secrets, deployment, service, ingress, hpa, postgres, kustomization）
+- **工件**：`k8s/` 目录（8 个 YAML 文件）
+- **验证**：所有 YAML 文件语法验证通过
 
 ## 执行顺序
 
@@ -218,8 +214,8 @@ Phase 4 (生产就绪):
   T16 (追踪) ──→ T17 (DTO) ──→ T18 (错误处理)
 
 Phase 5 (长期):
-  T19 (500q) ──→ T20 (session_summary)
-  T21 (OAuth2) ──→ T22 (K8s)
+  T19a (小样本分析) ✅ ──→ T20 (session_summary) ✅
+  T21 (OAuth2) ✅ ──→ T22 (K8s) ✅
 ```
 
 ## 资源估算

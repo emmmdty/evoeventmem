@@ -674,6 +674,8 @@ def test_s2_scope_diff_stat_touches_only_expected_files() -> None:
         "tests/retrieval/test_query_router.py",
         "tests/benchmarks/test_stratified_sample.py",
         "tests/benchmarks/test_context_baselines.py",
+        "tests/benchmarks/test_retrieval_smoke.py",
+        "tests/fixtures/retrieval/m12_retrieval_smoke.json",
         "tests/mechanism/test_router_diagnosis.py",
         "tests/mechanism/test_m2_stale_judge.py",
         "docs/S8-PREREGISTRATION.md",

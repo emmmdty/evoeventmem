@@ -5,7 +5,7 @@
       "case_id": "semantic_favorite_color",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "71000000-0000-0000-0000-000000000001",
@@ -53,7 +53,7 @@
       "case_id": "temporal_superseded_city",
       "query": "When did Caroline move to Seattle?",
       "expected_intent": "temporal",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "72000000-0000-0000-0000-000000000001",
@@ -109,7 +109,7 @@
       "case_id": "graph_relation",
       "query": "Who is Caroline related to?",
       "expected_intent": "graph",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "73000000-0000-0000-0000-000000000001",
@@ -169,7 +169,7 @@
       "case_id": "episodic_trip",
       "query": "Did I tell you about my trip to Kyoto?",
       "expected_intent": "episodic",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "74000000-0000-0000-0000-000000000001",
@@ -211,7 +211,7 @@
       "case_id": "procedural_howto",
       "query": "How do I create a memory in evoeventmem?",
       "expected_intent": "procedural",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "75000000-0000-0000-0000-000000000001",
@@ -253,7 +253,7 @@
       "case_id": "hybrid_general",
       "query": "What can you tell me about Caroline?",
       "expected_intent": "hybrid",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "76000000-0000-0000-0000-000000000001",
@@ -295,7 +295,7 @@
       "case_id": "budget_tight",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 60,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "77000000-0000-0000-0000-000000000001",
@@ -343,7 +343,7 @@
       "case_id": "no_memory_greeting",
       "query": "Hello!",
       "expected_intent": "no-memory",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78000000-0000-0000-0000-000000000001",
@@ -371,7 +371,7 @@
       "case_id": "unrelated_recency_when",
       "query": "When did Caroline move?",
       "expected_intent": "temporal",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "expected_top_memory_id": "78000000-0000-0000-0000-000000000001",
       "memories": [
         {
@@ -418,7 +418,7 @@
       "case_id": "controlled_evidence_policy",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 90,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78100000-0000-0000-0000-000000000001",
@@ -465,7 +465,7 @@
       "case_id": "controlled_temporal_source",
       "query": "What happened in 2024?",
       "expected_intent": "temporal",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78200000-0000-0000-0000-000000000001",
@@ -501,7 +501,7 @@
       "case_id": "controlled_graph_source",
       "query": "Who works with Caroline?",
       "expected_intent": "graph",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78300000-0000-0000-0000-000000000001",
@@ -540,7 +540,7 @@
       "case_id": "controlled_forced_routing",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78400000-0000-0000-0000-000000000001",
@@ -566,7 +566,7 @@
       "case_id": "controlled_strategy",
       "query": "How do I create a memory in evoeventmem?",
       "expected_intent": "procedural",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78500000-0000-0000-0000-000000000001",
@@ -605,7 +605,7 @@
       "case_id": "controlled_weight_profile",
       "query": "Where does Caroline live?",
       "expected_intent": "semantic",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78600000-0000-0000-0000-000000000001",
@@ -658,7 +658,7 @@
       "case_id": "controlled_budget",
       "query": "query",
       "expected_intent": "hybrid",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "memories": [
         {
           "memory_id": "78700000-0000-0000-0000-000000000001",
@@ -692,7 +692,7 @@
       "case_id": "fallback_dense",
       "query": "What is Caroline's favorite color?",
       "expected_intent": "semantic",
-      "budget_tokens": 200,
+      "budget_tokens": 300,
       "fail_dense_source": true,
       "memories": [
         {

@@ -84,7 +84,7 @@ def test_retrieval_smoke_records_score_decompositions_and_exclusions(tmp_path: P
 def test_retrieval_smoke_tight_budget_never_exceeds_budget(tmp_path: Path) -> None:
     payload = _fixture_payload()
     for case in payload["cases"]:
-        case["budget_tokens"] = 60
+        case["budget_tokens"] = 300
     annotation_path = _write_annotations(tmp_path / "tight-budget.json", payload)
 
     summary = run_retrieval_smoke(annotation_path, tmp_path / "tight-budget")

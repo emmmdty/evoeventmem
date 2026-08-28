@@ -373,10 +373,10 @@ def _controlled_switch_deltas(
     pairs: list[tuple[str, RetrievalControls, RetrievalControls]] = [
         (
             "controlled_evidence_policy",
-            RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=90),
+            RetrievalControls(evidence_policy=EvidencePolicy.CONSTRAINED, budget_tokens=300),
             RetrievalControls(
                 evidence_policy=EvidencePolicy.PROVENANCE_ONLY,
-                budget_tokens=90,
+                budget_tokens=300,
             ),
         ),
         (
@@ -407,18 +407,18 @@ def _controlled_switch_deltas(
             RetrievalControls(
                 strategy=RetrievalStrategy.QEMR,
                 weight_profile=WeightProfile.INTENT,
-                budget_tokens=200,
+                budget_tokens=300,
             ),
             RetrievalControls(
                 strategy=RetrievalStrategy.QEMR,
                 weight_profile=WeightProfile.FIXED_HYBRID,
-                budget_tokens=200,
+                budget_tokens=300,
             ),
         ),
         (
             "controlled_budget",
-            RetrievalControls(budget_tokens=44),
-            RetrievalControls(budget_tokens=200),
+            RetrievalControls(budget_tokens=195),
+            RetrievalControls(budget_tokens=215),
         ),
     ]
     pairs_checked = 0

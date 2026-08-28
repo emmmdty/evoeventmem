@@ -15,6 +15,7 @@ MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("0001_core_schema", _load_sql("0001_core.sql")),
     ("0002_pgvector", _load_sql("0002_pgvector.sql")),
     ("0003_pgvector_hnsw", _load_sql("0003_pgvector_hnsw.sql")),
+    ("0004_dedup_indexes", _load_sql("0004_dedup_indexes.sql")),
 )
 
 _MIGRATION_TABLE = """

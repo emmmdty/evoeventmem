@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -11,6 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from evoeventmem.core.math_utils import cosine_similarity, jaccard, unique_evidence
 from evoeventmem.core.ports import ChatMessage, EmbeddingModel, MemoryRepository
 from evoeventmem.domain.models import (
     EvidenceRef,
@@ -43,9 +43,21 @@ RRF_K = 60.0
 # Single source of truth for the complete reader input: the system directive,
 # the question, and one labeled, metadata-bearing block per packed item.
 READER_SYSTEM_DIRECTIVE = (
-    "Use the cited evidence below to answer the question. "
-    "Answer concisely in a few words or one short sentence, "
-    "matching the facts in the evidence. Do not add explanations."
+    "Use the cited evidence below to answer the question.\n\n"
+    "STRICT RULES:\n"
+    "1. Answer with ONLY the answer - nothing else\n"
+    "2. For time durations: 'N unit' (e.g., '7 days', '2 months')\n"
+    "3. For counts: copy EXACTLY from evidence\n"
+    "   - Evidence 'five' → answer 'five' (NOT '5')\n"
+    "   - Evidence '38' → answer '38' (NOT 'thirty-eight')\n"
+    "4. NEVER add: about, approximately, roughly, the, a, an\n"
+    "5. NEVER add the question's subject word\n"
+    "6. NEVER add explanations\n\n"
+    "Examples:\n"
+    "- Evidence 'User has five playlists' → five\n"
+    "- Evidence 'User has 38 coins' → 38\n"
+    "- Evidence 'User took classes for 6 weeks' → 6 weeks\n"
+    "- Evidence 'User lives in Seattle' → Seattle\n"
 )
 QUESTION_PREFIX = "Question: "
 
@@ -678,20 +690,27 @@ class RetrievalHarness:
         memories: Sequence[MemoryRecord],
         reference: datetime,
     ) -> list[Candidate]:
-        actives = [memory for memory in memories if memory.status is MemoryStatus.ACTIVE]
-        if not actives:
+        if routing.intent in HISTORICAL_INTENTS:
+            eligible = [
+                memory
+                for memory in memories
+                if memory.status in (MemoryStatus.ACTIVE, MemoryStatus.SUPERSEDED)
+            ]
+        else:
+            eligible = [memory for memory in memories if memory.status is MemoryStatus.ACTIVE]
+        if not eligible:
             return []
         query_vector = self._embedding_model.embed_texts([query])[0].vector
-        vectors = self._embedding_model.embed_texts([memory.content for memory in actives])
+        vectors = self._embedding_model.embed_texts([memory.content for memory in eligible])
         return [
             Candidate(
                 memory=memory,
                 source=CandidateSource.DENSE,
-                raw_score=max(0.0, _cosine_similarity(query_vector, vector.vector)),
+                raw_score=max(0.0, cosine_similarity(query_vector, vector.vector)),
                 normalized_score=0.0,
                 reason="dense-cosine-similarity",
             )
-            for memory, vector in zip(actives, vectors, strict=True)
+            for memory, vector in zip(eligible, vectors, strict=True)
         ]
 
     def _temporal_candidates(
@@ -960,7 +979,7 @@ class RetrievalHarness:
             Candidate(
                 memory=memory,
                 source=CandidateSource.GRAPH,
-                raw_score=_jaccard(query_tokens, _relation_tokens(memory)),
+                raw_score=jaccard(query_tokens, _relation_tokens(memory)),
                 normalized_score=0.0,
                 reason="graph-entity-relation-overlap",
             )
@@ -1000,7 +1019,7 @@ class RetrievalHarness:
             Candidate(
                 memory=memory,
                 source=CandidateSource.PROCEDURAL,
-                raw_score=_jaccard(query_tokens, _token_set(memory.content)),
+                raw_score=jaccard(query_tokens, _token_set(memory.content)),
                 normalized_score=0.0,
                 reason="procedural-content-overlap",
             )
@@ -1112,7 +1131,7 @@ class RetrievalHarness:
                         and intent in HISTORICAL_INTENTS
                     ),
                     token_count=_count_tokens(memory.content),
-                    evidence_refs=_unique_evidence(memory.evidence_refs),
+                    evidence_refs=unique_evidence(memory.evidence_refs),
                 )
             )
         return merged
@@ -1455,7 +1474,7 @@ def _episodic_score(
     query_tokens: set[str],
     reference: datetime,
 ) -> float:
-    overlap = _jaccard(query_tokens, _token_set(memory.content))
+    overlap = jaccard(query_tokens, _token_set(memory.content))
     return 0.5 * overlap + 0.5 * _temporal_recency(memory, reference)
 
 
@@ -1470,40 +1489,8 @@ def _token_set(text: str) -> set[str]:
     return {token.lower() for token in _TOKEN_RE.findall(text)}
 
 
-def _jaccard(left: set[str], right: set[str]) -> float:
-    union = left | right
-    if not union:
-        return 0.0
-    return len(left & right) / len(union)
-
-
-def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) != len(right):
-        return 0.0
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-    dot_product = sum(
-        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
-    )
-    return dot_product / (left_norm * right_norm)
-
-
 def _evidence_keys(refs: Iterable[EvidenceRef]) -> set[tuple[str, str, str | None]]:
     return {(ref.source_type, ref.source_id, ref.locator) for ref in refs}
-
-
-def _unique_evidence(refs: Iterable[EvidenceRef]) -> list[EvidenceRef]:
-    seen: set[tuple[str, str, str | None]] = set()
-    unique: list[EvidenceRef] = []
-    for ref in refs:
-        key = (ref.source_type, ref.source_id, ref.locator)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(ref)
-    return unique
 
 
 def _count_tokens(text: str) -> int:

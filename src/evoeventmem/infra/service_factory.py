@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
-
-from evoeventmem.core.ports import AsyncEmbeddingModel
+from evoeventmem.core.ports import AsyncEmbeddingModel, AsyncMemoryRepository
 from evoeventmem.infra.async_embedding import (
     DeterministicAsyncEmbeddingModel,
     build_embedding_model,
@@ -65,7 +63,7 @@ def build_async_repository(
 def build_async_service(
     settings: Settings,
     *,
-    repository: Any,
+    repository: AsyncMemoryRepository,
     embedding: AsyncEmbeddingModel,
 ) -> AsyncMemoryService:
     return AsyncMemoryService(

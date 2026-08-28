@@ -4,13 +4,48 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from evoeventmem.core.ports import ChatMessage, ChatModel
 from evoeventmem.domain.models import EntityRef, EvidenceRef, MemoryKind, MemoryRecord
+
+
+class NormalizedTurn(Protocol):
+    """Structural type for a normalized conversation turn."""
+
+    turn_id: str
+    speaker: str
+    content: str
+    timestamp: datetime | None
+    metadata: dict[str, Any]
+
+
+class NormalizedSession(Protocol):
+    """Structural type for a normalized session."""
+
+    session_id: str
+    turns: list[NormalizedTurn]
+
+
+class NormalizedEventSummary(Protocol):
+    """Structural type for a normalized event summary."""
+
+    session_id: str
+    date: datetime | None
+    events: dict[str, list[str]]
+
+
+class NormalizedRecord(Protocol):
+    """Structural type for a normalized record from benchmarks."""
+
+    dataset: str
+    sample_id: str
+    sessions: list[NormalizedSession]
+    event_summaries: list[NormalizedEventSummary]
+    metadata: dict[str, Any]
 
 
 class ExtractionTurn(BaseModel):
@@ -149,7 +184,7 @@ class ExtractionInput(BaseModel):
         )
 
     @classmethod
-    def from_normalized_record(cls, record: Any, *, user_id: str) -> ExtractionInput:
+    def from_normalized_record(cls, record: NormalizedRecord, *, user_id: str) -> ExtractionInput:
         turns: list[ExtractionTurn] = []
         for session in record.sessions:
             session_id = str(session.session_id)
@@ -160,7 +195,7 @@ class ExtractionInput(BaseModel):
                         session_id=session_id,
                         speaker=str(turn.speaker),
                         content=str(turn.content),
-                        timestamp=cast(datetime | None, turn.timestamp),
+                        timestamp=turn.timestamp,
                         metadata=dict(turn.metadata),
                     )
                 )
@@ -458,15 +493,19 @@ def _salvage_missing_fact_slot(raw_text: str) -> _LLMExtractionPayload | None:
     contain an ``events`` list, or fails re-validation after the fact_slot
     substitution.
     """
-    candidate: Any = None
+    candidate: dict[str, Any] | None = None
     try:
-        candidate = json.loads(_strip_json_fences(raw_text))
+        parsed = json.loads(_strip_json_fences(raw_text))
+        if isinstance(parsed, dict):
+            candidate = parsed
     except (json.JSONDecodeError, TypeError):
         try:
-            candidate = json.loads(_repair_json_text(_strip_json_fences(raw_text)))
+            parsed = json.loads(_repair_json_text(_strip_json_fences(raw_text)))
+            if isinstance(parsed, dict):
+                candidate = parsed
         except (json.JSONDecodeError, TypeError):
-            return None
-    if not isinstance(candidate, dict):
+            pass
+    if candidate is None:
         return None
     events = candidate.get("events")
     if not isinstance(events, list):
@@ -956,302 +995,325 @@ class LLMEventExtractor:
         )
 
 
+def _build_schema_section() -> dict[str, Any]:
+    return {
+        "events": [
+            {
+                "content": "string",
+                "speaker": "string or null",
+                "entities": ["entity names"],
+                "event_time": "ISO-8601 string or null",
+                "evidence": [
+                    {
+                        "source_turn_id": "existing turn_id",
+                        "source_session_id": (
+                            "existing session_id or null when turn_id is unique"
+                        ),
+                        "quote": "exact substring of the turn text",
+                    }
+                ],
+                "fact_slot": (
+                    "REQUIRED non-empty string. Either (a) a lowercase "
+                    "dotted 'domain.attribute' string for durable, "
+                    "updatable user facts (residence, job, employer, "
+                    "manager, frequent-flyer status, personal bests, "
+                    "recurring activities, possessions, named-state "
+                    "attributes); or (b) the literal sentinel 'none' "
+                    "for transient activity / conversation / emotion / "
+                    "dialogue-process events. Must NEVER be null or "
+                    "empty string — the schema rejects them and the "
+                    "extractor retries. Use the SAME fact_slot string "
+                    "across turns describing the same attribute so the "
+                    "consolidator can detect value changes (SUPERSEDE)."
+                ),
+                "fact_value": (
+                    "normalized current canonical value of the fact "
+                    "stated in this event (e.g. 'Portland', 'Software "
+                    "Engineer @ Acme', 'Premier Silver'); MUST be the "
+                    "literal sentinel 'none' when fact_slot is 'none'."
+                ),
+                "valid_from": (
+                    "ISO-8601 timestamp marking when fact_value became "
+                    "the current value of fact_slot; for a durable fact "
+                    "without an explicit change time, set valid_from = "
+                    "event_time; null when fact_slot is 'none' (sentinel)."
+                ),
+                "valid_until": (
+                    "ISO-8601 timestamp marking when fact_value stopped "
+                    "being the current value of fact_slot (the older "
+                    "value of a state change carries valid_until at the "
+                    "change time); null when the value is still current "
+                    "or when fact_slot is 'none' (sentinel). Must be null "
+                    "when valid_from is null."
+                ),
+            }
+        ]
+    }
+
+
+def _build_fact_slot_rules() -> list[str]:
+    return [
+        "fact_slot format = lowercase dotted 'domain.attribute', e.g. "
+        "'profile.city', 'profile.job', 'profile.employer', 'profile.manager', "
+        "'preference.frequent_flyer_status', 'hobby.running_pb', "
+        "'possession.camera', 'plan.birthday_trip_destination', "
+        "'health.weight'.",
+        "Use the EXACT same fact_slot string across turns when describing "
+        "the same attribute. This is required so the consolidator can "
+        "detect value changes (SUPERSEDE).",
+        "fact_value = the current canonical value of the fact stated in "
+        "this event, normalized to a stable string. When the value changes "
+        "between turns, the new event uses the new fact_value (e.g. turn 1 "
+        "profile.city=Seattle, turn 2 profile.city=Portland).",
+        "For a state-change fact stated as two events, emit BOTH events: "
+        "(a) an end-event for the older value with fact_slot, fact_value "
+        "=old value, valid_until=<change time>, valid_from=<when the old "
+        "value started, or event_time when unknown>; and (b) a start-event "
+        "for the new value with the SAME fact_slot, fact_value=new value, "
+        "valid_from=<change time>, valid_until=null. The two events share "
+        "the change time as the boundary between valid_until and valid_from.",
+        "For a non-state fact (preference, one-shot event, or a state "
+        "change simplified to a single event), set valid_from = event_time "
+        "and leave valid_until null.",
+        "Set fact_slot='none' (the literal sentinel string) AND "
+        "fact_value='none' AND valid_from=null AND valid_until=null for "
+        "transient activity, conversation, emotion, and dialogue-process "
+        "events (e.g. 'the user asked about', 'the assistant explained'). "
+        "NEVER return fact_slot=null or fact_slot='' (empty string) — the "
+        "schema rejects them and forces a retry. Only fill fact_slot with "
+        "a real 'domain.attribute' string when the event states a "
+        "durable, updatable user fact.",
+    ]
+
+
+def _build_fact_slot_examples() -> list[dict[str, Any]]:
+    return [
+        {
+            "scenario": (
+                "user moves between cities (state change emitted as two "
+                "events at the change boundary)"
+            ),
+            "turn_1_event": {
+                "content": "User lives in Seattle.",
+                "fact_slot": "profile.city",
+                "fact_value": "Seattle",
+                "valid_from": "2023-01-15T00:00:00+00:00",
+                "valid_until": "2023-06-01T00:00:00+00:00",
+            },
+            "turn_2_event": {
+                "content": "User moved to Portland; current residence is Portland.",
+                "fact_slot": "profile.city",
+                "fact_value": "Portland",
+                "valid_from": "2023-06-01T00:00:00+00:00",
+                "valid_until": None,
+            },
+            "rationale": (
+                "Same slot string 'profile.city', different fact_value; "
+                "old value carries valid_until at the change time and new "
+                "value carries valid_from at the same change time. The "
+                "consolidator marks the older Seattle fact SUPERSEDED."
+            ),
+        },
+        {
+            "scenario": "user changes employer and role",
+            "turn_1_event": {
+                "content": "User is a Software Engineer at Acme.",
+                "fact_slot": "profile.job",
+                "fact_value": "Software Engineer @ Acme",
+                "valid_from": "2022-09-01T00:00:00+00:00",
+                "valid_until": "2024-03-01T00:00:00+00:00",
+            },
+            "turn_2_event": {
+                "content": "User is now a Senior Engineer at Globex.",
+                "fact_slot": "profile.job",
+                "fact_value": "Senior Engineer @ Globex",
+                "valid_from": "2024-03-01T00:00:00+00:00",
+                "valid_until": None,
+            },
+            "rationale": (
+                "Same slot 'profile.job', value updated; SUPERSEDE."
+            ),
+        },
+        {
+            "scenario": (
+                "non-state preference fact (no valid_until; valid_from = "
+                "event_time)"
+            ),
+            "turn_1_event": {
+                "content": "User prefers window seats on long flights.",
+                "fact_slot": "preference.seat",
+                "fact_value": "window",
+                "valid_from": "2023-05-20T15:58:00+00:00",
+                "valid_until": None,
+            },
+            "rationale": (
+                "Preference fact; valid_from = event_time, valid_until = "
+                "null because no end is stated."
+            ),
+        },
+        {
+            "scenario": (
+                "transient activity event (fact_slot='none' sentinel; "
+                "ordinary ADD path)"
+            ),
+            "turn_1_event": {
+                "content": "User asked the assistant to summarize the trip.",
+                "fact_slot": "none",
+                "fact_value": "none",
+                "valid_from": None,
+                "valid_until": None,
+            },
+            "rationale": (
+                "Dialogue-process / transient activity; fact_slot='none' "
+                "sentinel satisfies the schema's required-field constraint "
+                "while signalling 'no durable fact'. The consolidator's "
+                "SUPERSEDE gate is not entered because two sentinel "
+                "events share slot AND value (no contradiction)."
+            ),
+        },
+        {
+            "scenario": (
+                "greeting / chitchat event (fact_slot='none' sentinel)"
+            ),
+            "turn_1_event": {
+                "content": "User greeted the assistant and asked how it was doing.",
+                "fact_slot": "none",
+                "fact_value": "none",
+                "valid_from": None,
+                "valid_until": None,
+            },
+            "rationale": (
+                "Greeting / chitchat carries no durable user fact; "
+                "fact_slot='none' sentinel. NEVER return null or empty "
+                "string — the schema rejects them."
+            ),
+        },
+        {
+            "scenario": (
+                "meta-discussion event (fact_slot='none' sentinel)"
+            ),
+            "turn_1_event": {
+                "content": "User mentioned they had discussed this topic previously.",
+                "fact_slot": "none",
+                "fact_value": "none",
+                "valid_from": None,
+                "valid_until": None,
+            },
+            "rationale": (
+                "Meta-discussion about prior conversation; no durable "
+                "fact about the user's attributes; fact_slot='none' "
+                "sentinel so the schema's required-field constraint is "
+                "satisfied without inventing a fake fact."
+            ),
+        },
+        {
+            "scenario": (
+                "CONTRAST pair — durable user preference vs. external "
+                "question (the key v3 distinction)"
+            ),
+            "turn_1_event": {
+                "content": "User enjoys comedy TV shows and wants new recommendations.",
+                "fact_slot": "preference.tv_show_genre",
+                "fact_value": "comedy",
+                "valid_from": "2023-08-15T19:30:00+00:00",
+                "valid_until": None,
+            },
+            "turn_2_event": {
+                "content": "User asked which TV show won the Golden Globe last year.",
+                "fact_slot": "none",
+                "fact_value": "none",
+                "valid_from": None,
+                "valid_until": None,
+            },
+            "rationale": (
+                "'User enjoys X' / 'User is interested in X' / "
+                "'User plans to do X' / 'User has been enjoying X' "
+                "are DURABLE user preferences/activities — emit a real "
+                "fact_slot like 'preference.tv_show_genre', "
+                "'hobby.cocktail_making', 'preference.newsletter_topic', "
+                "'activity.live_music_attendance' with the specific "
+                "topic as fact_value and valid_from=event_time. Do NOT "
+                "mark these as 'none'. By contrast, 'User asked which "
+                "X won Y' / 'User asked about an external fact' carries "
+                "no durable user attribute — fact_slot='none' sentinel. "
+                "The key test: does the event state something STABLE "
+                "about the USER (preference, possession, activity, "
+                "attribute)? If yes → real fact_slot. If it only "
+                "describes a transient question or dialogue move → "
+                "'none' sentinel."
+            ),
+        },
+    ]
+
+
+def _build_constraints(require_turn_evidence: bool) -> list[str]:
+    base = [
+        "Return only JSON.",
+        "Every evidence reference must use one of the provided turn_id values.",
+        "Provide source_session_id whenever duplicate turn_id values exist.",
+        "Every quote must be an exact substring of the referenced turn text.",
+        "In every string value, use single quotes for quoted speech and never "
+        "write an unescaped double quote inside a string.",
+        "Write event_time, valid_from, and valid_until as complete ISO-8601 "
+        "timestamps with zero-padded seconds and offset, e.g. "
+        "2023-05-20T15:58:00+00:00.",
+        "Extract concrete facts stated by the user: times, durations, "
+        "locations, preferences, decisions, and named entities. A fact like "
+        "\"the commute takes 45 minutes each way\" must be extracted as its "
+        "own event even when the surrounding topic is also extracted.",
+        "Do not merge a concrete user fact into a general topic summary.",
+        "Do NOT extract dialogue-process events such as \"the user asked\", "
+        "\"the assistant provided\", \"the user requested\", \"the assistant "
+        "explained\", or \"the user thanked\". Extract only durable facts: "
+        "the user's attributes, preferences, decisions, activities, "
+        "locations, and time-bound events.",
+        "fact_slot is REQUIRED. For durable, updatable user facts, fill "
+        "fact_slot with a lowercase 'domain.attribute' string AND set "
+        "fact_value AND valid_from (and valid_until when applicable). For "
+        "transient activity and dialogue-process events, set "
+        "fact_slot='none' AND fact_value='none' (with valid_from and "
+        "valid_until null). NEVER return fact_slot=null or fact_slot='' "
+        "(empty) — the schema rejects them and forces a retry.",
+        "When fact_slot is set (non-'none'), fact_value and valid_from must "
+        "also be set. valid_until may be set only when valid_from is set. "
+        "When the value is still current, leave valid_until null.",
+    ]
+    if require_turn_evidence:
+        base.append(
+            "Every event MUST reference at least one raw turn; summary-only "
+            "events are rejected."
+        )
+    return base
+
+
+def _build_turns_payload(turns: Sequence[ExtractionTurn]) -> list[dict[str, str | None]]:
+    return [
+        {
+            "turn_id": turn.turn_id,
+            "session_id": turn.session_id,
+            "speaker": turn.speaker,
+            "timestamp": turn.timestamp.isoformat() if turn.timestamp else None,
+            "content": turn.content,
+        }
+        for turn in turns
+    ]
+
+
+def _build_observations_payload(
+    observations: Sequence[ExtractionObservation],
+) -> list[dict[str, Any]]:
+    return [observation.model_dump(mode="json") for observation in observations]
+
+
 def _build_llm_prompt(request: ExtractionInput) -> str:
     payload = {
-        "schema": {
-            "events": [
-                {
-                    "content": "string",
-                    "speaker": "string or null",
-                    "entities": ["entity names"],
-                    "event_time": "ISO-8601 string or null",
-                    "evidence": [
-                        {
-                            "source_turn_id": "existing turn_id",
-                            "source_session_id": (
-                                "existing session_id or null when turn_id is unique"
-                            ),
-                            "quote": "exact substring of the turn text",
-                        }
-                    ],
-                    "fact_slot": (
-                        "REQUIRED non-empty string. Either (a) a lowercase "
-                        "dotted 'domain.attribute' string for durable, "
-                        "updatable user facts (residence, job, employer, "
-                        "manager, frequent-flyer status, personal bests, "
-                        "recurring activities, possessions, named-state "
-                        "attributes); or (b) the literal sentinel 'none' "
-                        "for transient activity / conversation / emotion / "
-                        "dialogue-process events. Must NEVER be null or "
-                        "empty string — the schema rejects them and the "
-                        "extractor retries. Use the SAME fact_slot string "
-                        "across turns describing the same attribute so the "
-                        "consolidator can detect value changes (SUPERSEDE)."
-                    ),
-                    "fact_value": (
-                        "normalized current canonical value of the fact "
-                        "stated in this event (e.g. 'Portland', 'Software "
-                        "Engineer @ Acme', 'Premier Silver'); MUST be the "
-                        "literal sentinel 'none' when fact_slot is 'none'."
-                    ),
-                    "valid_from": (
-                        "ISO-8601 timestamp marking when fact_value became "
-                        "the current value of fact_slot; for a durable fact "
-                        "without an explicit change time, set valid_from = "
-                        "event_time; null when fact_slot is 'none' (sentinel)."
-                    ),
-                    "valid_until": (
-                        "ISO-8601 timestamp marking when fact_value stopped "
-                        "being the current value of fact_slot (the older "
-                        "value of a state change carries valid_until at the "
-                        "change time); null when the value is still current "
-                        "or when fact_slot is 'none' (sentinel). Must be null "
-                        "when valid_from is null."
-                    ),
-                }
-            ]
-        },
-        "fact_slot_rules": [
-            "fact_slot format = lowercase dotted 'domain.attribute', e.g. "
-            "'profile.city', 'profile.job', 'profile.employer', 'profile.manager', "
-            "'preference.frequent_flyer_status', 'hobby.running_pb', "
-            "'possession.camera', 'plan.birthday_trip_destination', "
-            "'health.weight'.",
-            "Use the EXACT same fact_slot string across turns when describing "
-            "the same attribute. This is required so the consolidator can "
-            "detect value changes (SUPERSEDE).",
-            "fact_value = the current canonical value of the fact stated in "
-            "this event, normalized to a stable string. When the value changes "
-            "between turns, the new event uses the new fact_value (e.g. turn 1 "
-            "profile.city=Seattle, turn 2 profile.city=Portland).",
-            "For a state-change fact stated as two events, emit BOTH events: "
-            "(a) an end-event for the older value with fact_slot, fact_value "
-            "=old value, valid_until=<change time>, valid_from=<when the old "
-            "value started, or event_time when unknown>; and (b) a start-event "
-            "for the new value with the SAME fact_slot, fact_value=new value, "
-            "valid_from=<change time>, valid_until=null. The two events share "
-            "the change time as the boundary between valid_until and valid_from.",
-            "For a non-state fact (preference, one-shot event, or a state "
-            "change simplified to a single event), set valid_from = event_time "
-            "and leave valid_until null.",
-            "Set fact_slot='none' (the literal sentinel string) AND "
-            "fact_value='none' AND valid_from=null AND valid_until=null for "
-            "transient activity, conversation, emotion, and dialogue-process "
-            "events (e.g. 'the user asked about', 'the assistant explained'). "
-            "NEVER return fact_slot=null or fact_slot='' (empty string) — the "
-            "schema rejects them and forces a retry. Only fill fact_slot with "
-            "a real 'domain.attribute' string when the event states a "
-            "durable, updatable user fact.",
-        ],
-        "fact_slot_examples": [
-            {
-                "scenario": (
-                    "user moves between cities (state change emitted as two "
-                    "events at the change boundary)"
-                ),
-                "turn_1_event": {
-                    "content": "User lives in Seattle.",
-                    "fact_slot": "profile.city",
-                    "fact_value": "Seattle",
-                    "valid_from": "2023-01-15T00:00:00+00:00",
-                    "valid_until": "2023-06-01T00:00:00+00:00",
-                },
-                "turn_2_event": {
-                    "content": "User moved to Portland; current residence is Portland.",
-                    "fact_slot": "profile.city",
-                    "fact_value": "Portland",
-                    "valid_from": "2023-06-01T00:00:00+00:00",
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Same slot string 'profile.city', different fact_value; "
-                    "old value carries valid_until at the change time and new "
-                    "value carries valid_from at the same change time. The "
-                    "consolidator marks the older Seattle fact SUPERSEDED."
-                ),
-            },
-            {
-                "scenario": "user changes employer and role",
-                "turn_1_event": {
-                    "content": "User is a Software Engineer at Acme.",
-                    "fact_slot": "profile.job",
-                    "fact_value": "Software Engineer @ Acme",
-                    "valid_from": "2022-09-01T00:00:00+00:00",
-                    "valid_until": "2024-03-01T00:00:00+00:00",
-                },
-                "turn_2_event": {
-                    "content": "User is now a Senior Engineer at Globex.",
-                    "fact_slot": "profile.job",
-                    "fact_value": "Senior Engineer @ Globex",
-                    "valid_from": "2024-03-01T00:00:00+00:00",
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Same slot 'profile.job', value updated; SUPERSEDE."
-                ),
-            },
-            {
-                "scenario": (
-                    "non-state preference fact (no valid_until; valid_from = "
-                    "event_time)"
-                ),
-                "turn_1_event": {
-                    "content": "User prefers window seats on long flights.",
-                    "fact_slot": "preference.seat",
-                    "fact_value": "window",
-                    "valid_from": "2023-05-20T15:58:00+00:00",
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Preference fact; valid_from = event_time, valid_until = "
-                    "null because no end is stated."
-                ),
-            },
-            {
-                "scenario": (
-                    "transient activity event (fact_slot='none' sentinel; "
-                    "ordinary ADD path)"
-                ),
-                "turn_1_event": {
-                    "content": "User asked the assistant to summarize the trip.",
-                    "fact_slot": "none",
-                    "fact_value": "none",
-                    "valid_from": None,
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Dialogue-process / transient activity; fact_slot='none' "
-                    "sentinel satisfies the schema's required-field constraint "
-                    "while signalling 'no durable fact'. The consolidator's "
-                    "SUPERSEDE gate is not entered because two sentinel "
-                    "events share slot AND value (no contradiction)."
-                ),
-            },
-            {
-                "scenario": (
-                    "greeting / chitchat event (fact_slot='none' sentinel)"
-                ),
-                "turn_1_event": {
-                    "content": "User greeted the assistant and asked how it was doing.",
-                    "fact_slot": "none",
-                    "fact_value": "none",
-                    "valid_from": None,
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Greeting / chitchat carries no durable user fact; "
-                    "fact_slot='none' sentinel. NEVER return null or empty "
-                    "string — the schema rejects them."
-                ),
-            },
-            {
-                "scenario": (
-                    "meta-discussion event (fact_slot='none' sentinel)"
-                ),
-                "turn_1_event": {
-                    "content": "User mentioned they had discussed this topic previously.",
-                    "fact_slot": "none",
-                    "fact_value": "none",
-                    "valid_from": None,
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "Meta-discussion about prior conversation; no durable "
-                    "fact about the user's attributes; fact_slot='none' "
-                    "sentinel so the schema's required-field constraint is "
-                    "satisfied without inventing a fake fact."
-                ),
-            },
-            {
-                "scenario": (
-                    "CONTRAST pair — durable user preference vs. external "
-                    "question (the key v3 distinction)"
-                ),
-                "turn_1_event": {
-                    "content": "User enjoys comedy TV shows and wants new recommendations.",
-                    "fact_slot": "preference.tv_show_genre",
-                    "fact_value": "comedy",
-                    "valid_from": "2023-08-15T19:30:00+00:00",
-                    "valid_until": None,
-                },
-                "turn_2_event": {
-                    "content": "User asked which TV show won the Golden Globe last year.",
-                    "fact_slot": "none",
-                    "fact_value": "none",
-                    "valid_from": None,
-                    "valid_until": None,
-                },
-                "rationale": (
-                    "'User enjoys X' / 'User is interested in X' / "
-                    "'User plans to do X' / 'User has been enjoying X' "
-                    "are DURABLE user preferences/activities — emit a real "
-                    "fact_slot like 'preference.tv_show_genre', "
-                    "'hobby.cocktail_making', 'preference.newsletter_topic', "
-                    "'activity.live_music_attendance' with the specific "
-                    "topic as fact_value and valid_from=event_time. Do NOT "
-                    "mark these as 'none'. By contrast, 'User asked which "
-                    "X won Y' / 'User asked about an external fact' carries "
-                    "no durable user attribute — fact_slot='none' sentinel. "
-                    "The key test: does the event state something STABLE "
-                    "about the USER (preference, possession, activity, "
-                    "attribute)? If yes → real fact_slot. If it only "
-                    "describes a transient question or dialogue move → "
-                    "'none' sentinel."
-                ),
-            },
-        ],
-        "constraints": [
-            "Return only JSON.",
-            "Every evidence reference must use one of the provided turn_id values.",
-            "Provide source_session_id whenever duplicate turn_id values exist.",
-            "Every quote must be an exact substring of the referenced turn text.",
-            "In every string value, use single quotes for quoted speech and never "
-            "write an unescaped double quote inside a string.",
-            "Write event_time, valid_from, and valid_until as complete ISO-8601 "
-            "timestamps with zero-padded seconds and offset, e.g. "
-            "2023-05-20T15:58:00+00:00.",
-            "Extract concrete facts stated by the user: times, durations, "
-            "locations, preferences, decisions, and named entities. A fact like "
-            "\"the commute takes 45 minutes each way\" must be extracted as its "
-            "own event even when the surrounding topic is also extracted.",
-            "Do not merge a concrete user fact into a general topic summary.",
-            "Do NOT extract dialogue-process events such as \"the user asked\", "
-            "\"the assistant provided\", \"the user requested\", \"the assistant "
-            "explained\", or \"the user thanked\". Extract only durable facts: "
-            "the user's attributes, preferences, decisions, activities, "
-            "locations, and time-bound events.",
-            "fact_slot is REQUIRED. For durable, updatable user facts, fill "
-            "fact_slot with a lowercase 'domain.attribute' string AND set "
-            "fact_value AND valid_from (and valid_until when applicable). For "
-            "transient activity and dialogue-process events, set "
-            "fact_slot='none' AND fact_value='none' (with valid_from and "
-            "valid_until null). NEVER return fact_slot=null or fact_slot='' "
-            "(empty) — the schema rejects them and forces a retry.",
-            "When fact_slot is set (non-'none'), fact_value and valid_from must "
-            "also be set. valid_until may be set only when valid_from is set. "
-            "When the value is still current, leave valid_until null.",
-        ] + (
-            [
-                "Every event MUST reference at least one raw turn; summary-only "
-                "events are rejected."
-            ]
-            if request.require_turn_evidence
-            else []
-        ),
+        "schema": _build_schema_section(),
+        "fact_slot_rules": _build_fact_slot_rules(),
+        "fact_slot_examples": _build_fact_slot_examples(),
+        "constraints": _build_constraints(request.require_turn_evidence),
         "sample_id": request.sample_id,
-        "turns": [
-            {
-                "turn_id": turn.turn_id,
-                "session_id": turn.session_id,
-                "speaker": turn.speaker,
-                "timestamp": turn.timestamp.isoformat() if turn.timestamp else None,
-                "content": turn.content,
-            }
-            for turn in request.turns
-        ],
-        "observations": [
-            observation.model_dump(mode="json") for observation in request.observations
-        ],
+        "turns": _build_turns_payload(request.turns),
+        "observations": _build_observations_payload(request.observations),
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 

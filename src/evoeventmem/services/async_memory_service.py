@@ -15,7 +15,12 @@ from evoeventmem.core.ports import (
     SearchLimit,
     SearchVector,
 )
-from evoeventmem.domain.models import MemoryRecord, MemoryStatus, memory_order_key
+from evoeventmem.domain.models import (
+    MemoryRecord,
+    MemoryStatus,
+    memory_order_key,
+    normalize_memory_content,
+)
 from evoeventmem.services import memory_rules
 from evoeventmem.services.memory_service import (
     MemoryExplainResult,
@@ -94,15 +99,11 @@ class AsyncMemoryService:
             ) != memory_rules.legacy_write_identity(memory):
                 raise MemoryIdentityCollisionError
             return existing
-        scoped = await self._repository.list(
-            scope,
-            ListQuery(limit=1000, status=MemoryQuery.ALL),
-        )
-        for item in scoped:
-            if item.status is MemoryStatus.DELETED:
-                continue
-            if item.normalized_content == memory.normalized_content:
-                return item
+        # Use DB index for O(1) dedup lookup instead of O(n) full table scan
+        normalized = normalize_memory_content(memory.content)
+        duplicate = await self._repository.find_by_normalized_content(scope, normalized)
+        if duplicate is not None:
+            return duplicate
         vector = await self._embed_document(memory)
         return await self._repository.add(scope, memory, vector)
 

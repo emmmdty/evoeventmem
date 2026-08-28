@@ -9,6 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from evoeventmem.core.math_utils import evidence_key, jaccard, unique_evidence
 from evoeventmem.core.ports import EmbeddingModel, MemoryRepository
 from evoeventmem.domain.models import (
     EntityRef,
@@ -502,7 +503,7 @@ class ETECConsolidator:
             target.content
         ) or _same_fact_value(source, target):
             semantic = 1.0
-        entity_role = _jaccard(_entity_role_keys(source), _entity_role_keys(target))
+        entity_role = jaccard(_entity_role_keys(source), _entity_role_keys(target))
         if entity_role == 0.0 and _same_fact_slot(source, target):
             entity_role = 1.0
         temporal = _temporal_overlap_score(source, target)
@@ -558,7 +559,7 @@ class ETECConsolidator:
             target,
             {
                 "content": _compose_merge_content(target.content, source.content),
-                "evidence_refs": _unique_evidence([*target.evidence_refs, *source.evidence_refs]),
+                "evidence_refs": unique_evidence([*target.evidence_refs, *source.evidence_refs]),
                 "entities": _unique_entities([*target.entities, *source.entities]),
                 "relations": [*target.relations, *source.relations],
                 "supersedes": _unique_uuids([*target.supersedes, *source.supersedes]),
@@ -867,14 +868,14 @@ def _structural_similarity(source: MemoryRecord, target: MemoryRecord) -> float:
     score = 0.4 if source.memory_kind is target.memory_kind else 0.0
     source_roles = {normalized_linking_key(role) for role in source.roles.values()}
     target_roles = {normalized_linking_key(role) for role in target.roles.values()}
-    score += 0.3 * _jaccard(source_roles, target_roles)
+    score += 0.3 * jaccard(source_roles, target_roles)
     source_predicates = {
         normalized_linking_key(relation.predicate) for relation in source.relations
     }
     target_predicates = {
         normalized_linking_key(relation.predicate) for relation in target.relations
     }
-    score += 0.3 * _jaccard(source_predicates, target_predicates)
+    score += 0.3 * jaccard(source_predicates, target_predicates)
     if _same_fact_slot(source, target):
         score = max(score, 0.8)
     return min(1.0, score)
@@ -923,26 +924,13 @@ def _evidence_consistency(source: Sequence[EvidenceRef], target: Sequence[Eviden
         return 0.0
     if not target:
         return 0.7
-    source_keys = {_evidence_key(item) for item in source}
-    target_keys = {_evidence_key(item) for item in target}
+    source_keys = {evidence_key(item) for item in source}
+    target_keys = {evidence_key(item) for item in target}
     if source_keys & target_keys:
         return 1.0
     source_types = {item.source_type for item in source}
     target_types = {item.source_type for item in target}
     return 0.8 if source_types & target_types else 0.6
-
-
-def _evidence_key(evidence: EvidenceRef) -> tuple[str, str, str | None]:
-    return (evidence.source_type, evidence.source_id, evidence.locator)
-
-
-def _jaccard(left: set[str], right: set[str]) -> float:
-    if not left and not right:
-        return 0.0
-    union = left | right
-    if not union:
-        return 0.0
-    return len(left & right) / len(union)
 
 
 def _interval(memory: MemoryRecord) -> tuple[datetime | None, datetime | None]:
@@ -1019,18 +1007,6 @@ def _memory_is_multi_valued(memory: MemoryRecord) -> bool:
 
 def _is_multi_valued(source: MemoryRecord, target: MemoryRecord) -> bool:
     return _memory_is_multi_valued(source) or _memory_is_multi_valued(target)
-
-
-def _unique_evidence(items: Iterable[EvidenceRef]) -> list[EvidenceRef]:
-    seen: set[tuple[str, str, str | None]] = set()
-    unique: list[EvidenceRef] = []
-    for item in items:
-        key = _evidence_key(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
 
 
 def _unique_entities(items: Iterable[EntityRef]) -> list[EntityRef]:

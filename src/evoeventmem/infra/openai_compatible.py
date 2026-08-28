@@ -145,7 +145,9 @@ class OpenAICompatibleEmbeddingClient:
             # transient (5xx/timeout/conn) from non-transient (4xx) by message
             # content: only the former triggers a split-and-retry.
             message = str(exc)
-            if "HTTP Error 4" in message and "HTTP Error 429" not in message:
+            is_4xx = "HTTP Error 4" in message
+            is_retryable = "HTTP Error 429" in message or "HTTP Error 403" in message
+            if is_4xx and not is_retryable:
                 raise
             raise _TransientEmbeddingError(message) from exc
         data = sorted(response["data"], key=lambda item: int(item["index"]))
@@ -185,7 +187,7 @@ def _post_json(
                 decoded = json.loads(response.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as exc:
-            if exc.code < 500 and exc.code != 429:
+            if exc.code < 500 and exc.code != 429 and exc.code != 403:
                 raise RuntimeError(f"OpenAI-compatible provider request failed: {exc}") from exc
             last_error = exc
         except (

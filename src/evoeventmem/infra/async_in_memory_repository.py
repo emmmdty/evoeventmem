@@ -129,6 +129,24 @@ class AsyncInMemoryRepository:
         ordered = sorted(items, key=lambda item: item.created_at, reverse=True)
         return [item.model_copy(deep=True) for item in ordered[: query.limit]]
 
+    async def find_by_normalized_content(
+        self, scope: RequestScope, normalized_content: str
+    ) -> MemoryRecord | None:
+        """Find an active memory by its normalized content within a scope.
+
+        For in-memory repository, this performs a linear scan (acceptable for tests).
+        In production (PostgreSQL), this uses the unique index for O(1) lookup.
+        """
+        self._check_open()
+        for item in self._items.values():
+            if (
+                _matches_scope(item, scope)
+                and _active(item)
+                and item.normalized_content == normalized_content
+            ):
+                return item.model_copy(deep=True)
+        return None
+
     async def search_vector(self, search: SearchVector) -> builtins.list[SearchHit]:
         self._check_open()
         self._check_vector(search.query)

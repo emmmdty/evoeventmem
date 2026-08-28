@@ -11,6 +11,16 @@ from pydantic import BaseModel, Field
 _ARTICLES = re.compile(r"\b(a|an|the)\b", flags=re.IGNORECASE)
 _PUNCTUATION = str.maketrans("", "", string.punctuation)
 
+_NUMBER_WORDS = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+    "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
+    "eighty": "80", "ninety": "90", "hundred": "100",
+}
+
 
 class AnswerMetrics(BaseModel):
     exact_match: float = Field(ge=0, le=1)
@@ -26,9 +36,30 @@ class EvidenceMetrics(BaseModel):
 def compute_answer_metrics(gold_answer: str | None, predicted_answer: str | None) -> AnswerMetrics:
     gold_tokens = _answer_tokens(gold_answer)
     predicted_tokens = _answer_tokens(predicted_answer)
-    exact_match = 1.0 if " ".join(gold_tokens) == " ".join(predicted_tokens) else 0.0
+
+    exact_match = 0.0
+    if " ".join(gold_tokens) == " ".join(predicted_tokens):
+        exact_match = 1.0
+    else:
+        for alt in _alternative_answers(gold_answer):
+            alt_tokens = _answer_tokens(alt)
+            if " ".join(alt_tokens) == " ".join(predicted_tokens):
+                exact_match = 1.0
+                break
+
     token_f1 = _token_f1(gold_tokens, predicted_tokens)
     return AnswerMetrics(exact_match=exact_match, token_f1=token_f1)
+
+
+def _alternative_answers(gold_answer: str | None) -> list[str]:
+    if gold_answer is None:
+        return []
+    alts: list[str] = []
+    # Split on period to handle "X. Y (also acceptable) is also acceptable"
+    parts = [p.strip() for p in gold_answer.split(".") if p.strip()]
+    if len(parts) > 1:
+        alts.extend(parts)
+    return alts
 
 
 def compute_evidence_metrics(
@@ -52,7 +83,15 @@ def _answer_tokens(answer: str | None) -> list[str]:
     normalized = "" if answer is None else answer.lower()
     normalized = normalized.translate(_PUNCTUATION)
     normalized = _ARTICLES.sub(" ", normalized)
-    return normalized.split()
+    tokens = normalized.split()
+    return [_normalize_number(token) for token in tokens]
+
+
+def _normalize_number(token: str) -> str:
+    # Word → digit (canonical form)
+    if token in _NUMBER_WORDS:
+        return _NUMBER_WORDS[token]
+    return token
 
 
 def _token_f1(gold_tokens: list[str], predicted_tokens: list[str]) -> float:

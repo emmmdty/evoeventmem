@@ -342,6 +342,32 @@ class AsyncPostgresMemoryRepository:
         finally:
             await self._release(connection)
 
+    async def find_by_normalized_content(
+        self, scope: RequestScope, normalized_content: str
+    ) -> MemoryRecord | None:
+        """Find an active memory by its normalized content within a scope.
+
+        Uses the unique index on (tenant_id, user_id, normalized_content) for O(1) lookup
+        instead of O(n) full table scan.
+        """
+        connection = await self._acquire()
+        try:
+            async with asyncio.timeout(self._operation_timeout):
+                clause, params = _scope_clause(scope)
+                row = await connection.fetchrow(
+                    f"SELECT {_SELECT_COLUMNS} FROM memories m WHERE {clause} "
+                    f"AND m.normalized_content = ${len(params) + 1} "
+                    f"AND m.status = 'active' "
+                    f"LIMIT 1",
+                    *params,
+                    normalized_content,
+                )
+            return _memory_from_row(row) if row is not None else None
+        except TimeoutError as exc:
+            raise RepositoryUnavailableError("postgres operation timed out") from exc
+        finally:
+            await self._release(connection)
+
     async def search_vector(
         self, search: SearchVector
     ) -> builtins.list[SearchHit]:

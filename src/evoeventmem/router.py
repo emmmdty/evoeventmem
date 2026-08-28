@@ -742,12 +742,6 @@ class QueryRouterService:
 
 _YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b")
 _AT_DATE_RE = re.compile(r"\b(20\d{2}|19\d{2})\b|in \b(20\d{2}|19\d{2})\b")
-_MONTH_RE = re.compile(
-    r"\b(january|february|march|april|may|june|july|august|september|october|"
-    r"november|december)\b",
-    re.IGNORECASE,
-)
-_TO_YEAR_RE = re.compile(r"\b(20\d{2}|19\d{2})\b", re.IGNORECASE)
 _RELATIVE_RE = re.compile(
     r"\b(last|next|this|past|previous|coming)\s+(week|month|year)\b",
     re.IGNORECASE,

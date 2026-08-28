@@ -1,0 +1,35 @@
+schema_version = "longmemeval.config.v1"
+run_id_prefix = "t1-validate-5"
+dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"
+methods = ["etec", "vector_rag", "event_no_etec"]
+provider = "openai_compatible"
+max_input_tokens = 4096
+max_extraction_tokens = 262144
+max_candidates_per_source = 128
+max_items_per_source = 8
+sample_limit = 5
+sample_ids = ["2ebe6c90", "852ce960", "0f05491a", "caf03d32", "81507db6"]
+
+[reader]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 120
+thinking = "disabled"
+
+[extractor]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 180
+thinking = "disabled"
+max_tokens = 65536
+
+[embedding]
+provider = "openai_compatible"
+model_id = "qwen3-embedding-0.6b"
+base_url = "http://127.0.0.1:11436/v1"
+api_key_env = "EMBEDDING_API_KEY"
+timeout_s = 60

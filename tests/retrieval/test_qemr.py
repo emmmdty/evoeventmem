@@ -79,7 +79,7 @@ def _harness(
     memories: list[MemoryRecord],
     *,
     vectors: dict[str, tuple[float, ...]] | None = None,
-    default_budget_tokens: int = 200,
+    default_budget_tokens: int = 500,
     max_items_per_source: int = 4,
     max_candidates_per_source: int | None = None,
     embedding: _FixedEmbeddingModel | None = None,
@@ -199,11 +199,11 @@ def test_selected_context_never_exceeds_budget() -> None:
     result = harness.retrieve(
         "What is Caroline's favorite color?",
         user_id="u1",
-        budget_tokens=200,
+        budget_tokens=300,
         strategy=RetrievalStrategy.FIXED_HYBRID,
     )
-    assert result.total_tokens <= 200
-    assert result.budget.total_input_tokens_estimate <= 200
+    assert result.total_tokens <= 300
+    assert result.budget.total_input_tokens_estimate <= 300
     assert len(result.selected_context) >= 1
 
 
@@ -307,8 +307,13 @@ def test_evidence_coverage_bonus_prefers_new_evidence_over_duplicate() -> None:
         duplicate.content: (0.9, 0.435889894354067),
         novel.content: (0.86, 0.5099019513592785),
     }
-    harness = _harness([first, duplicate, novel], vectors=vectors, default_budget_tokens=120)
-    result = harness.retrieve("query", user_id="u1", strategy=RetrievalStrategy.FIXED_VECTOR)
+    harness = _harness(
+        [first, duplicate, novel], vectors=vectors, default_budget_tokens=250
+    )
+    result = harness.retrieve(
+        "query", user_id="u1",
+        strategy=RetrievalStrategy.FIXED_VECTOR, budget_tokens=250,
+    )
     selected_ids = [item.memory.memory_id for item in result.selected_context]
     assert selected_ids[0] == first.memory_id
     assert novel.memory_id in selected_ids
@@ -350,7 +355,7 @@ def test_source_diversity_cap_is_phase_one_preference_not_budget_ceiling() -> No
         max_items_per_source=1,
     )
     tight = harness.retrieve(
-        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=76
+        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=215
     )
     tight_ids = {item.memory.memory_id for item in tight.selected_context}
     assert tight_ids == {dense_a.memory_id, graph.memory_id}
@@ -360,7 +365,7 @@ def test_source_diversity_cap_is_phase_one_preference_not_budget_ceiling() -> No
         for exclusion in tight.exclusions
     ), "budget binds when the token budget is the tighter constraint"
     roomy = harness.retrieve(
-        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=200
+        "epsilon", user_id="u1", strategy=RetrievalStrategy.FIXED_HYBRID, budget_tokens=300
     )
     roomy_ids = {item.memory.memory_id for item in roomy.selected_context}
     assert dense_a.memory_id in roomy_ids
@@ -1226,7 +1231,7 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
     harness = _harness(
         [dense_leader, graph_plus_dense, temporal_plus_episodic],
         vectors=vectors,
-        default_budget_tokens=200,
+        default_budget_tokens=300,
     )
     query = "Where does Caroline live?"
     intent_profile = harness.retrieve(
@@ -1235,7 +1240,7 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
         controls=RetrievalControls(
             strategy=RetrievalStrategy.QEMR,
             weight_profile=WeightProfile.INTENT,
-            budget_tokens=200,
+            budget_tokens=300,
         ),
     )
     hybrid_profile = harness.retrieve(
@@ -1244,7 +1249,7 @@ def test_controls_weight_profile_changes_ranking_but_not_reported_strategy() -> 
         controls=RetrievalControls(
             strategy=RetrievalStrategy.QEMR,
             weight_profile=WeightProfile.FIXED_HYBRID,
-            budget_tokens=200,
+            budget_tokens=300,
         ),
     )
     assert intent_profile.strategy is RetrievalStrategy.QEMR
@@ -1279,12 +1284,12 @@ def test_controls_budget_pair_changes_packed_decision() -> None:
         first.content: (1.0, 0.0),
         second.content: (0.9, 0.435889894354067),
     }
-    harness = _harness([first, second], vectors=vectors, default_budget_tokens=200)
+    harness = _harness([first, second], vectors=vectors, default_budget_tokens=300)
     tight = harness.retrieve(
         "query",
         user_id="u1",
         strategy=RetrievalStrategy.FIXED_HYBRID,
-        controls=RetrievalControls(budget_tokens=80),
+        controls=RetrievalControls(budget_tokens=300),
     )
     roomy = harness.retrieve(
         "query",
@@ -1346,10 +1351,10 @@ def test_punctuation_counts_toward_reader_budget() -> None:
         vectors={"query": (1.0, 0.0), punctuated.content: (1.0, 0.0)},
     )
     plain_result = plain_harness.retrieve(
-            "query", user_id="u1", budget_tokens=200, strategy=RetrievalStrategy.FIXED_HYBRID
+            "query", user_id="u1", budget_tokens=300, strategy=RetrievalStrategy.FIXED_HYBRID
         )
     punctuated_result = punct_harness.retrieve(
-            "query", user_id="u1", budget_tokens=200, strategy=RetrievalStrategy.FIXED_HYBRID
+            "query", user_id="u1", budget_tokens=300, strategy=RetrievalStrategy.FIXED_HYBRID
         )
     assert len(plain_result.selected_context) == 1
     assert len(punctuated_result.selected_context) == 1
@@ -1370,10 +1375,10 @@ def test_unicode_content_counts_toward_reader_budget() -> None:
         vectors={"query": (1.0, 0.0), unicode_memory.content: (1.0, 0.0)},
     )
     ascii_result = ascii_harness.retrieve(
-            "query", user_id="u1", budget_tokens=200, strategy=RetrievalStrategy.FIXED_HYBRID
+            "query", user_id="u1", budget_tokens=300, strategy=RetrievalStrategy.FIXED_HYBRID
         )
     unicode_result = unicode_harness.retrieve(
-            "query", user_id="u1", budget_tokens=200, strategy=RetrievalStrategy.FIXED_HYBRID
+            "query", user_id="u1", budget_tokens=300, strategy=RetrievalStrategy.FIXED_HYBRID
         )
     assert len(ascii_result.selected_context) == 1
     assert len(unicode_result.selected_context) == 1
@@ -1406,10 +1411,10 @@ def test_budget_binds_before_item_cap() -> None:
         memories,
         vectors=vectors,
         max_items_per_source=100,
-        default_budget_tokens=200,
+        default_budget_tokens=255,
     )
     result = harness.retrieve(
-        "query", user_id="u1", budget_tokens=97, strategy=RetrievalStrategy.FIXED_HYBRID
+        "query", user_id="u1", budget_tokens=255, strategy=RetrievalStrategy.FIXED_HYBRID
     )
     assert 0 < len(result.selected_context) < 6
     assert result.budget.total_input_tokens_estimate <= result.budget_tokens

@@ -1,0 +1,35 @@
+schema_version = "longmemeval.config.v1"
+run_id_prefix = "t1-selective-supersede-v2"
+dataset_path = "data/raw/longmemeval/longmemeval_s_cleaned.json"
+methods = ["etec", "vector_rag", "event_no_etec"]
+provider = "openai_compatible"
+max_input_tokens = 4096
+max_extraction_tokens = 262144
+max_candidates_per_source = 128
+max_items_per_source = 8
+sample_limit = 20
+sample_ids = ["4d6b87c8", "852ce960", "e6041065", "d3ab962e", "18dcd5a5", "ceb54acb", "b6025781", "0edc2aef", "f4f1d8a4_abs", "7527f7e2", "993da5e2", "gpt4_b5700ca9", "d52b4f67", "dd2973ad", "c2ac3c61", "88432d0a_abs", "gpt4_1916e0ea", "gpt4_7bc6cf22", "a06e4cfe", "gpt4_74aed68e"]
+
+[reader]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 120
+thinking = "disabled"
+
+[extractor]
+provider = "openai_compatible"
+model_id = "mimo-v2.5"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key_env = "OPENAI_API_KEY"
+timeout_s = 180
+thinking = "disabled"
+max_tokens = 65536
+
+[embedding]
+provider = "openai_compatible"
+model_id = "qwen3-embedding-0.6b"
+base_url = "http://127.0.0.1:11436/v1"
+api_key_env = "EMBEDDING_API_KEY"
+timeout_s = 60

@@ -152,8 +152,10 @@ FIXED_HYBRID_WEIGHTS: dict[CandidateSource, float] = {
 HISTORICAL_INTENTS = frozenset({QueryIntent.TEMPORAL, QueryIntent.EPISODIC})
 
 # Fixed policy cap: unconstrained ``when`` queries treat temporal presence as a
-# small feature, never equal to the dense relevance weight.
-UNCONSTRAINED_TEMPORAL_WEIGHT_CAP = 0.2
+# small feature, never equal to the dense relevance weight.  Raised from 0.2
+# to 0.3 to improve temporal recall for unconstrained "when" queries per
+# LongMemEval analysis (§5.4 time-aware retrieval improves recall 6.8-11.3%).
+UNCONSTRAINED_TEMPORAL_WEIGHT_CAP = 0.3
 
 
 class Candidate(BaseModel):
@@ -1519,8 +1521,9 @@ def _reader_messages(
 
     The system message carries the reader directive, the user message carries
     the question followed by one labeled block per packed item with its
-    content, evidence labels, and metadata. B consumes these rendered messages
-    directly instead of assembling its own strings.
+    content, evidence labels, metadata, and raw evidence quotes. Including
+    quotes gives the reader access to specific details (names, numbers,
+    dates) that event summaries may abstract away.
     """
     system = ChatMessage(role="system", content=READER_SYSTEM_DIRECTIVE)
     parts = [f"{QUESTION_PREFIX}{query}"]
@@ -1528,6 +1531,9 @@ def _reader_messages(
         parts.append(f"[{index}] {memory.content}")
         evidence = ",".join(ref.source_id for ref in refs)
         parts.append(f"evidence={evidence} {_metadata_line(memory)}")
+        quotes = [ref.quote for ref in refs if ref.quote]
+        if quotes:
+            parts.append("source: " + " | ".join(quotes))
     return [system, ChatMessage(role="user", content="\n".join(parts))]
 
 

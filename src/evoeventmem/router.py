@@ -94,7 +94,7 @@ class QueryRouter:
     """
 
     POLICY_NAME = POLICY_NAME
-    MIN_COMMIT_CONFIDENCE = 0.5
+    MIN_COMMIT_CONFIDENCE = 0.4
 
     _INTENT_PRIORITY = {
         QueryIntent.PROCEDURAL: 0,
@@ -303,14 +303,22 @@ class QueryRouter:
         r"where (is|does|do)|how old|what kind of|what type of|"
         r"favorite|prefers?|preference|likes?|dislikes?|lives in|works as|"
         r"based in|interested in|age|birthday|hometown|name of|do you know|"
-        r"is it|does .+ prefer|hobby|hobbies",
+        r"is it|does .+ prefer|hobby|hobbies|"
+        r"what .+ did I\b|"  # "What degree did I graduate with?"
+        r"where did I\b|"  # "Where did I redeem a coupon?"
+        r"who did I\b|"  # "Who did I have a conversation with?"
+        r"how many .+ do I\b|"  # "How many playlists do I have?"
+        r"how much .+ do I\b|"  # "How much RAM do I have?"
+        r"how much (is|are|was|were)\b|"  # "How much is the painting worth?"
+        r"how much did I\b|"  # "How much did I spend?"
+        r"what was my\b",  # "What was my personal best?"
         re.IGNORECASE,
     )
     _STRONG_FACT_RE = re.compile(
-        r"what .+ (did|do|does)|"  # "What degree did I graduate with?"
+        r"what (?:.+ )?(did|do|does)|"  # "What degree did I graduate with?" / "What did I buy?"
         r"where (did|do|does)|"  # "Where did I redeem a $5 coupon?"
-        r"who .+ (did|do|does)|"  # "Who did I meet at the conference?"
-        r"how many .+ (did|do|does)|"  # "How many playlists do I have?"
+        r"who (?:.+ )?(did|do|does)|"  # "Who did I meet at the conference?"
+        r"how many (?:.+ )?(did|do|does)|"  # "How many playlists do I have?"
         r"how much (did|do|does)|"  # "How much did I spend?"
         r"how long (is|are|was|were)|"  # measurement, not ordering
         r"what (color|colour|breed|brand|name|speed|play|degree|"
@@ -582,8 +590,35 @@ class QueryRouter:
             # and is not drowned out by an incidental fact cue on the same
             # query (e.g., "What is my current job?" — fact + knowledge-update
             # → TEMPORAL because "current" implies a prior value to compare).
-            prev = scores.get(QueryIntent.TEMPORAL, 0.0)
-            scores[QueryIntent.TEMPORAL] = max(prev, 0.65)
+            #
+            # Suppress KU floor when a strong fact cue is present and no
+            # explicit temporal anchor — single-session fact lookups that
+            # happen to use "completed"/"used to"/"now" are not
+            # knowledge-update intents (LongMemEval gold = SEMANTIC).
+            is_strong_fact_without_temporal = (
+                features.has_strong_fact_cue and features.strong_temporal_count == 0
+            )
+            if not is_strong_fact_without_temporal:
+                prev = scores.get(QueryIntent.TEMPORAL, 0.0)
+                scores[QueryIntent.TEMPORAL] = max(prev, 0.65)
+        # S8 Step 1: suppress temporal routing for fact-lookup queries where
+        # the only temporal cue is a relative reference ("last month", "this year").
+        # These are single-session factual lookups, not temporal-reasoning.
+        # Only suppress for weak fact cues (_FACT_RE only) — not strong fact
+        # cues (_STRONG_FACT_RE) which also match temporal-reasoning patterns
+        # like "how many weeks ago did I..." or "what is the order of...".
+        # Also skip suppression when strong_temporal_count > 0 — those are
+        # genuine temporal anchors (dates, "X weeks ago") not relative refs.
+        has_weak_fact = features.has_fact_cue and not features.has_strong_fact_cue
+        if (
+            has_weak_fact
+            and not features.has_knowledge_update_cue
+            and features.strong_temporal_count == 0
+            and not features.has_multi_session_cue
+        ):
+            prev_temporal = scores.get(QueryIntent.TEMPORAL, 0.0)
+            if prev_temporal > 0.0:
+                scores[QueryIntent.TEMPORAL] = min(prev_temporal, 0.3)
         if features.has_relation_cue:
             scores[QueryIntent.GRAPH] = 0.5
         if features.has_multi_session_cue:

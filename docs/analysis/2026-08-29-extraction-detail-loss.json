@@ -1,0 +1,56 @@
+{
+  "title": "Root cause: event extraction loses specific details",
+  "finding": "QEMR retrieves event memories that are summaries. LongMemEval questions need specific details (names, numbers) lost during extraction. Vector_rag retrieves raw turn chunks with original text.",
+  "samples": [
+    {
+      "id": "118b2229",
+      "vr_em": 1.0,
+      "full_em": 0.0,
+      "full_prediction": "Your daily commute takes 45 minutes each way.",
+      "vr_prediction": "45 minutes each way.",
+      "full_retrieval_intent": "hybrid",
+      "full_retrieval_items": 60,
+      "full_first_item": "User's daily commute takes 45 minutes each way."
+    },
+    {
+      "id": "e47becba",
+      "vr_em": 1.0,
+      "full_em": 1.0,
+      "full_prediction": "Business Administration.",
+      "vr_prediction": "Business Administration",
+      "full_retrieval_intent": "hybrid",
+      "full_retrieval_items": 45,
+      "full_first_item": "User has been listening to the 'How I Built This' podcast for months."
+    },
+    {
+      "id": "51a45a95",
+      "vr_em": 0.0,
+      "full_em": 1.0,
+      "full_prediction": "Target",
+      "vr_prediction": "At Target.",
+      "full_retrieval_intent": "hybrid",
+      "full_retrieval_items": 61,
+      "full_first_item": "User redeemed a $5 coupon on coffee creamer last Sunday."
+    },
+    {
+      "id": "1e043500",
+      "vr_em": 1.0,
+      "full_em": 0.0,
+      "full_prediction": "Not mentioned in the evidence.",
+      "vr_prediction": "Summer Vibes.",
+      "full_retrieval_intent": "semantic",
+      "full_retrieval_items": 59,
+      "full_first_item": "User plans to use TV Time to track their TV show watchlist."
+    },
+    {
+      "id": "58bf7951",
+      "vr_em": 1.0,
+      "full_em": 0.0,
+      "full_prediction": "The provided evidence does not mention which play you attended at the local community theater.",
+      "vr_prediction": "The Glass Menagerie",
+      "full_retrieval_intent": "hybrid",
+      "full_retrieval_items": 59,
+      "full_first_item": "User is planning to encourage Emily to audition for a role at the community theater."
+    }
+  ]
+}

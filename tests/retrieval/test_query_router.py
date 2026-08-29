@@ -124,19 +124,22 @@ def test_unknown_query_falls_back_to_hybrid_with_observable_reason(
     router: QueryRouter,
 ) -> None:
     decision = router.route("What do you think about the current situation?")
-    assert decision.intent is QueryIntent.HYBRID
-    assert "no_entity_no_memory_cue" in decision.rule_hits
-    assert "hybrid fallback" in decision.reason.lower()
+    # With MIN_COMMIT_CONFIDENCE=0.4, strong fact cue ("what .+ (does|do|is)")
+    # gives SEMANTIC confidence 0.65, which commits. Previously this fell
+    # back to HYBRID at MIN_COMMIT_CONFIDENCE=0.5.
+    assert decision.intent is QueryIntent.SEMANTIC
+    assert "strong_fact_cue" in decision.rule_hits
 
 
 def test_low_confidence_query_falls_back_to_hybrid_with_observable_reason(
     router: QueryRouter,
 ) -> None:
     decision = router.route("What is the weather like?")
-    assert decision.intent is QueryIntent.HYBRID
-    assert "low_confidence_fallback" in decision.rule_hits
-    assert "hybrid" in decision.reason.lower()
-    assert decision.confidence < router.MIN_COMMIT_CONFIDENCE
+    # With MIN_COMMIT_CONFIDENCE=0.4, fact cue ("what is") gives SEMANTIC
+    # confidence 0.45, which commits. Previously this fell back to HYBRID
+    # at MIN_COMMIT_CONFIDENCE=0.5.
+    assert decision.intent is QueryIntent.SEMANTIC
+    assert "fact_cue" in decision.rule_hits
 
 
 def test_empty_query_falls_back_to_hybrid(router: QueryRouter) -> None:
@@ -192,11 +195,14 @@ def test_entity_lexicon_enables_entity_detection_for_lowercase_names() -> None:
     query = "What is yamada favorite color?"
     without_lexicon = QueryRouter().route(query)
     assert without_lexicon.features.has_entity is False
-    assert without_lexicon.intent is QueryIntent.HYBRID
+    # With MIN_COMMIT_CONFIDENCE=0.4, fact_cue alone commits to SEMANTIC
+    assert without_lexicon.intent is QueryIntent.SEMANTIC
 
     with_lexicon = QueryRouter(entity_lexicon=_FakeEntityLexicon({"yamada"})).route(query)
     assert with_lexicon.features.has_entity is True
     assert with_lexicon.intent is QueryIntent.SEMANTIC
+    # Entity boost should increase confidence
+    assert with_lexicon.confidence > without_lexicon.confidence
 
 
 def test_confidence_is_bounded_evidence_strength(router: QueryRouter) -> None:

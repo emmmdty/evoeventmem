@@ -200,10 +200,9 @@ def _post_json(
             if exc.code < 500 and exc.code != 429 and exc.code != 403:
                 # Include response body in the error message so callers can
                 # detect specific 400 causes (e.g. batch size limits).
-                body = ""
+                detail = ""
                 with contextlib.suppress(Exception):
-                    body = exc.read().decode("utf-8", errors="replace")
-                detail = f" {body[:500]}" if body else ""
+                    detail = f" {exc.read().decode('utf-8', errors='replace')[:500]}"
                 raise RuntimeError(
                     f"OpenAI-compatible provider request failed: {exc}{detail}"
                 ) from exc

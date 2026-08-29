@@ -591,14 +591,19 @@ class QueryRouter:
             # query (e.g., "What is my current job?" — fact + knowledge-update
             # → TEMPORAL because "current" implies a prior value to compare).
             #
-            # Suppress KU floor when a strong fact cue is present and no
-            # explicit temporal anchor — single-session fact lookups that
-            # happen to use "completed"/"used to"/"now" are not
-            # knowledge-update intents (LongMemEval gold = SEMANTIC).
-            is_strong_fact_without_temporal = (
-                features.has_strong_fact_cue and features.strong_temporal_count == 0
+            # Suppress KU floor when a strong fact cue is present, no
+            # explicit temporal anchor, AND no knowledge-update cue —
+            # single-session fact lookups that happen to use
+            # "completed"/"used to"/"now" are not knowledge-update intents
+            # (LongMemEval gold = SEMANTIC). But when a KU cue IS present
+            # (e.g. "current", "formerly"), the query genuinely asks about
+            # a value change and the KU floor must apply.
+            is_strong_fact_without_ku_or_temporal = (
+                features.has_strong_fact_cue
+                and not features.has_knowledge_update_cue
+                and features.strong_temporal_count == 0
             )
-            if not is_strong_fact_without_temporal:
+            if not is_strong_fact_without_ku_or_temporal:
                 prev = scores.get(QueryIntent.TEMPORAL, 0.0)
                 scores[QueryIntent.TEMPORAL] = max(prev, 0.65)
         # S8 Step 1: suppress temporal routing for fact-lookup queries where

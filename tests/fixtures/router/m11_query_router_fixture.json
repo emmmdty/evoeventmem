@@ -161,14 +161,14 @@
     {
       "case_id": "hybrid_weather",
       "query": "What is the weather like?",
-      "expected_intent": "hybrid",
-      "note": "Unknown intent with weak feature evidence; falls back to hybrid."
+      "expected_intent": "semantic",
+      "note": "Fact-cue query (\"what is\"); routes to semantic with MIN_COMMIT_CONFIDENCE=0.4."
     },
     {
       "case_id": "hybrid_opinion",
       "query": "What do you think about the current situation?",
-      "expected_intent": "hybrid",
-      "note": "No entity and no memory cue; hybrid fallback required."
+      "expected_intent": "semantic",
+      "note": "Fact-cue query (\"what do you think\"); routes to semantic with MIN_COMMIT_CONFIDENCE=0.4."
     },
     {
       "case_id": "hybrid_merger",

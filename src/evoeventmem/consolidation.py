@@ -558,7 +558,12 @@ class ETECConsolidator:
         return _validated_copy(
             target,
             {
-                "content": _compose_merge_content(target.content, source.content),
+                "content": _compose_merge_content_for_slot(
+                    target.content,
+                    source.content,
+                    prefer_newer=not _same_fact_value(source, target),
+                ) if _same_fact_slot(source, target)
+                else _compose_merge_content(target.content, source.content),
                 "evidence_refs": unique_evidence([*target.evidence_refs, *source.evidence_refs]),
                 "entities": _unique_entities([*target.entities, *source.entities]),
                 "relations": [*target.relations, *source.relations],
@@ -915,7 +920,11 @@ def _contradiction_score(
         and target_start is not None
         and not _intervals_overlap(source_start, source_end, target_start, target_end)
     ):
-        return 0.0
+        # Disjoint intervals for same-slot different-value pairs may indicate
+        # a state change (old value ended, new value started). Return a
+        # moderate contradiction score to allow SUPERSEDE for genuine state
+        # transitions rather than blocking them entirely.
+        return 0.5
     return min(1.0, 0.6 + entity_role_overlap * 0.2 + structural_similarity * 0.2)
 
 
@@ -1071,6 +1080,29 @@ def _compose_merge_content(target_content: str, source_content: str) -> str:
         return target_content
     if target_tokens <= source_tokens:
         return source_content
+    return f"{target_content} {source_content}"
+
+
+def _compose_merge_content_for_slot(
+    target_content: str,
+    source_content: str,
+    *,
+    prefer_newer: bool = False,
+) -> str:
+    """Merge content with optional preference for the newer (source) value.
+
+    When ``prefer_newer`` is ``True`` and neither side subsumes the other,
+    the source (newer) content is placed first so the reader encounters the
+    current value before the stale one.
+    """
+    target_tokens = _content_tokens(target_content)
+    source_tokens = _content_tokens(source_content)
+    if source_tokens <= target_tokens:
+        return target_content
+    if target_tokens <= source_tokens:
+        return source_content
+    if prefer_newer:
+        return f"{source_content} {target_content}"
     return f"{target_content} {source_content}"
 
 

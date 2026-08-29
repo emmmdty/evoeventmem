@@ -2,7 +2,7 @@
 
 > Stage 3 diagnosis of why QEMR failed to convert the 109 SUPERSEDE fires (S2)
 > into reader-visible EM gains (`full` EM +0.02 only). Per
-> `docs/S3-execution-prompt.md`, this report is built incrementally across
+> `docs/archive/S3-execution-prompt.md`, this report is built incrementally across
 > Steps 1-5 and carries **no pre-declared expectation** (negative-result
 > framework, `METHODOLOGY_CHANGE.md`).
 >
@@ -179,7 +179,7 @@ _Artifact_: `runs/publication/m13-longmemeval-test50-mimo-v2-ablation/ablation_r
 
 **Status: skipped — deferred to S5 (cost + infrastructure).**
 
-Per `docs/S3-execution-prompt.md` Step 3 fallback (lines 425-427), the
+Per `docs/archive/S3-execution-prompt.md` Step 3 fallback (lines 425-427), the
 embedding comparison (bge-large-en-v1.5 / e5-large-v2 vs
 qwen3-embedding-0.6b) is declared skipped for two reasons:
 
@@ -278,7 +278,7 @@ _Artifacts_: `runs/publication/m13-longmemeval-test50-mimo-v2-factslot/m2_judge_
 
 ## §5. Root-cause conclusion + S5 routing (Step 5)
 
-> Per `docs/S3-execution-prompt.md` line 379, this section is a
+> Per `docs/archive/S3-execution-prompt.md` line 379, this section is a
 > human-judgment process item (N10) and is **not** listed among the
 > "verification commands". It synthesizes §1-§4; it does not claim
 > thesis翻盘 / ETEC有效 / QEMR有效 (S3 only measures, per scope line 81).

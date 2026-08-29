@@ -1,8 +1,8 @@
 # Remediation Final Report (S5, Branch C — Intermediate Route)
 
-> Stage 5 finalization. Built on S0–S3 (`docs/REMEDIATION_SPEC.md`). This report
+> Stage 5 finalization. Built on S0–S3 (`docs/archive/REMEDIATION_SPEC.md`). This report
 > carries **no pre-declared expectation** (negative-result framework,
-> `docs/METHODOLOGY_CHANGE.md`) and **does not claim** thesis翻盘 / ETEC有效 /
+> `docs/archive/METHODOLOGY_CHANGE.md`) and **does not claim** thesis翻盘 / ETEC有效 /
 > QEMR有效. Branch C is the intermediate route: SUPERSEDE is reachable on real
 > data but insufficient to lift overall accuracy.
 >
@@ -264,7 +264,7 @@ real-data operating surface is too narrow.
    (router 38% / weights sound / M2 74% tie) isolates the QEMR failure to
    router rules + operating surface, ruling out weights and SUPERSEDE
    consumption. This is the kind of negative-result diagnosis that
-   `docs/NEGATIVE_RESULT_DISCLOSURE.md` and `docs/METHODOLOGY_CHANGE.md`
+   `docs/archive/NEGATIVE_RESULT_DISCLOSURE.md` and `docs/archive/METHODOLOGY_CHANGE.md`
    pre-registered.
 
 **Framing alignment with literature**:
@@ -340,7 +340,7 @@ real-data operating surface is too narrow.
    conflate correctness with freshness on those subsets.
 4. **500-question consistency verification** — `configs/longmemeval/main500.toml`
    is checked in; the gateway 429/403 quota block stopped the run. Per
-   `docs/METHODOLOGY_CHANGE.md`, the 500-question run is a *stability check*,
+   `docs/archive/METHODOLOGY_CHANGE.md`, the 500-question run is a *stability check*,
    not a significance test (n=500 minimum detectable effect ±0.018–0.039 >
    observed 0.005–0.014; no significance is the expected result). Branch C does
    not require the 500-question run; branch B (positive thesis) would.
@@ -351,7 +351,7 @@ real-data operating surface is too narrow.
 ## 8. Stage closure
 
 This report closes S5 (branch C). The remediation spec
-(`docs/REMEDIATION_SPEC.md`) S0→S5 chain is complete:
+(`docs/archive/REMEDIATION_SPEC.md`) S0→S5 chain is complete:
 
 - S0 (诚信止血) ✅ commit `b60b38d`
 - S1a (schema + prompt v2) ✅ commit `162183c`
@@ -362,4 +362,4 @@ This report closes S5 (branch C). The remediation spec
 - S3 (QEMR diagnosis + M2) ✅ commits `a428e8d`→`8b28a5e` (CONDITIONAL PASS — router 38%, weights sound, M2 74% tie → branch C)
 - **S4a (reproducibility config + docs) + S5 (branch C finalization) ← this stage**
 
-Independent review: `docs/STAGE4a5_REVIEW.md`.
+Independent review: `docs/archive/STAGE4a5_REVIEW.md`.

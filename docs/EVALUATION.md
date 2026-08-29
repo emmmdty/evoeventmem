@@ -1,6 +1,6 @@
 # 评测协议
 
-> 方法论（2026-08-13 变更，详见 [`docs/METHODOLOGY_CHANGE.md`](docs/METHODOLOGY_CHANGE.md)）：
+> 方法论（2026-08-13 变更，详见 [`docs/archive/METHODOLOGY_CHANGE.md`](docs/archive/METHODOLOGY_CHANGE.md)）：
 > 评测节奏从"先跑 500 样本再分析"改为"**小样本强结果先行，大样本一致性验证**"。
 > 24 样本 run 的价值是机制级强结果（修复验证、机制指标、效率、失败归因），不做显著性声明；
 > 500 样本只承担一致性验证（功效分析表明其最小可检测效应 > 观测效应，无显著性是预期内结果）。
@@ -97,7 +97,7 @@ Mem0/Graphiti 可作为外部基线，但不应阻塞主线；版本、模型和
 - LoCoMo 1986 题：记忆方法 142.2 vs full_context 4102.3 tokens/query（Δ −3959.9，p<0.001，约省 96.5% **vs full_context trivial 基线**；**注意 full（200.3）比 vector_rag（142.2）贵 41%，事件图开销**）；
 - 33/33 失败人工复核：主因 answer_present_reader_wrong 26（reader 冗余措辞），真正检索/提取/预算失效仅 7/33。
 
-O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_ACCEPTANCE.md) §a/§b）：
+O09 机制诊断增量（2026-08-18，详见 [`docs/archive/8of10_ACCEPTANCE.md`](docs/archive/8of10_ACCEPTANCE.md) §a/§b）：
 - **SUPERSEDE 诊断**：真实数据 0/8 实测 + 0/24 结构外推（同管线 v1，mechanism40 未 finalize）= "0/32"（**非全实测，headline 需标注外推**），根因 = R1 提取不写 fact_slot → R1b 不写 valid_from（point-interval 不重叠）→ R3 LLM 过度标 multi_valued + event_time 粒度粗 + 缺 event_time 三层级联屏障；同代码在受控夹具 `runs/mechanism/etec_stress/…/summary.json`（fixture_sha256 `3e2f022e…`）上 4/12 SUPERSEDE、invariant_pass_rate 1.0 → **证明 consolidation 逻辑有效，不证明 ETEC 在真实数据有价值**（真实 0/8 说明 ETEC 无操作面）；v2.1 单测证明 R1b 闭合后机制层可达。续作后：**M1=1/8**（`runs/mechanism/evala/m1.json`，sha256:2afcea42…，22d2cb42 ADD coincidental match flagged — ETEC did ADD due to R1 default, not a genuine correct decision），M5 under_edit=1.0（**SUPERSEDE=0 的直接推论，非独立测量**）/version_chain_recall=0.0（**同上**），M2 未产出（配额阻断，`runs/mechanism/evala/m2.json`）。
 - **interval 算子预筛**：router 全量 500 题确定性预筛（零 LLM，预注册方法 `reference_time=question_date` 解析）`none 382 / earliest 42 / latest 23 / duration 26 / between 15 / sequence 11 / at 1`、BEFORE/AFTER = 0（`runs/mechanism/router_screen/router-screen.json`，content_hash 字段 sha256:74d18a1d…）→ 真实数据 interval 过滤近零触发（16/500=3.2%），与既有三个切片一致。**M4 探针（8 探针 × 4 臂，零 LLM）**：ExclusionHit=0 全臂（router "before {year}" 解析包含该年 → upper={year}-12-31 → 0 排除，如实记录非凑数字）；Contamination≈0.11-0.24（旧证据泄漏，SUPERSEDE=0 → 旧值可检索）；ValidRetention=1.0（`runs/mechanism/evalb/m4.json`，sha256:07ba78c3…）。
 - **M3 joint recall**：ms 8 KU 四方法 old_recall_mean = 1.0、new_recall_mean = 1.0、JERecall@8 = 1.0（full / event_no_etec / etec / vector_rag）→ 检索侧无瓶颈（**joint recall：old+new 侧，7 对 gold pair；结构性 null——SUPERSEDE=0 → 旧值 ACTIVE → 总可检索 → full vs event_no_etec delta=0.0，非 ETEC 优势**；`runs/mechanism/evala/m3_joint.json`，sha256:1f16ef77…）。
@@ -107,8 +107,8 @@ O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_
 未达成的门槛（如实记录，不伪装）：
 - 无端到端 QA 增益声明：24 样本 `full` vs `vector_rag` 无正向显著差异（6m 报告 Δ −0.1667 为负，且受 run-to-run UUID 平局非确定性影响，见 `docs/STRONG_RESULTS_SMALL_SAMPLE.md` §6）；
 - `etec` vs `event_no_etec` 在 single-session 切片 EM 逐题一致（Δ 0，CI [0,0]），且该对照混入检索策略因素（§7）；
-- SUPERSEDE 与 temporal interval 排除在真实数据上结构性不可达（机制诊断完成，见 `docs/8of10_ACCEPTANCE.md` §a）；
-- stale-memory error 机制诊断完成（SUPERSEDE 结构性不可达，R1+R1b+R3 级联屏障）；M2 stale judge 因网关配额阻断未跑，由诊断隐含无 with/without-ETEC 差异（SUPERSEDE 不触发则旧值不会被标记失效），见 `docs/8of10_ACCEPTANCE.md` §b 风险 2。
+- SUPERSEDE 与 temporal interval 排除在真实数据上结构性不可达（机制诊断完成，见 `docs/archive/8of10_ACCEPTANCE.md` §a）；
+- stale-memory error 机制诊断完成（SUPERSEDE 结构性不可达，R1+R1b+R3 级联屏障）；M2 stale judge 因网关配额阻断未跑，由诊断隐含无 with/without-ETEC 差异（SUPERSEDE 不触发则旧值不会被标记失效），见 `docs/archive/8of10_ACCEPTANCE.md` §b 风险 2。
 
 结论口径：本项目的交付物是"机制证据链 + 可复现产物"，不是绝对分数竞争（竞品见 `docs/COMPETITIVE_ANALYSIS.md`）。
 
@@ -135,11 +135,11 @@ O09 机制诊断增量（2026-08-18，详见 [`docs/8of10_ACCEPTANCE.md`](8of10_
 - ETEC write p50=130,185ms（约 130s）是 consolidation 开销；
 - `vector_rag` p50 search=437,556ms（约 7.3 分钟）是 SSH tunnel + 串行 embedding 的病态延迟（整改 spec S4b 修复，必须先于 S2 重跑）；
 - **跨模型对比禁止**：50 题 run 用 mimo-v2.5 reader；既有 24 题 finalized run 用 deepseek-v4-flash（已停服、不可复现、**禁止跨模型对比**——AGENTS.md 禁止不等模型下 benchmark 对比）；
-- 整改方案见 `docs/REMEDIATION_SPEC.md`（S1a/S1b 修 ETEC 第一道闸门 → S2 重跑诊断 → S3 QEMR 失效根因）。
+- 整改方案见 `docs/archive/REMEDIATION_SPEC.md`（S1a/S1b 修 ETEC 第一道闸门 → S2 重跑诊断 → S3 QEMR 失效根因）。
 
 ### 6m run ETEC NA 声明（S0 / spec B4 Gap 3）
 
-**注**：6m run（`runs/publication/longmemeval-test20-6m/`）的 `ingestion.etec.actions` 字段为 NA（legacy 字段契约，未持久化 samples dir 的 `ingestion.etec.actions` 路径；deepseek-v4-flash 已停服，run 不可复现）。整改 spec `docs/REMEDIATION_SPEC.md` S0 步骤 5（B4 / Gap 3）要求显式声明，避免读者误读为"已测量但缺失"。
+**注**：6m run（`runs/publication/longmemeval-test20-6m/`）的 `ingestion.etec.actions` 字段为 NA（legacy 字段契约，未持久化 samples dir 的 `ingestion.etec.actions` 路径；deepseek-v4-flash 已停服，run 不可复现）。整改 spec `docs/archive/REMEDIATION_SPEC.md` S0 步骤 5（B4 / Gap 3）要求显式声明，避免读者误读为"已测量但缺失"。
 
 ## 6.5 模型 pinning + 可复现性（S4a）
 
@@ -166,7 +166,7 @@ uv run python -m benchmarks.longmemeval.run --config configs/longmemeval/offline
 
 ## 7. 方法学：对照臂口径修正（O09）
 
-来源：`docs/8of10_ACCEPTANCE.md` §a.1/§c.2、`benchmarks/longmemeval/run.py:153-158`（8of10 报告原文记作 `run.py:153-158`）、spec §3.3/§13 决议 1。
+来源：`docs/archive/8of10_ACCEPTANCE.md` §a.1/§c.2、`benchmarks/longmemeval/run.py:153-158`（8of10 报告原文记作 `run.py:153-158`）、spec §3.3/§13 决议 1。
 
 **问题**：既有 `etec` 与 `event_no_etec` 对照臂在 `benchmarks/longmemeval/run.py:153-158` 上配置为：
 - `etec` → 检索策略 `FIXED_VECTOR`、ETEC 存储/整合 off（即纯向量基线，没有事件图/QEMR 路径）；
@@ -181,7 +181,7 @@ uv run python -m benchmarks.longmemeval.run --config configs/longmemeval/offline
 
 `full` vs `etec` 则是检索策略隔离（同 ETEC 存储）：`full` 用 QEMR、`etec` 用 FIXED_VECTOR。
 
-**理由**：(1) 控制变量法要求消融臂只差被消融因子，避免方法混杂（AGENTS.md 代码评审规则："Reject changes that mix benchmark methods under unequal model, context-budget, or retrieval-budget settings"）；(2) 在 ETEC 真实不可达的诊断结论下（`docs/8of10_ACCEPTANCE.md` §a.7），`full` vs `event_no_etec` 是 ETEC 隔离的唯一可用纯净对照，既有 multi-session 切片该对照 EM 逐题一致（Δ 0）与机制诊断（SUPERSEDE 不触发则 ETEC 在检索侧无操作面）相互佐证；(3) `etec` vs `event_no_etec` 对照不丢弃，但定位为"检索策略 + ETEC 两因素联合对照"，不作 ETEC 单因素结论。
+**理由**：(1) 控制变量法要求消融臂只差被消融因子，避免方法混杂（AGENTS.md 代码评审规则："Reject changes that mix benchmark methods under unequal model, context-budget, or retrieval-budget settings"）；(2) 在 ETEC 真实不可达的诊断结论下（`docs/archive/8of10_ACCEPTANCE.md` §a.7），`full` vs `event_no_etec` 是 ETEC 隔离的唯一可用纯净对照，既有 multi-session 切片该对照 EM 逐题一致（Δ 0）与机制诊断（SUPERSEDE 不触发则 ETEC 在检索侧无操作面）相互佐证；(3) `etec` vs `event_no_etec` 对照不丢弃，但定位为"检索策略 + ETEC 两因素联合对照"，不作 ETEC 单因素结论。
 
 ## test50-mimo-v2-factslot (n=50, mimo-v2.5, v3 prompt, 2026-08-19)
 

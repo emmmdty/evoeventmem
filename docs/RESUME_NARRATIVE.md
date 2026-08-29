@@ -111,7 +111,7 @@
 
 | 证据 | 状态 | 缺失影响 |
 |---|---|---|
-| LongMemEval 结果 | ✅ 已完成（24 样本小样本闭环；500 样本降级为一致性验证，见 `docs/METHODOLOGY_CHANGE.md`） | 无 |
+| LongMemEval 结果 | ✅ 已完成（24 样本小样本闭环；500 样本降级为一致性验证，见 `docs/archive/METHODOLOGY_CHANGE.md`） | 无 |
 | LoCoMo 结果 | ✅ 已完成（1986 题主 run，`runs/main/report`） | 无 |
 | 6 因子消融 | ✅ 已完成（`runs/ablation/controlled` + `longmemeval-test20`，六因子全部 active） | 无 |
 | 失败分类 + 复核 | ✅ 已完成（33/33 人工复核，`runs/review/longmemeval-r2.reviewed.jsonl`） | 无 |
@@ -135,4 +135,4 @@
 5. 工程完备：FastAPI + PostgreSQL/pgvector + 多租户隔离 + fail-closed 降级 + Docker Compose + 独立部署（服务器迁移实战）。
 6. 方法论教训：LLM 语义判断 + 确定性精确定位（分块提取修复 90%→0% 零事件率）。
 
-**诚实红线**：**不声称翻盘 / ETEC 有效 / QEMR 有效**——分支 C 是"可达但不足以提升"。整改定稿见 `docs/REMEDIATION_FINAL_REPORT.md`，S3 根因见 `docs/QEMR_FAILURE_DIAGNOSIS.md`，独立审查见 `docs/STAGE4a5_REVIEW.md`。**不跨模型对比**：v1 vs v2 都用 mimo-v2.5（同 4096 预算，可对比）；24 题 deepseek-v4-flash run 已停服、禁止与 mimo-v2.5 对比（AGENTS.md N8）。
+**诚实红线**：**不声称翻盘 / ETEC 有效 / QEMR 有效**——分支 C 是"可达但不足以提升"。整改定稿见 `docs/REMEDIATION_FINAL_REPORT.md`，S3 根因见 `docs/QEMR_FAILURE_DIAGNOSIS.md`，独立审查见 `docs/archive/STAGE4a5_REVIEW.md`。**不跨模型对比**：v1 vs v2 都用 mimo-v2.5（同 4096 预算，可对比）；24 题 deepseek-v4-flash run 已停服、禁止与 mimo-v2.5 对比（AGENTS.md N8）。

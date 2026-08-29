@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
@@ -144,10 +145,19 @@ class OpenAICompatibleEmbeddingClient:
             # ``_post_json`` raises RuntimeError on retry exhaustion. Distinguish
             # transient (5xx/timeout/conn) from non-transient (4xx) by message
             # content: only the former triggers a split-and-retry.
+            # Exception: 400 errors indicating batch size limits (e.g. doubao
+            # "array too long", "input limit exceeded") should also trigger
+            # progressive shrink rather than failing immediately.
             message = str(exc)
             is_4xx = "HTTP Error 4" in message
             is_retryable = "HTTP Error 429" in message or "HTTP Error 403" in message
-            if is_4xx and not is_retryable:
+            is_batch_limit = (
+                "HTTP Error 400" in message
+                and ("array too long" in message.lower()
+                     or "input limit" in message.lower()
+                     or "max " in message.lower())
+            )
+            if is_4xx and not is_retryable and not is_batch_limit:
                 raise
             raise _TransientEmbeddingError(message) from exc
         data = sorted(response["data"], key=lambda item: int(item["index"]))
@@ -188,7 +198,15 @@ def _post_json(
             break
         except urllib.error.HTTPError as exc:
             if exc.code < 500 and exc.code != 429 and exc.code != 403:
-                raise RuntimeError(f"OpenAI-compatible provider request failed: {exc}") from exc
+                # Include response body in the error message so callers can
+                # detect specific 400 causes (e.g. batch size limits).
+                body = ""
+                with contextlib.suppress(Exception):
+                    body = exc.read().decode("utf-8", errors="replace")
+                detail = f" {body[:500]}" if body else ""
+                raise RuntimeError(
+                    f"OpenAI-compatible provider request failed: {exc}{detail}"
+                ) from exc
             last_error = exc
         except (
             urllib.error.URLError,

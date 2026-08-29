@@ -392,7 +392,7 @@ def test_temporal_scores_are_small_capped_feature_for_unconstrained_when() -> No
     scores = {
         item.memory.memory_id: item.component_scores for item in result.selected_context
     }
-    assert scores[anchored.memory_id]["temporal"] == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert scores[anchored.memory_id]["temporal"] == pytest.approx(0.3 / (RRF_K + 1.0))
     assert 0.0 < scores[far.memory_id]["temporal"] < scores[anchored.memory_id]["temporal"]
 
 
@@ -542,7 +542,7 @@ def test_wrrf_persists_raw_rank_weight_and_contribution() -> None:
         if score.source.value == "temporal"
     )
     assert ended_temporal.rank == 1
-    assert ended_temporal.fusion_contribution == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert ended_temporal.fusion_contribution == pytest.approx(0.3 / (RRF_K + 1.0))
 
 
 def test_wrrf_tie_breaking_is_stable_and_deterministic() -> None:
@@ -611,10 +611,10 @@ def test_reference_time_controls_temporal_ranks() -> None:
     near_recent = _component(near_old_ref, recent.memory_id, "temporal")
     far_recent = _component(far_old_ref, recent.memory_id, "temporal")
 
-    assert near_old == pytest.approx(0.2 / (RRF_K + 1.0))
-    assert near_recent == pytest.approx(0.2 / (RRF_K + 2.0))
-    assert far_old == pytest.approx(0.2 / (RRF_K + 2.0))
-    assert far_recent == pytest.approx(0.2 / (RRF_K + 1.0))
+    assert near_old == pytest.approx(0.3 / (RRF_K + 1.0))
+    assert near_recent == pytest.approx(0.3 / (RRF_K + 2.0))
+    assert far_old == pytest.approx(0.3 / (RRF_K + 2.0))
+    assert far_recent == pytest.approx(0.3 / (RRF_K + 1.0))
     assert near_old > far_old
 
     default = harness.retrieve(query, user_id="u1")
